@@ -1,0 +1,37 @@
+:root {
+  --bg: #0f1419;
+  --surface: #1a2332;
+  --border: #2d3a4d;
+  --text: #e7edf5;
+  --muted: #8b9cb3;
+  --accent: #3d8bfd;
+  --accent-dim: #2563c9;
+  --ok: #34c759;
+  --err: #ff5c5c;
+  --radius: 10px;
+  font-family: "Segoe UI", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei",
+    sans-serif;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+a {
+  color: var(--accent);
+}
+
+code {
+  font-size: 0.9em;
+  background: #0d1117;
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+}

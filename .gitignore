@@ -1,0 +1,10 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
+*.egg-info/
+dist/
+build/
+frontend/node_modules/
+data/
