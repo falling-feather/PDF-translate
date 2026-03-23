@@ -66,7 +66,7 @@ def split_main_and_references(
     use_tail_if_no_heading: bool = False,
 ) -> SplitManifest:
     """
-    Export main body and references (low-priority) into separate PDFs per PROJECT_DESIGN.md.
+    Export main body and references (low-priority) into separate PDFs (see README pipeline section).
     If no heading match and use_tail_if_no_heading is False, all pages go to main.
     If use_tail_if_no_heading is True, last ref_tail_ratio pages become references.pdf.
     """

@@ -7,7 +7,7 @@ import typer
 from pdf_translate.config import AppConfig
 from pdf_translate import pipeline
 
-app = typer.Typer(help="PDF 英文学术文献：拆分参考文献、按块翻译、记忆目录（见 PROJECT_DESIGN.md）")
+app = typer.Typer(help="PDF 英文学术文献：拆分参考文献、按块翻译、记忆目录（见 README.md memory/ 说明）")
 
 
 @app.command("init")

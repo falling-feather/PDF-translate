@@ -12,5 +12,7 @@ data/
 # 本地素材草稿（正式资源放在 frontend/public，构建后进入 server/static）
 /sucai/
 
-# 计划文档中误放的截图导出
-plans/image/
+# 开发者本地：路线图、部署详稿、架构愿景、optimization 讨论等（不入库）
+plans/
+/DEPLOY_WINDOWS_SERVER.md
+/PROJECT_DESIGN.md

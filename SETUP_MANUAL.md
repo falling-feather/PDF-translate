@@ -147,7 +147,7 @@ OPENAI_API_KEY=...
 
 ---
 
-## 6. CLI 使用顺序（与 PROJECT_DESIGN.md 一致）
+## 6. CLI 使用顺序（与 README「流水线与产物」一致）
 
 ```bash
 # 1) 初始化工作目录（生成 memory/）

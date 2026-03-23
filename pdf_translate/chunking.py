@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 @dataclass
 class TextChunk:
-    """1–3 页为单元的正文块；带重叠页以保证衔接（PROJECT_DESIGN.md）。"""
+    """1–3 页为单元的正文块；带重叠页以保证衔接。"""
 
     chunk_id: str
     pages_0based: list[int]
