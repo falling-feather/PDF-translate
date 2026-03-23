@@ -13,7 +13,9 @@ function onFileChange(e) {
 const tailFallback = ref(false);
 const pagesPerChunk = ref(3);
 const overlapPages = ref(1);
+/** 空字符串表示使用服务器默认后端 */
 const backend = ref("");
+const backendLabels = ref({});
 const maxChunks = ref("");
 /** @type {import('vue').Ref<'serial' | 'parallel'>} */
 const translateMode = ref("serial");
@@ -30,6 +32,7 @@ const clockTimer = ref(null);
 const startedAt = ref(null);
 const nowTick = ref(0);
 const myJobs = ref([]);
+const myJobsError = ref("");
 
 function fmtBytes(n) {
   if (n < 1024) return `${n} B`;
@@ -43,13 +46,51 @@ async function loadBackends() {
   const d = await r.json();
   enabledBackends.value = d.enabled || [];
   defaultBackend.value = d.default_backend || "echo";
+  backendLabels.value = d.labels || {};
+  if (backend.value && !enabledBackends.value.includes(backend.value)) {
+    backend.value = "";
+  }
 }
 
 async function loadMyJobs() {
+  myJobsError.value = "";
   const r = await fetch("/api/user/jobs", { headers: authHeaders() });
-  if (!r.ok) return;
+  if (!r.ok) {
+    myJobsError.value = "任务列表加载失败（若持续出现请联系管理员检查服务日志）";
+    return;
+  }
   const d = await r.json();
   myJobs.value = d.jobs || [];
+}
+
+function labelForBackend(b) {
+  const m = backendLabels.value;
+  return m && m[b] ? m[b] : b;
+}
+
+/** 从「我的任务」恢复当前任务卡片（刷新页面后可用） */
+async function openJobFromList(jid) {
+  jobId.value = jid;
+  stopPoll();
+  job.value = null;
+  startedAt.value = null;
+  try {
+    const r = await fetch(`/api/jobs/${jid}`, { headers: authHeaders() });
+    if (!r.ok) {
+      const t = await r.text();
+      alert(t || "无法加载该任务（可能已过期被清理或无权访问）");
+      jobId.value = "";
+      return;
+    }
+    job.value = await r.json();
+    if (job.value.status === "queued" || job.value.status === "running") {
+      startedAt.value = Date.now();
+      startPoll();
+    }
+  } catch (e) {
+    alert(String(e.message || e));
+    jobId.value = "";
+  }
 }
 
 onMounted(() => {
@@ -245,7 +286,9 @@ async function downloadZip() {
     <div class="grid">
       <section class="card">
         <h2>新建翻译</h2>
-        <p class="muted small">可选后端：{{ enabledBackends.join(", ") }}；留空则使用服务器默认。</p>
+        <p class="muted small">
+          翻译后端由管理员启用；请选择列表中的选项。默认使用服务器配置：{{ defaultBackend }}（{{ labelForBackend(defaultBackend) }}）。
+        </p>
         <label class="field">
           <span>PDF 文件</span>
           <input type="file" accept=".pdf,application/pdf" @change="onFileChange" />
@@ -269,8 +312,11 @@ async function downloadZip() {
           </label>
         </div>
         <label class="field">
-          <span>翻译后端（可选，默认 {{ defaultBackend }}）</span>
-          <input v-model="backend" placeholder="如 deepseek / openai / echo" />
+          <span>翻译后端</span>
+          <select v-model="backend" class="backend-select">
+            <option value="">使用服务器默认（{{ defaultBackend }}）</option>
+            <option v-for="b in enabledBackends" :key="b" :value="b">{{ labelForBackend(b) }}</option>
+          </select>
         </label>
         <label class="field">
           <span>最大块数（调试用，留空全文）</span>
@@ -350,12 +396,14 @@ async function downloadZip() {
 
     <section class="card full">
       <h2>我的任务</h2>
-      <table v-if="myJobs.length" class="table">
+      <p v-if="myJobsError" class="err">{{ myJobsError }}</p>
+      <table v-else-if="myJobs.length" class="table">
         <thead>
           <tr>
             <th>任务 ID</th>
             <th>文件名</th>
             <th>创建时间</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -363,10 +411,13 @@ async function downloadZip() {
             <td><code>{{ j.job_id }}</code></td>
             <td>{{ j.original_filename }}</td>
             <td class="muted">{{ j.created_at }}</td>
+            <td>
+              <button type="button" class="btn linkish" @click="openJobFromList(j.job_id)">查看状态 / 下载</button>
+            </td>
           </tr>
         </tbody>
       </table>
-      <p v-else class="muted">暂无记录</p>
+      <p v-else class="muted">暂无记录（新建任务并成功后，列表会显示；刷新页面后仍可点「查看」恢复进度与下载）。</p>
     </section>
   </div>
 </template>
@@ -432,6 +483,16 @@ h2 {
   border: 1px solid var(--border);
   background: #0d1117;
   color: var(--text);
+}
+.backend-select {
+  max-width: 100%;
+}
+.btn.linkish {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.82rem;
+  background: transparent;
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .row {
   display: flex;

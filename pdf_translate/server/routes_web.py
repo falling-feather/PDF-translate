@@ -17,6 +17,15 @@ from pdf_translate.translators.factory import build_translator
 
 ALL_BACKENDS = ["echo", "openai", "deepseek", "ollama", "deepl", "hybrid"]
 
+BACKEND_UI_LABELS: dict[str, str] = {
+    "echo": "echo（联调/测试）",
+    "openai": "OpenAI 兼容（含官方 OpenAI 等）",
+    "deepseek": "DeepSeek",
+    "ollama": "Ollama（本地）",
+    "deepl": "DeepL",
+    "hybrid": "hybrid（初稿 + 润色）",
+}
+
 
 def client_ip(request: Request) -> str:
     xff = request.headers.get("x-forwarded-for") or request.headers.get("X-Forwarded-For")
@@ -103,9 +112,11 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         _ = p
         eb = settings_service.enabled_backends()
         cfg = settings_service.effective_app_config()
+        enabled_ordered = [b for b in ALL_BACKENDS if b in eb]
         return {
-            "enabled": [b for b in ALL_BACKENDS if b in eb],
+            "enabled": enabled_ordered,
             "default_backend": cfg.default_translator,
+            "labels": {k: BACKEND_UI_LABELS.get(k, k) for k in enabled_ordered},
         }
 
     @api.get("/user/jobs")

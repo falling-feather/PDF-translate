@@ -140,7 +140,7 @@ def list_jobs_for_user(user_id: int, limit: int = 100) -> list[dict[str, Any]]:
     with _db_lock, _conn() as c:
         rows = c.execute(
             """SELECT job_id, user_id, username, original_filename, created_at
-               FROM jobs_meta WHERE user_id = ? ORDER BY id DESC LIMIT ?""",
+               FROM jobs_meta WHERE user_id = ? ORDER BY created_at DESC LIMIT ?""",
             (user_id, limit),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -159,7 +159,7 @@ def list_all_jobs(limit: int = 500) -> list[dict[str, Any]]:
     with _db_lock, _conn() as c:
         rows = c.execute(
             """SELECT job_id, user_id, username, original_filename, created_at
-               FROM jobs_meta ORDER BY id DESC LIMIT ?""",
+               FROM jobs_meta ORDER BY created_at DESC LIMIT ?""",
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
