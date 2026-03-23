@@ -39,7 +39,7 @@ class AppConfig:
             deepseek_api_key=os.getenv("DEEPSEEK_API_KEY"),
             deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
             deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
-            default_translator=os.getenv("PDF_TRANSLATE_BACKEND", "openai"),
+            default_translator=os.getenv("PDF_TRANSLATE_BACKEND", "deepseek"),
             http_timeout_s=float(os.getenv("HTTP_TIMEOUT_S", "240")),
         )
 

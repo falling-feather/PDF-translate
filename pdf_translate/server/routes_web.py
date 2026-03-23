@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
@@ -34,6 +36,54 @@ def client_ip(request: Request) -> str:
     if request.client:
         return request.client.host or ""
     return ""
+
+
+def _build_runtime_cfg_for_custom_api(
+    *,
+    cfg,
+    backend: str,
+    api_key: str | None,
+    api_base_url: str | None,
+    api_model: str | None,
+):
+    out = replace(cfg)
+    b = backend.lower().strip()
+    key = (api_key or "").strip()
+    base = (api_base_url or "").strip()
+    model = (api_model or "").strip()
+
+    if b == "openai":
+        if not key:
+            raise ValueError("openai 需要填写 API Key")
+        out.openai_api_key = key
+        if base:
+            out.openai_base_url = base
+        if model:
+            out.openai_model = model
+        return out
+    if b == "deepseek":
+        if not key:
+            raise ValueError("deepseek 需要填写 API Key")
+        out.deepseek_api_key = key
+        if base:
+            out.deepseek_base_url = base
+        if model:
+            out.deepseek_model = model
+        return out
+    if b == "deepl":
+        if not key:
+            raise ValueError("deepl 需要填写 API Key")
+        out.deepl_api_key = key
+        if base:
+            out.deepl_api_url = base
+        return out
+    if b == "ollama":
+        if base:
+            out.ollama_base_url = base
+        if model:
+            out.ollama_model = model
+        return out
+    raise ValueError("API翻译目前仅支持 openai / deepseek / ollama / deepl")
 
 
 def register_web_routes(app_registry: JobRegistry) -> APIRouter:
@@ -124,6 +174,49 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         rows = database.list_jobs_for_user(p.user_id, limit=limit)
         return {"jobs": rows}
 
+    @api.get("/user/jobs/favorites")
+    def my_favorite_jobs(p: Principal = Depends(bearer_principal), limit: int = 100) -> dict:
+        rows = database.list_favorite_jobs_for_user(p.user_id, limit=limit)
+        return {"jobs": rows, "max": database.MAX_JOB_FAVORITES_PER_USER}
+
+    @api.post("/user/jobs/cleanup-stale")
+    def cleanup_stale_jobs(
+        p: Principal = Depends(bearer_principal),
+        hours: int = 24,
+    ) -> dict:
+        if hours < 1 or hours > 168:
+            raise HTTPException(400, "hours 应在 1–168 之间")
+        stale = database.list_stale_job_ids_for_user(p.user_id, hours=hours)
+        deleted: list[str] = []
+        for jid in stale:
+            rec = app_registry.get(jid)
+            if rec and rec.status in ("queued", "running"):
+                continue
+            database.delete_job_meta_row(jid)
+            app_registry.remove_job(jid)
+            deleted.append(jid)
+        return {"deleted": deleted, "hours": hours}
+
+    @api.post("/user/jobs/{job_id}/favorite")
+    def favorite_job(job_id: str, p: Principal = Depends(bearer_principal)) -> dict:
+        try:
+            database.add_job_favorite(p.user_id, job_id)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return {"ok": True}
+
+    @api.delete("/user/jobs/{job_id}/favorite")
+    def unfavorite_job(job_id: str, p: Principal = Depends(bearer_principal)) -> dict:
+        try:
+            database.remove_job_favorite(p.user_id, job_id)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        ts = datetime.now(timezone.utc).isoformat()
+        rec = app_registry.get(job_id)
+        if rec:
+            app_registry.update(job_id, created_at=ts)
+        return {"ok": True}
+
     @api.post("/jobs")
     async def create_job(
         request: Request,
@@ -136,6 +229,11 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         max_chunks: str | None = Form(None),
         translate_mode: str = Form("serial"),
         parallel_max_workers: str | None = Form(None),
+        use_custom_api: bool = Form(False),
+        custom_backend: str | None = Form(None),
+        custom_api_key: str | None = Form(None),
+        custom_api_base_url: str | None = Form(None),
+        custom_api_model: str | None = Form(None),
     ) -> dict:
         if p.role not in ("user", "admin"):
             raise HTTPException(403, "无权提交翻译任务")
@@ -147,13 +245,31 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             raise HTTPException(400, "overlap_pages 无效")
 
         cfg = settings_service.effective_app_config()
-        try:
-            be = settings_service.assert_backend_allowed(backend, cfg.default_translator)
-        except ValueError as e:
-            raise HTTPException(400, str(e)) from e
+        runtime_cfg = cfg
+        if use_custom_api:
+            be = (custom_backend or "").strip().lower()
+            if not be:
+                raise HTTPException(400, "已启用 API翻译，请选择 API 后端")
+            if be not in ALL_BACKENDS:
+                raise HTTPException(400, f"不支持的 API 后端：{be}")
+            try:
+                runtime_cfg = _build_runtime_cfg_for_custom_api(
+                    cfg=cfg,
+                    backend=be,
+                    api_key=custom_api_key,
+                    api_base_url=custom_api_base_url,
+                    api_model=custom_api_model,
+                )
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+        else:
+            try:
+                be = settings_service.assert_backend_allowed(backend, cfg.default_translator)
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
 
         try:
-            build_translator(be, cfg)
+            build_translator(be, runtime_cfg)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
 
@@ -196,7 +312,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             user_id=p.user_id,
             username=p.username,
             job_id=rec.job_id,
-            detail={"filename": file.filename, "backend": be},
+            detail={"filename": file.filename, "backend": be, "use_custom_api": bool(use_custom_api)},
         )
 
         start_job_thread(
@@ -207,7 +323,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             overlap_pages=overlap_pages,
             backend=be,
             max_chunks=max_n,
-            cfg=cfg,
+            cfg=runtime_cfg,
         )
         return {"job_id": rec.job_id}
 
@@ -292,6 +408,26 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         return FileResponse(
             path,
             media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
+    @api.get("/jobs/{job_id}/download/input.pdf")
+    def download_input_pdf(job_id: str, p: Principal = Depends(bearer_principal)) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "input.pdf"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "未找到上传原文件")
+        disp_name = rec.original_filename or "input.pdf"
+        ascii_fallback = "input.pdf"
+        cd = (
+            f'attachment; filename="{ascii_fallback}"; '
+            f"filename*=UTF-8''{quote(disp_name)}"
+        )
+        return FileResponse(
+            path,
+            media_type="application/pdf",
             headers={"Content-Disposition": cd},
         )
 

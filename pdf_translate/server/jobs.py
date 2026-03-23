@@ -193,6 +193,15 @@ class JobRegistry:
         with self._lock:
             return self._jobs.get(job_id)
 
+    def remove_job(self, job_id: str) -> None:
+        import shutil
+
+        work = self.data_root / job_id
+        with self._lock:
+            self._jobs.pop(job_id, None)
+        if work.is_dir():
+            shutil.rmtree(work, ignore_errors=True)
+
     def update(self, job_id: str, **kwargs: Any) -> None:
         with self._lock:
             rec = self._jobs.get(job_id)

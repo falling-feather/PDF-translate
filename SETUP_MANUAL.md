@@ -55,9 +55,14 @@ pdf-translate-web
 
 默认监听 **`http://0.0.0.0:901`**（全网卡）。浏览器访问本机 `http://127.0.0.1:901`；团队同学在同一局域网可使用 `http://<你的内网IP>:901`。请在 Windows 防火墙中放行 **901** 端口（或设置环境变量 `PDF_TRANSLATE_WEB_PORT`）。
 
-**一键启动（Windows）**：双击项目根目录下的 **`start_web.bat`**（会设置端口 901、数据目录，并安装依赖后启动）。首次启动若 `data\app.db` 不存在，会用环境变量 `PDF_TRANSLATE_BOOTSTRAP_ADMIN_PASSWORD` 创建首个管理员（见 bat 内说明）。
+**一键启动（Windows）**：
 
-**登录与权限**：所有用户从 `/login` 登录；管理员与普通用户账号均存于本地 SQLite（`data/app.db`）。管理员进入 `/admin` 可配置 API 密钥（含 **DeepSeek**，OpenAI 兼容接口）、启用哪些翻译后端、是否开放注册，并查看**审计日志**（登录 IP、任务提交、完成后的上传/译文路径等）及全部任务文件下载。
+- 若尚未构建前端：先双击 **`build_frontend.bat`**（在 `frontend` 下执行 `npm install` 与 `npm run build`，产物写入 `pdf_translate/server/static/`）。
+- 再双击 **`start_web.bat`**：会检查静态页是否存在、设置端口与数据目录（变量见脚本内注释）、`pip install -e .` 后启动。首次启动若 `data\app.db` 不存在，会用 `PDF_TRANSLATE_BOOTSTRAP_ADMIN_PASSWORD` 创建首个管理员。
+
+**登录与权限**：所有用户从 `/login` 登录；账号存于本地 SQLite（`data/app.db`）。管理员进入 `/admin` 可配置 API 密钥、启用后端、是否开放注册；**审计日志**以中文摘要展示，可展开查看 JSON 详情；可下载全部任务产物。
+
+**用户工作台**：每次进入翻译工作台会清空本地并行窗口缓存，并调用接口清理**未收藏且超过 24 小时**的历史任务（删库并删除 `web_jobs/<job_id>/`，进行中的任务不删）。「我的任务」支持**收藏**（每用户最多 3 条），取消收藏后任务回到主列表且 `created_at` 更新为取消时刻。
 
 3. **前端开发联调**（可选）：终端 A 运行 `pdf-translate-web`；终端 B 在 `frontend` 下执行 `npm run dev`，Vite 会把 `/api` 代理到 **901**。
 

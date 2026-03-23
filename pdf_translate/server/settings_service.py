@@ -54,7 +54,7 @@ def enabled_backends() -> list[str]:
 
 def assert_backend_allowed(backend: str | None, default_backend: str) -> str:
     allowed = set(enabled_backends())
-    b = (backend or default_backend or "echo").lower().strip()
+    b = (backend or default_backend or "deepseek").lower().strip()
     if b not in allowed:
         raise ValueError(f"后端「{b}」未在管理端启用")
     return b

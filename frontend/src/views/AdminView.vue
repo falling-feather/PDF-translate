@@ -12,7 +12,30 @@ const audit = ref([]);
 const users = ref([]);
 const jobs = ref([]);
 
+const auditExpanded = ref({});
+
 const ALL_BACKENDS = ["echo", "openai", "deepseek", "ollama", "deepl", "hybrid"];
+
+function formatAuditTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return String(iso);
+  return d.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+function toggleAuditDetail(id) {
+  const cur = { ...auditExpanded.value };
+  cur[id] = !cur[id];
+  auditExpanded.value = cur;
+}
 
 async function loadSettings() {
   const r = await fetch("/api/admin/settings", { headers: authHeaders() });
@@ -178,26 +201,39 @@ onMounted(() => {
     <section v-show="tab === 'audit'" class="card">
       <h2>审计日志（含登录 IP、任务与文件路径）</h2>
       <div class="scroll">
-        <table class="table">
+        <table class="table audit-table">
           <thead>
             <tr>
               <th>时间</th>
-              <th>动作</th>
+              <th>摘要</th>
               <th>用户</th>
               <th>IP</th>
               <th>任务</th>
-              <th>详情</th>
+              <th>原始动作</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="e in audit" :key="e.id">
-              <td class="muted nowrap">{{ e.created_at }}</td>
-              <td><code>{{ e.action }}</code></td>
-              <td>{{ e.username || "—" }}</td>
-              <td>{{ e.ip || "—" }}</td>
-              <td><code>{{ e.job_id || "—" }}</code></td>
-              <td class="detail"><pre>{{ JSON.stringify(e.detail, null, 0) }}</pre></td>
-            </tr>
+            <template v-for="e in audit" :key="e.id">
+              <tr>
+                <td class="muted nowrap">{{ formatAuditTime(e.created_at) }}</td>
+                <td class="summary-cell">{{ e.summary || e.action }}</td>
+                <td>{{ e.username || "—" }}</td>
+                <td>{{ e.ip || "—" }}</td>
+                <td><code>{{ e.job_id || "—" }}</code></td>
+                <td><code class="action-code">{{ e.action }}</code></td>
+                <td class="nowrap">
+                  <button type="button" class="linkish" @click="toggleAuditDetail(e.id)">
+                    {{ auditExpanded[e.id] ? "收起" : "详情" }}
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="auditExpanded[e.id]" class="audit-detail-row">
+                <td colspan="7">
+                  <pre class="audit-json">{{ JSON.stringify(e.detail, null, 2) }}</pre>
+                </td>
+              </tr>
+            </template>
           </tbody>
         </table>
       </div>
@@ -373,6 +409,27 @@ h3 {
   white-space: pre-wrap;
   word-break: break-all;
   max-width: 320px;
+}
+.summary-cell {
+  max-width: 280px;
+  line-height: 1.35;
+}
+.action-code {
+  font-size: 0.78rem;
+  opacity: 0.85;
+}
+.audit-detail-row td {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0.5rem 0.35rem 0.65rem;
+}
+.audit-json {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 0.78rem;
+  color: var(--muted);
+  max-height: 240px;
+  overflow: auto;
 }
 .nowrap {
   white-space: nowrap;

@@ -8,3 +8,9 @@ dist/
 build/
 frontend/node_modules/
 data/
+
+# 本地素材草稿（正式资源放在 frontend/public，构建后进入 server/static）
+/sucai/
+
+# 计划文档中误放的截图导出
+plans/image/
