@@ -33,3 +33,12 @@ export function getRole() {
 export function getUsername() {
   return localStorage.getItem(USER) || "";
 }
+
+/** 登录或刷新工作台时调用：清理未收藏且超时的任务（需已写入 token） */
+export async function workbenchCleanupStale() {
+  const r = await fetch("/api/user/jobs/cleanup-stale", {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  return r.ok;
+}

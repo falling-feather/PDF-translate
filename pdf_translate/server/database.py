@@ -75,6 +75,30 @@ def init_schema() -> None:
         )
         c.commit()
     bootstrap_admin_if_empty()
+    ensure_migrations()
+
+
+def ensure_migrations() -> None:
+    """旧版 app.db 可能缺少 job_favorites 表；单独补齐，避免列表/收藏接口报错。"""
+    with _db_lock, _conn() as c:
+        row = c.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='job_favorites'",
+        ).fetchone()
+        if row:
+            return
+        c.execute(
+            """
+            CREATE TABLE job_favorites (
+              user_id INTEGER NOT NULL,
+              job_id TEXT NOT NULL,
+              favorited_at TEXT NOT NULL,
+              PRIMARY KEY (user_id, job_id),
+              FOREIGN KEY(user_id) REFERENCES users(id),
+              FOREIGN KEY(job_id) REFERENCES jobs_meta(job_id)
+            );
+            """
+        )
+        c.commit()
 
 
 def bootstrap_admin_if_empty() -> None:
@@ -100,9 +124,16 @@ def _parse_created_at(s: str | None) -> datetime | None:
     if not s:
         return None
     try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        raw = s.strip().replace("Z", "+00:00")
+        # SQLite 中可能出现 "2026-03-21 15:51:57" 等无时区字符串，按 UTC 理解
+        if " " in raw and "T" not in raw:
+            raw = raw.replace(" ", "T", 1)
+        dt = datetime.fromisoformat(raw)
     except ValueError:
         return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 MAX_JOB_FAVORITES_PER_USER = 3
@@ -254,9 +285,12 @@ def list_stale_job_ids_for_user(user_id: int, *, hours: int = 24) -> list[str]:
         jid = r["job_id"]
         if jid in fav:
             continue
-        dt = _parse_created_at(r["created_at"])
-        if dt is not None and dt < cutoff:
-            out.append(jid)
+        try:
+            dt = _parse_created_at(r["created_at"])
+            if dt is not None and dt < cutoff:
+                out.append(jid)
+        except (TypeError, ValueError, OSError):
+            continue
     return out
 
 

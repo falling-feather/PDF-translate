@@ -31,7 +31,6 @@ const defaultBackend = ref("deepseek");
 const myJobs = ref([]);
 const myJobsError = ref("");
 const favoriteJobs = ref([]);
-const favoriteJobsError = ref("");
 const favoriteMax = ref(3);
 
 const taskOrder = ref([]);
@@ -121,22 +120,13 @@ async function loadMyJobs() {
   const r = await fetch("/api/user/jobs", { headers: authHeaders() });
   if (!r.ok) {
     myJobsError.value = "任务列表加载失败（若持续出现请联系管理员检查服务日志）";
+    favoriteJobs.value = [];
     return;
   }
   const d = await r.json();
   myJobs.value = d.jobs || [];
-}
-
-async function loadFavoriteJobs() {
-  favoriteJobsError.value = "";
-  const r = await fetch("/api/user/jobs/favorites", { headers: authHeaders() });
-  if (!r.ok) {
-    favoriteJobsError.value = "收藏列表加载失败";
-    return;
-  }
-  const d = await r.json();
-  favoriteJobs.value = d.jobs || [];
-  favoriteMax.value = Number(d.max) || 3;
+  favoriteJobs.value = Array.isArray(d.favorites) ? d.favorites : [];
+  favoriteMax.value = Number(d.favorite_max) || 3;
 }
 
 async function runWorkbenchCleanup() {
@@ -145,8 +135,10 @@ async function runWorkbenchCleanup() {
       method: "POST",
       headers: authHeaders(),
     });
-    if (!r.ok) return;
-    const d = await r.json().catch(() => ({}));
+    if (!r.ok && typeof console !== "undefined" && console.warn) {
+      console.warn("cleanup-stale 未成功:", r.status);
+    }
+    const d = r.ok ? await r.json().catch(() => ({})) : {};
     const n = (d.deleted && d.deleted.length) || 0;
     if (n > 0) {
       const gone = new Set(d.deleted || []);
@@ -161,7 +153,7 @@ async function runWorkbenchCleanup() {
 }
 
 async function favoriteJobRow(jobId) {
-  const r = await fetch(`/api/user/jobs/${jobId}/favorite`, {
+  const r = await fetch(`/api/user/favorites/${encodeURIComponent(jobId)}`, {
     method: "POST",
     headers: authHeaders(),
   });
@@ -171,24 +163,28 @@ async function favoriteJobRow(jobId) {
     return;
   }
   await loadMyJobs();
-  await loadFavoriteJobs();
 }
 
 async function unfavoriteJobRow(jobId) {
-  const r = await fetch(`/api/user/jobs/${jobId}/favorite`, { method: "DELETE", headers: authHeaders() });
+  const r = await fetch(`/api/user/favorites/${encodeURIComponent(jobId)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
     alert(typeof data.detail === "string" ? data.detail : JSON.stringify(data));
     return;
   }
   await loadMyJobs();
-  await loadFavoriteJobs();
 }
 
 async function refreshTaskLists() {
+  stopPolling();
+  selectedFiles.value = [];
+  taskOrder.value = [];
+  taskMap.value = {};
   await runWorkbenchCleanup();
   await loadMyJobs();
-  await loadFavoriteJobs();
 }
 
 function ensureTaskTracked(jobId) {
@@ -224,6 +220,16 @@ function stopPolling() {
   if (!pollTimer.value) return;
   clearInterval(pollTimer.value);
   pollTimer.value = null;
+}
+
+/** 从并行窗口移除卡片（不删服务端任务，仍可「我的任务」里加入） */
+function removeFromWorkbench(jobId) {
+  taskOrder.value = taskOrder.value.filter((id) => id !== jobId);
+  const next = { ...taskMap.value };
+  delete next[jobId];
+  taskMap.value = next;
+  const stillActive = taskOrder.value.some((id) => isActiveJob(taskMap.value[id]));
+  if (!stillActive) stopPolling();
 }
 
 async function createJobForFile(file) {
@@ -407,7 +413,6 @@ onMounted(async () => {
   await loadBackends();
   await runWorkbenchCleanup();
   await loadMyJobs();
-  await loadFavoriteJobs();
   footerTimer = setInterval(() => {
     pageNow.value = Date.now();
   }, 1000);
@@ -615,6 +620,14 @@ onUnmounted(() => {
                   打包 .zip
                 </button>
                 <button v-if="isActiveJob(taskMap[tid])" type="button" class="btn warn" @click="cancelJob(tid)">终止</button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
+                  @click="removeFromWorkbench(tid)"
+                >
+                  移出工作台
+                </button>
               </div>
             </template>
             <template v-else>
@@ -660,31 +673,35 @@ onUnmounted(() => {
       </table>
       <p v-else class="muted">暂无记录。</p>
 
-      <h2 class="sub-heading">收藏的任务</h2>
-      <p class="muted small">每账号最多 {{ favoriteMax }} 条；取消收藏后任务会回到「我的任务」，创建时间按取消收藏时刻更新。</p>
-      <p v-if="favoriteJobsError" class="err">{{ favoriteJobsError }}</p>
-      <table v-else-if="favoriteJobs.length" class="table">
-        <thead>
-          <tr>
-            <th>任务 ID</th>
-            <th>文件名</th>
-            <th>列表时间</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="j in favoriteJobs" :key="'fav-' + j.job_id">
-            <td><code>{{ j.job_id }}</code></td>
-            <td>{{ j.original_filename }}</td>
-            <td class="muted nowrap">{{ formatDisplayTime(j.created_at) }}</td>
-            <td class="nowrap">
-              <button type="button" class="btn linkish" @click="openJobFromList(j.job_id)">加入并行窗口</button>
-              <button type="button" class="btn linkish" @click="unfavoriteJobRow(j.job_id)">取消收藏</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-else class="muted">暂无收藏。</p>
+      <p class="muted small" style="margin-top: 0.75rem">
+        每账号最多 {{ favoriteMax }} 条收藏；在任务行点击「收藏」后，条目会出现在下方列表。
+      </p>
+
+      <template v-if="favoriteJobs.length">
+        <h2 class="sub-heading">收藏的任务</h2>
+        <p class="muted small">取消收藏后任务会回到「我的任务」，创建时间按取消收藏时刻更新。</p>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>任务 ID</th>
+              <th>文件名</th>
+              <th>列表时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="j in favoriteJobs" :key="'fav-' + j.job_id">
+              <td><code>{{ j.job_id }}</code></td>
+              <td>{{ j.original_filename }}</td>
+              <td class="muted nowrap">{{ formatDisplayTime(j.created_at) }}</td>
+              <td class="nowrap">
+                <button type="button" class="btn linkish" @click="openJobFromList(j.job_id)">加入并行窗口</button>
+                <button type="button" class="btn linkish" @click="unfavoriteJobRow(j.job_id)">取消收藏</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </template>
     </section>
 
     <footer class="site-footer">

@@ -1,7 +1,7 @@
 <script setup>
 import { ref } from "vue";
 import { useRouter } from "vue-router";
-import { setSession } from "../auth";
+import { setSession, workbenchCleanupStale } from "../auth";
 
 const router = useRouter();
 const username = ref("");
@@ -32,6 +32,11 @@ async function submit() {
       return;
     }
     setSession(data);
+    try {
+      await workbenchCleanupStale();
+    } catch {
+      /* 由翻译页再次清理 */
+    }
     router.replace("/translate");
   } catch (e) {
     err.value = String(e.message || e);

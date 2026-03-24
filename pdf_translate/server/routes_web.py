@@ -172,12 +172,12 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
     @api.get("/user/jobs")
     def my_jobs(p: Principal = Depends(bearer_principal), limit: int = 100) -> dict:
         rows = database.list_jobs_for_user(p.user_id, limit=limit)
-        return {"jobs": rows}
-
-    @api.get("/user/jobs/favorites")
-    def my_favorite_jobs(p: Principal = Depends(bearer_principal), limit: int = 100) -> dict:
-        rows = database.list_favorite_jobs_for_user(p.user_id, limit=limit)
-        return {"jobs": rows, "max": database.MAX_JOB_FAVORITES_PER_USER}
+        favorites = database.list_favorite_jobs_for_user(p.user_id, limit=limit)
+        return {
+            "jobs": rows,
+            "favorites": favorites,
+            "favorite_max": database.MAX_JOB_FAVORITES_PER_USER,
+        }
 
     @api.post("/user/jobs/cleanup-stale")
     def cleanup_stale_jobs(
@@ -197,7 +197,8 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             deleted.append(jid)
         return {"deleted": deleted, "hours": hours}
 
-    @api.post("/user/jobs/{job_id}/favorite")
+    # 收藏接口单独路径，避免与 GET /user/jobs/favorites 等产生「POST 命中仅 GET 路由 → 405」的歧义
+    @api.post("/user/favorites/{job_id}")
     def favorite_job(job_id: str, p: Principal = Depends(bearer_principal)) -> dict:
         try:
             database.add_job_favorite(p.user_id, job_id)
@@ -205,7 +206,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             raise HTTPException(400, str(e)) from e
         return {"ok": True}
 
-    @api.delete("/user/jobs/{job_id}/favorite")
+    @api.delete("/user/favorites/{job_id}")
     def unfavorite_job(job_id: str, p: Principal = Depends(bearer_principal)) -> dict:
         try:
             database.remove_job_favorite(p.user_id, job_id)

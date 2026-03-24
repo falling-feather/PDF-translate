@@ -1,7 +1,7 @@
 <script setup>
 import { ref } from "vue";
 import { useRouter } from "vue-router";
-import { setSession } from "../auth";
+import { setSession, workbenchCleanupStale } from "../auth";
 
 const router = useRouter();
 const username = ref("");
@@ -23,6 +23,13 @@ async function submit() {
       return;
     }
     setSession(data);
+    if (data.role !== "admin") {
+      try {
+        await workbenchCleanupStale();
+      } catch {
+        // 清理失败不阻断进入工作台，由翻译页再次尝试
+      }
+    }
     router.replace(data.role === "admin" ? "/admin" : "/translate");
   } catch (e) {
     err.value = String(e.message || e);
