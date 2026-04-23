@@ -12,6 +12,7 @@
 | 分块翻译 | 每块 1–3 页，块间可配置重叠页，控制单次上下文规模 |
 | 多翻译后端 | `echo`（联调）、OpenAI 兼容（含 **DeepSeek**）、Ollama、DeepL、`hybrid`（初稿 + 润色） |
 | 记忆注入 | `memory/` 下术语表、分块摘要、风格说明等；串联模式带前文摘要与译文段尾衔接 |
+| 可选译前巡视 | 开启 `PDF_TRANSLATE_SURVEY_ENABLED` 时，经**硅基流动**草拟术语并写入 `glossary`，产出 `output/survey/*.json`；详见 `plans/plan-survey-orchestration.md` |
 | 串联 / 并联 | 串联：顺序翻译、记忆递进；并联：分批并行请求，按序拼接（更快，衔接略弱） |
 | 段尾顺延（串联 + LLM） | 非最后一块可要求模型输出 `《&fenduan&》` / `《&fenju&》` 与未译英文尾段，写入 `deferred_source_carry.txt`，下块接续；合并后仅做标识符替换，不再调用模型审视全文 |
 | 任务控制 | Web 端可**终止**翻译；支持断点续译（`output/state.json`） |

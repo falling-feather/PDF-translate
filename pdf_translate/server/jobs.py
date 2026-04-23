@@ -229,7 +229,16 @@ class JobRegistry:
             return
 
         t0 = time.perf_counter()
-        translate_mode = (rec.translate_mode or "serial").strip().lower()
+        tm_raw = (rec.translate_mode or "serial").strip().lower()
+        if tm_raw == "premium":
+            translate_mode = "serial"
+            survey_override = True
+        elif tm_raw == "parallel":
+            translate_mode = "parallel"
+            survey_override = False
+        else:
+            translate_mode = "serial"
+            survey_override = False
         parallel_max_workers = rec.parallel_max_workers
 
         def progress(ev: dict) -> None:
@@ -320,6 +329,7 @@ class JobRegistry:
                 progress_callback=progress,
                 translate_mode="parallel" if translate_mode == "parallel" else "serial",
                 parallel_workers=pw,
+                survey_override=survey_override,
             )
 
             self.update(job_id, phase="links", message="导出链接索引…")

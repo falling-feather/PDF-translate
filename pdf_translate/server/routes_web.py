@@ -17,16 +17,16 @@ from pdf_translate.server.jobs import JobRecord, JobRegistry, start_job_thread, 
 from pdf_translate.server import settings_service
 from pdf_translate.translators.factory import build_translator
 
-ALL_BACKENDS = ["echo", "openai", "deepseek", "ollama", "deepl", "hybrid"]
+ALL_BACKENDS = ["echo", "deepseek"]
 
 BACKEND_UI_LABELS: dict[str, str] = {
     "echo": "echo（联调/测试）",
-    "openai": "OpenAI 兼容（含官方 OpenAI 等）",
     "deepseek": "DeepSeek",
-    "ollama": "Ollama（本地）",
-    "deepl": "DeepL",
-    "hybrid": "hybrid（初稿 + 润色）",
 }
+
+
+def _is_deepseek_model_name(model_name: str | None) -> bool:
+    return "deepseek" in str(model_name or "").strip().lower()
 
 
 def client_ip(request: Request) -> str:
@@ -52,15 +52,6 @@ def _build_runtime_cfg_for_custom_api(
     base = (api_base_url or "").strip()
     model = (api_model or "").strip()
 
-    if b == "openai":
-        if not key:
-            raise ValueError("openai 需要填写 API Key")
-        out.openai_api_key = key
-        if base:
-            out.openai_base_url = base
-        if model:
-            out.openai_model = model
-        return out
     if b == "deepseek":
         if not key:
             raise ValueError("deepseek 需要填写 API Key")
@@ -70,20 +61,7 @@ def _build_runtime_cfg_for_custom_api(
         if model:
             out.deepseek_model = model
         return out
-    if b == "deepl":
-        if not key:
-            raise ValueError("deepl 需要填写 API Key")
-        out.deepl_api_key = key
-        if base:
-            out.deepl_api_url = base
-        return out
-    if b == "ollama":
-        if base:
-            out.ollama_base_url = base
-        if model:
-            out.ollama_model = model
-        return out
-    raise ValueError("API翻译目前仅支持 openai / deepseek / ollama / deepl")
+    raise ValueError("API翻译目前仅支持 deepseek")
 
 
 def register_web_routes(app_registry: JobRegistry) -> APIRouter:
@@ -282,8 +260,16 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
                 raise HTTPException(400, "max_chunks 必须为整数") from None
 
         tm = (translate_mode or "serial").strip().lower()
-        if tm not in ("serial", "parallel"):
-            raise HTTPException(400, "translate_mode 须为 serial 或 parallel")
+        if tm not in ("serial", "parallel", "premium"):
+            raise HTTPException(400, "translate_mode 须为 serial、parallel 或 premium（精品翻译）")
+        if tm == "premium":
+            cfg_sf = settings_service.effective_app_config()
+            if not (cfg_sf.siliconflow_api_key or "").strip():
+                raise HTTPException(400, "精品翻译需要管理员在后台配置硅基流动 API Key")
+            if not (cfg_sf.siliconflow_survey_model or "").strip():
+                raise HTTPException(400, "精品翻译需要管理员在后台配置硅基流动「巡视模型」")
+            if _is_deepseek_model_name(cfg_sf.siliconflow_survey_model):
+                raise HTTPException(400, "精品翻译的硅基巡视模型不能填写 DeepSeek，请改为 Qwen/Kimi 等模型；DeepSeek 请走 DeepSeek API。")
         pwm: int | None = None
         if parallel_max_workers not in (None, ""):
             try:

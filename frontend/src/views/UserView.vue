@@ -42,9 +42,9 @@ const pageNow = ref(Date.now());
 let footerTimer = null;
 
 const FOOTER_START_AT = new Date("2026-03-22T00:00:00+08:00").getTime();
-const CUSTOM_API_BACKENDS = ["deepseek", "openai", "ollama", "deepl"];
+const CUSTOM_API_BACKENDS = ["deepseek"];
 const MAX_PARALLEL_TASKS = 3;
-const CACHE_KEY = "pdf_translate_user_view_state_v3";
+const CACHE_KEY = "pdf_translate_user_view_state_v4";
 
 function formatDisplayTime(iso) {
   if (!iso) return "—";
@@ -92,12 +92,12 @@ function onRootDragLeave() {
   dragActive.value = false;
 }
 
-async function onRootDrop(e) {
+function onDropzoneDrop(e) {
   dragActive.value = false;
+  e.stopPropagation();
   const files = Array.from(e.dataTransfer?.files || []).filter((f) => f.name.toLowerCase().endsWith(".pdf"));
   if (!files.length) return;
   selectedFiles.value = files;
-  await submitSelectedFiles(true);
 }
 
 function labelForBackend(b) {
@@ -399,7 +399,8 @@ onMounted(async () => {
       overlapPages.value = Number(s.overlapPages) || 1;
       backend.value = String(s.backend || "");
       maxChunks.value = String(s.maxChunks || "");
-      translateMode.value = s.translateMode === "parallel" ? "parallel" : "serial";
+      const tm = s.translateMode;
+      translateMode.value = tm === "parallel" || tm === "premium" ? tm : "serial";
       parallelMaxWorkers.value = Number(s.parallelMaxWorkers) || 4;
       useCustomApi.value = !!s.useCustomApi;
       customApiBackend.value = String(s.customApiBackend || "deepseek");
@@ -466,7 +467,6 @@ onUnmounted(() => {
     :class="{ 'drag-active': dragActive }"
     @dragover.prevent="onRootDragOver"
     @dragleave="onRootDragLeave"
-    @drop.prevent="onRootDrop"
   >
     <header class="top">
       <div>
@@ -491,9 +491,9 @@ onUnmounted(() => {
           <input type="file" accept=".pdf,application/pdf" multiple @change="onFileChange" />
         </label>
 
-        <div class="dropzone" @dragover.prevent @drop.prevent="onRootDrop">
-          <p>将 PDF 拖到这里即可自动上传</p>
-          <p class="muted small">也可使用上方文件选择器；并行上限为 3 个任务</p>
+        <div class="dropzone" @dragover.prevent @drop.stop.prevent="onDropzoneDrop">
+          <p>将 PDF 拖到这里即可选中文件</p>
+          <p class="muted small">拖入后不会自动上传；请确认选项后点击「上传并开始翻译」。并行上限为 3 个任务。</p>
         </div>
 
         <p v-if="selectedFiles.length" class="muted small" style="margin-top: 0.45rem">
@@ -571,6 +571,13 @@ onUnmounted(() => {
             <input type="radio" value="parallel" v-model="translateMode" />
             <span>并联式（更快）</span>
           </label>
+          <label class="radio-line">
+            <input type="radio" value="premium" v-model="translateMode" />
+            <span>精品翻译（译前巡视 + 术语草拟，需管理员配置硅基流动）</span>
+          </label>
+          <p v-if="translateMode === 'premium'" class="muted small mode-hint">
+            固定为串联流程，并启用硅基流动巡视；与「并联」互斥。若提示未配置硅基流动，请联系管理员。
+          </p>
           <label v-if="translateMode === 'parallel'" class="field sm parallel-workers">
             <span>每批并行数（1–32）</span>
             <input type="number" v-model.number="parallelMaxWorkers" min="1" max="32" />
@@ -891,6 +898,10 @@ h2 {
 .parallel-workers {
   margin: 0.5rem 0 0 1.35rem;
   max-width: 200px;
+}
+.mode-hint {
+  margin: 0.35rem 0 0.5rem 1.35rem;
+  line-height: 1.45;
 }
 .task-list {
   display: grid;

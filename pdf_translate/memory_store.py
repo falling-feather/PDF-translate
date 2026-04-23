@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+_glossary_write_lock = threading.Lock()
 
 DEFAULT_GLOSSARY = {"terms": []}
 DEFAULT_ENTITIES = {"entities": []}
@@ -78,6 +81,43 @@ class MemoryStore:
 
     def load_glossary(self) -> dict[str, Any]:
         return json.loads(self.glossary_path.read_text(encoding="utf-8"))
+
+    def merge_glossary_terms_from_survey(
+        self,
+        terms: list[dict[str, str]],
+        *,
+        first_page_1based: int,
+        source: str = "survey",
+    ) -> int:
+        """将巡视产出的 en/zh 术语合并入 glossary；按英文去重，返回新增条数。"""
+        if not terms:
+            return 0
+        with _glossary_write_lock:
+            data = self.load_glossary()
+            existing: list[dict[str, Any]] = list(data.get("terms") or [])
+            seen_en = {str(t.get("en", "")).strip().lower() for t in existing if t.get("en")}
+            added = 0
+            for t in terms:
+                en = str(t.get("en", "")).strip()
+                zh = str(t.get("zh", "")).strip()
+                if not en or not zh:
+                    continue
+                key = en.lower()
+                if key in seen_en:
+                    continue
+                seen_en.add(key)
+                existing.append(
+                    {
+                        "en": en,
+                        "zh": zh,
+                        "first_page": int(first_page_1based),
+                        "source": source,
+                    }
+                )
+                added += 1
+            data["terms"] = existing
+            self.glossary_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            return added
 
     def load_style_notes(self) -> dict[str, Any]:
         return yaml.safe_load(self.style_path.read_text(encoding="utf-8")) or {}

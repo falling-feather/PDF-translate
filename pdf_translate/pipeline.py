@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
@@ -20,6 +21,7 @@ from pdf_translate.deferral_markers import (
     parse_model_output_with_deferral,
     strip_markers_from_plain_text,
 )
+from pdf_translate.survey import run_chunk_survey, survey_result_to_jsonable
 from pdf_translate.text_sanitize import collapse_toc_dot_leaders
 from pdf_translate.translators.base import TranslationRequest
 from pdf_translate.translators.factory import build_translator
@@ -87,6 +89,38 @@ def _translator_supports_deferral(translator: object) -> bool:
     return True
 
 
+def _write_survey_and_merge_glossary(
+    work_dir: Path,
+    cfg: AppConfig,
+    mem: MemoryStore,
+    ch: TextChunk,
+    text: str,
+) -> None:
+    """译前巡视：写 output/survey/<chunk_id>.json，并将 draft_terms 合并入 glossary。"""
+    if not cfg.survey_enabled:
+        return
+    p0 = ch.pages_0based[0] + 1
+    p1 = ch.pages_0based[-1] + 1
+    sur = run_chunk_survey(
+        cfg,
+        chunk_text=text,
+        chunk_id=ch.chunk_id,
+        pages_1based=(p0, p1),
+        image_count=ch.image_count,
+        link_count=ch.link_count,
+    )
+    out_dir = work_dir / "output" / "survey"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    payload = survey_result_to_jsonable(sur)
+    payload["chunk_id"] = ch.chunk_id
+    payload["pages_1based"] = [p0, p1]
+    (out_dir / f"{ch.chunk_id}.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    if not sur.skipped and sur.draft_terms:
+        mem.merge_glossary_terms_from_survey(sur.draft_terms, first_page_1based=p0)
+
+
 def _chunk_body_and_meta(ch: TextChunk, zh: str, translator_name: str) -> tuple[str, dict]:
     p0 = ch.pages_0based[0] + 1
     p1 = ch.pages_0based[-1] + 1
@@ -117,6 +151,7 @@ def _parallel_translate_one(
     p0 = ch.pages_0based[0] + 1
     p1 = ch.pages_0based[-1] + 1
     mem = MemoryStore(work_dir / "memory")
+    _write_survey_and_merge_glossary(work_dir, cfg, mem, ch, text)
     gloss = mem.glossary_snippet_for_pages(p0, p1)
     req = TranslationRequest(
         source_text=text,
@@ -141,7 +176,10 @@ def run_translate(
     progress_callback: Callable[[dict], None] | None = None,
     translate_mode: Literal["serial", "parallel"] = "serial",
     parallel_workers: int = 4,
+    survey_override: bool | None = None,
 ) -> Path:
+    """survey_override：None 使用 cfg.survey_enabled；True/False 强制开关译前巡视（精品翻译传 True）。"""
+    cfg = replace(cfg, survey_enabled=survey_override) if survey_override is not None else cfg
     work_dir = work_dir.resolve()
     mem = MemoryStore(work_dir / "memory")
     mem.ensure_files()
@@ -307,9 +345,10 @@ def run_translate(
 
         p0 = ch.pages_0based[0] + 1
         p1 = ch.pages_0based[-1] + 1
+        text = collapse_toc_dot_leaders(ch.text)
+        _write_survey_and_merge_glossary(work_dir, cfg, mem, ch, text)
         gloss = mem.glossary_snippet_for_pages(p0, p1)
         priors = mem.load_recent_summaries(max_chunks=3)
-        text = collapse_toc_dot_leaders(ch.text)
 
         prior_tail = mem.load_prior_tail_zh()
         carry = mem.load_deferred_carry() if defer_protocol else ""

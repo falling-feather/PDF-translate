@@ -92,6 +92,17 @@ pdf-translate-web
 | `DEEPL_API_URL` | Free 一般为 `https://api-free.deepl.com/v2/translate`；Pro 为 `https://api.deepl.com/v2/translate` |
 | `HTTP_TIMEOUT_S` | HTTP 超时秒数（读超时为主），默认 **`240`**（长块翻译建议 ≥180） |
 | `PDF_TRANSLATE_HTTP_RETRIES` | 对 DeepSeek/OpenAI 兼容与 DeepL 的 HTTP 失败自动重试次数，默认 **`4`**（含首次请求，即最多约 4 次尝试） |
+| `PDF_TRANSLATE_SURVEY_ENABLED` | `1` / `true` / `yes` 时，每块译前调用**硅基流动**做巡视（术语草稿 + 图文标签 JSON）；默认关闭 |
+| `SILICONFLOW_API_KEY` | 硅基流动 API Key（与巡视配套） |
+| `SILICONFLOW_BASE_URL` | 默认 **`https://api.siliconflow.com/v1`**（若控制台要求国内节点可改为文档中的 `.cn` 等地址） |
+| `SILICONFLOW_SURVEY_MODEL` | 巡视所用模型全名（控制台复制，如多模态或文本模型） |
+| `PDF_TRANSLATE_SURVEY_MAX_CHARS` | 送入巡视的块文本最大字符数，默认 **`12000`** |
+| `PDF_TRANSLATE_PLANNER_ENABLED` | 预留：全文/分章规划收束（未接管线时无效果） |
+| `PDF_TRANSLATE_PLANNER_API_KEY` | 预留：收束所用 API Key |
+| `PDF_TRANSLATE_PLANNER_BASE_URL` | 预留：默认与硅基一致 |
+| `PDF_TRANSLATE_PLANNER_MODEL` | 预留：收束模型名 |
+
+管理端可在 KV 中覆盖 `survey_enabled`、`siliconflow_*`、`planner_*`（与上述环境变量同名键），逻辑见 `settings_service.effective_app_config`。
 
 **最小可运行（不调用外网）：**
 
@@ -193,8 +204,11 @@ my-paper/
     translated_full.md
     state.json
     run_log.jsonl
+    survey/*.json     # 开启 PDF_TRANSLATE_SURVEY_ENABLED 时，每块巡视结果
     links_index.csv   # 执行 links 后
 ```
+
+**巡视与路线图**：详见 **`plans/plan-survey-orchestration.md`**。
 
 ---
 
