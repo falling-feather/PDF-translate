@@ -22,6 +22,7 @@ from pdf_translate.qa.chunk_boundary import write_chunk_boundary_qa, write_chunk
 from pdf_translate.qa.metrics import write_experiment_metrics
 from pdf_translate.qa.repair import write_repair_plan
 from pdf_translate.qa.structure import write_structure_qa
+from pdf_translate.qa.table_reconstruction import write_table_reconstruction_report
 from pdf_translate.qa.translation import write_translation_qa
 from pdf_translate.rich_content import extract_page_rich_meta
 from pdf_translate.continuation_extract import translation_tail_for_next_chunk
@@ -207,6 +208,11 @@ def run_translate(
     doc_ir = extract_document_ir(main_pdf)
     doc_ir.write_json(out_dir / "document_ir.json")
     structure_qa = write_structure_qa(doc_ir, out_dir / "structure_qa.json")
+    table_reconstruction = write_table_reconstruction_report(
+        doc_ir,
+        structure_qa,
+        out_dir / "table_reconstruction.json",
+    )
     vision_route = write_vision_route(doc_ir, out_dir / "vision_route.json")
     structure_chunks = build_structure_chunks(
         doc_ir,
@@ -309,6 +315,7 @@ def run_translate(
             pipeline_variant=chunk_strategy,
             chunk_boundary_qa=chunk_boundary_qa,
             chunk_strategy_comparison=chunk_strategy_comparison,
+            table_reconstruction=table_reconstruction,
         )
         write_bilingual_html(
             chunks,

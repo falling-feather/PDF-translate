@@ -25,6 +25,7 @@ from pdf_translate.qa.chunk_boundary import build_chunk_boundary_qa, build_chunk
 from pdf_translate.qa.metrics import build_experiment_metrics
 from pdf_translate.qa.repair import build_repair_plan
 from pdf_translate.qa.structure import build_structure_qa
+from pdf_translate.qa.table_reconstruction import build_table_reconstruction_report
 from pdf_translate.qa.translation import build_translation_qa
 from pdf_translate.pipeline import init_workdir, run_split, run_translate
 from pdf_translate.vision.routing import build_vision_route
@@ -301,6 +302,65 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(len(chunks), 1)
         self.assertEqual(chunks[0].boundary_fragment_ids, ["p1-p2"])
         self.assertIn("protected_page_boundary:p1-p2", chunks[0].warnings)
+
+    def test_table_reconstruction_report_builds_cell_contexts(self) -> None:
+        table_caption = BlockIR("p1-b0000", 1, "caption", "Table 1: Results", (40, 80, 520, 100), 0)
+        table = BlockIR(
+            "p1-b0001",
+            1,
+            "table",
+            "Model Acc p\nBERT 91.2% p<0.05*",
+            (40, 110, 520, 180),
+            1,
+            meta={
+                "table": {
+                    "rows": [["Model", "Acc", "p"], ["BERT", "91.2%", "p<0.05*"]],
+                    "row_count": 2,
+                    "column_count": 3,
+                    "header": ["Model", "Acc", "p"],
+                    "numeric_tokens": ["91.2%", "0.05"],
+                    "confidence": "medium",
+                }
+            },
+        )
+        table_footnote = BlockIR("p1-b0002", 1, "footnote", "1 * p<0.05.", (40, 190, 520, 210), 2)
+        blocks = [table_caption, table, table_footnote]
+        assign_block_parents(blocks)
+        doc_ir = DocumentIR(
+            doc_id="table-reconstruction",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text="table sample",
+                    blocks=blocks,
+                )
+            ],
+        )
+        structure_qa = build_structure_qa(doc_ir)
+
+        report = build_table_reconstruction_report(doc_ir, structure_qa)
+
+        self.assertEqual(report["schema_version"], "table-reconstruction-v1")
+        self.assertEqual(report["summary"]["table_count"], 1)
+        self.assertEqual(report["summary"]["reconstructable_table_count"], 1)
+        self.assertEqual(report["summary"]["cell_count"], 6)
+        self.assertEqual(report["summary"]["numeric_cell_count"], 2)
+        self.assertEqual(report["summary"]["unit_token_count"], 1)
+        self.assertEqual(report["summary"]["significance_token_count"], 2)
+        self.assertEqual(report["summary"]["caption_linked_table_count"], 1)
+        self.assertEqual(report["summary"]["footnote_linked_table_count"], 1)
+        self.assertEqual(report["summary"]["table_reconstruction_ready_rate"], 1.0)
+        table_report = report["tables"][0]
+        self.assertEqual(table_report["caption_blocks"][0]["block_id"], "p1-b0000")
+        self.assertEqual(table_report["footnote_blocks"][0]["block_id"], "p1-b0002")
+        acc_cell = next(cell for cell in table_report["cells"] if cell["row_index"] == 1 and cell["column_index"] == 1)
+        self.assertEqual(acc_cell["column_header"], "Acc")
+        self.assertEqual(acc_cell["row_header"], "BERT")
+        self.assertIn("91.2%", acc_cell["locked_tokens"])
+        self.assertIn("%", acc_cell["locked_tokens"])
 
     def test_structure_qa_reports_page_boundary_fragments(self) -> None:
         doc_ir = DocumentIR(
@@ -609,6 +669,22 @@ class StructureIRTests(unittest.TestCase):
                     "active_split_reduction_rate_vs_baseline": 0.5,
                 },
             },
+            table_reconstruction={
+                "schema_version": "table-reconstruction-v1",
+                "summary": {
+                    "table_count": 2,
+                    "reconstructable_table_count": 1,
+                    "low_confidence_table_count": 1,
+                    "cell_count": 8,
+                    "numeric_cell_count": 3,
+                    "numeric_token_count": 4,
+                    "unit_token_count": 1,
+                    "significance_token_count": 2,
+                    "caption_linked_table_count": 1,
+                    "footnote_linked_table_count": 1,
+                    "table_reconstruction_ready_rate": 0.5,
+                },
+            },
             pipeline_variant="structure",
         )
         self.assertEqual(metrics["schema_version"], "experiment-metrics-v1")
@@ -621,7 +697,14 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["protected_boundary_count"], 1)
         self.assertEqual(metrics["quality"]["baseline_split_boundary_count"], 2)
         self.assertEqual(metrics["quality"]["active_split_reduction_vs_baseline"], 1)
+        self.assertEqual(metrics["quality"]["reconstructable_table_count"], 1)
+        self.assertEqual(metrics["quality"]["table_cell_count"], 8)
+        self.assertEqual(metrics["quality"]["table_significance_token_count"], 2)
         self.assertEqual(metrics["rates"]["table_shape_error_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["table_reconstruction_ready_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["table_numeric_cell_rate"], 0.375)
+        self.assertEqual(metrics["rates"]["table_caption_link_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["table_footnote_binding_rate"], 0.5)
         self.assertEqual(metrics["rates"]["split_boundary_rate"], 0.5)
         self.assertEqual(metrics["rates"]["protected_boundary_rate"], 0.5)
         self.assertEqual(metrics["rates"]["active_split_reduction_rate_vs_baseline"], 0.5)
@@ -969,6 +1052,7 @@ class StructureIRTests(unittest.TestCase):
             ir_path = work_dir / "output" / "document_ir.json"
             manifest_path = work_dir / "output" / "structure_chunks_manifest.json"
             qa_path = work_dir / "output" / "structure_qa.json"
+            table_reconstruction_path = work_dir / "output" / "table_reconstruction.json"
             chunk_boundary_qa_path = work_dir / "output" / "chunk_boundary_qa.json"
             chunk_strategy_comparison_path = work_dir / "output" / "chunk_strategy_comparison.json"
             vision_path = work_dir / "output" / "vision_route.json"
@@ -981,6 +1065,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(ir_path.is_file())
             self.assertTrue(manifest_path.is_file())
             self.assertTrue(qa_path.is_file())
+            self.assertTrue(table_reconstruction_path.is_file())
             self.assertTrue(chunk_boundary_qa_path.is_file())
             self.assertTrue(chunk_strategy_comparison_path.is_file())
             self.assertTrue(vision_path.is_file())
@@ -993,6 +1078,7 @@ class StructureIRTests(unittest.TestCase):
             ir = json.loads(ir_path.read_text(encoding="utf-8"))
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             qa = json.loads(qa_path.read_text(encoding="utf-8"))
+            table_reconstruction = json.loads(table_reconstruction_path.read_text(encoding="utf-8"))
             chunk_boundary_qa = json.loads(chunk_boundary_qa_path.read_text(encoding="utf-8"))
             chunk_strategy_comparison = json.loads(chunk_strategy_comparison_path.read_text(encoding="utf-8"))
             vision = json.loads(vision_path.read_text(encoding="utf-8"))
@@ -1025,6 +1111,9 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("entities", qa)
             self.assertGreaterEqual(qa["summary"]["entity_candidate_count"], 1)
             self.assertGreaterEqual(qa["summary"]["table_count"], 1)
+            self.assertEqual(table_reconstruction["schema_version"], "table-reconstruction-v1")
+            self.assertGreaterEqual(table_reconstruction["summary"]["table_count"], 1)
+            self.assertIn("table_reconstruction_ready_rate", table_reconstruction["summary"])
             self.assertEqual(chunk_boundary_qa["schema_version"], "chunk-boundary-qa-v1")
             self.assertEqual(chunk_boundary_qa["pipeline_variant"], "structure")
             self.assertIn("split_boundary_count", chunk_boundary_qa["summary"])
@@ -1042,6 +1131,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(metrics["schema_version"], "experiment-metrics-v1")
             self.assertEqual(metrics["pipeline_variant"], "structure")
             self.assertEqual(metrics["quality"]["table_count"], qa["summary"]["table_count"])
+            self.assertIn("reconstructable_table_count", metrics["quality"])
+            self.assertIn("table_reconstruction_ready_rate", metrics["rates"])
             self.assertEqual(
                 metrics["breakdowns"]["vision_action_counts"],
                 vision["summary"]["action_counts"],
@@ -1049,6 +1140,10 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("entity_missing_rate", metrics["rates"])
             self.assertIn("split_boundary_rate", metrics["rates"])
             self.assertEqual(metrics["evidence_files"]["chunk_boundary_qa"], "output/chunk_boundary_qa.json")
+            self.assertEqual(
+                metrics["evidence_files"]["table_reconstruction"],
+                "output/table_reconstruction.json",
+            )
             self.assertEqual(
                 metrics["evidence_files"]["chunk_strategy_comparison"],
                 "output/chunk_strategy_comparison.json",
@@ -1075,6 +1170,7 @@ class StructureIRTests(unittest.TestCase):
                 "document_ir.json",
                 "structure_chunks_manifest.json",
                 "structure_qa.json",
+                "table_reconstruction.json",
                 "chunk_boundary_qa.json",
                 "chunk_strategy_comparison.json",
                 "vision_route.json",
@@ -1093,12 +1189,14 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/bilingual.html", rels)
             self.assertIn("output/qa_report.md", rels)
             self.assertIn("output/document_ir.json", rels)
+            self.assertIn("output/table_reconstruction.json", rels)
             self.assertIn("output/chunk_boundary_qa.json", rels)
             self.assertIn("output/chunk_strategy_comparison.json", rels)
             self.assertIn("output/experiment_metrics.json", rels)
             self.assertEqual(map_bundle_arcname("output/bilingual.html"), "译文/双语对照.html")
             self.assertEqual(map_bundle_arcname("output/repair_plan.md"), "质量/局部修复计划.md")
             self.assertEqual(map_bundle_arcname("output/structure_qa.json"), "质量/结构QA.json")
+            self.assertEqual(map_bundle_arcname("output/table_reconstruction.json"), "质量/表格重建证据.json")
             self.assertEqual(map_bundle_arcname("output/chunk_boundary_qa.json"), "质量/分段边界QA.json")
             self.assertEqual(map_bundle_arcname("output/chunk_strategy_comparison.json"), "质量/分段策略对比.json")
             self.assertEqual(map_bundle_arcname("output/experiment_metrics.json"), "质量/实验指标.json")

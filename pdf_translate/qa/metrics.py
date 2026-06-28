@@ -8,6 +8,7 @@ SCHEMA_VERSION = "experiment-metrics-v1"
 
 DEFAULT_EVIDENCE_FILES = {
     "structure_qa": "output/structure_qa.json",
+    "table_reconstruction": "output/table_reconstruction.json",
     "vision_route": "output/vision_route.json",
     "chunk_boundary_qa": "output/chunk_boundary_qa.json",
     "chunk_strategy_comparison": "output/chunk_strategy_comparison.json",
@@ -71,10 +72,12 @@ def build_experiment_metrics(
     pipeline_variant: str | None = None,
     chunk_boundary_qa: dict[str, Any] | None = None,
     chunk_strategy_comparison: dict[str, Any] | None = None,
+    table_reconstruction: dict[str, Any] | None = None,
     evidence_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Aggregate pipeline QA artifacts into a patent-facing experiment summary."""
     structure_summary = _summary(structure_qa)
+    table_reconstruction_summary = _summary(table_reconstruction)
     vision_summary = _summary(vision_route)
     chunk_boundary_summary = _summary(chunk_boundary_qa)
     chunk_strategy_summary = _summary(chunk_strategy_comparison)
@@ -92,7 +95,21 @@ def build_experiment_metrics(
     repair_scope_counts = _counter_dict(repair_summary.get("scope_counts"))
 
     page_count = _as_int(structure_summary.get("page_count")) or _as_int(vision_summary.get("page_count"))
-    table_count = _as_int(structure_summary.get("table_count"))
+    table_count = _as_int(structure_summary.get("table_count")) or _as_int(
+        table_reconstruction_summary.get("table_count")
+    )
+    reconstructable_table_count = _as_int(table_reconstruction_summary.get("reconstructable_table_count"))
+    low_confidence_table_count = _as_int(table_reconstruction_summary.get("low_confidence_table_count"))
+    table_cell_count = _as_int(table_reconstruction_summary.get("cell_count"))
+    table_numeric_cell_count = _as_int(table_reconstruction_summary.get("numeric_cell_count"))
+    table_numeric_token_count = _as_int(table_reconstruction_summary.get("numeric_token_count"))
+    table_unit_token_count = _as_int(table_reconstruction_summary.get("unit_token_count"))
+    table_significance_token_count = _as_int(table_reconstruction_summary.get("significance_token_count"))
+    table_caption_linked_count = _as_int(table_reconstruction_summary.get("caption_linked_table_count"))
+    table_footnote_linked_count = _as_int(table_reconstruction_summary.get("footnote_linked_table_count"))
+    table_reconstruction_ready_rate = _as_float(
+        table_reconstruction_summary.get("table_reconstruction_ready_rate")
+    )
     table_continuation_count = _as_int(structure_summary.get("table_continuation_count"))
     table_footnote_count = _as_int(structure_summary.get("table_footnote_count"))
     caption_count = _as_int(structure_summary.get("caption_count"))
@@ -144,6 +161,15 @@ def build_experiment_metrics(
             "page_count": page_count,
             "chunk_count": chunk_count,
             "table_count": table_count,
+            "reconstructable_table_count": reconstructable_table_count,
+            "low_confidence_table_count": low_confidence_table_count,
+            "table_cell_count": table_cell_count,
+            "table_numeric_cell_count": table_numeric_cell_count,
+            "table_numeric_token_count": table_numeric_token_count,
+            "table_unit_token_count": table_unit_token_count,
+            "table_significance_token_count": table_significance_token_count,
+            "table_caption_linked_count": table_caption_linked_count,
+            "table_footnote_linked_count": table_footnote_linked_count,
             "table_continuation_count": table_continuation_count,
             "table_footnote_count": table_footnote_count,
             "caption_orphan_count": caption_orphan_count,
@@ -174,6 +200,10 @@ def build_experiment_metrics(
             "relationship_warning_rate": _rate(relationship_warning_count, relationship_total),
             "caption_orphan_rate": _rate(caption_orphan_count, caption_count),
             "footnote_orphan_rate": _rate(footnote_orphan_count, footnote_count),
+            "table_reconstruction_ready_rate": table_reconstruction_ready_rate,
+            "table_numeric_cell_rate": _rate(table_numeric_cell_count, table_cell_count),
+            "table_caption_link_rate": _rate(table_caption_linked_count, table_count),
+            "table_footnote_binding_rate": _rate(table_footnote_linked_count, table_count),
             "table_continuation_rate": _rate(table_continuation_count, table_count),
             "table_shape_error_rate": _rate(table_shape_error_count, source_table_count),
             "split_boundary_rate": _rate(split_boundary_count, page_boundary_fragment_count),
@@ -212,6 +242,7 @@ def write_experiment_metrics(
     pipeline_variant: str | None = None,
     chunk_boundary_qa: dict[str, Any] | None = None,
     chunk_strategy_comparison: dict[str, Any] | None = None,
+    table_reconstruction: dict[str, Any] | None = None,
     evidence_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     metrics = build_experiment_metrics(
@@ -223,6 +254,7 @@ def write_experiment_metrics(
         pipeline_variant=pipeline_variant,
         chunk_boundary_qa=chunk_boundary_qa,
         chunk_strategy_comparison=chunk_strategy_comparison,
+        table_reconstruction=table_reconstruction,
         evidence_files=evidence_files,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
