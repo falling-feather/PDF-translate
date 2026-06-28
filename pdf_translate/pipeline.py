@@ -17,6 +17,7 @@ from pdf_translate.memory_store import MemoryStore
 from pdf_translate.pdf_structure import SplitManifest, split_main_and_references
 from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
 from pdf_translate.pipeline_merge import merge_chunks_markdown
+from pdf_translate.qa.repair import write_repair_plan
 from pdf_translate.qa.structure import write_structure_qa
 from pdf_translate.qa.translation import write_translation_qa
 from pdf_translate.rich_content import extract_page_rich_meta
@@ -264,11 +265,16 @@ def run_translate(
             mem.save_deferred_carry("")
 
     def _write_translation_qa_report() -> None:
-        write_translation_qa(
+        qa_report = write_translation_qa(
             chunks,
             chunk_dir,
             out_dir / "qa_report.json",
             out_dir / "qa_report.md",
+        )
+        write_repair_plan(
+            qa_report,
+            out_dir / "repair_plan.json",
+            out_dir / "repair_plan.md",
         )
 
     if translate_mode == "parallel":

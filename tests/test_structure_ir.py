@@ -17,10 +17,12 @@ from pdf_translate.extractors.document_ir import (
     classify_text_block,
     extract_table_structure,
 )
+from pdf_translate.qa.repair import build_repair_plan
 from pdf_translate.qa.structure import build_structure_qa
 from pdf_translate.qa.translation import build_translation_qa
 from pdf_translate.pipeline import init_workdir, run_split, run_translate
 from pdf_translate.vision.routing import build_vision_route
+from pdf_translate.zip_bundle import iter_bundle_files, map_bundle_arcname
 
 
 class StructureIRTests(unittest.TestCase):
@@ -189,6 +191,14 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("missing_references", issue_types)
             self.assertIn("table_shape_mismatch", issue_types)
             self.assertEqual(report["summary"]["issue_count"], 3)
+
+            plan = build_repair_plan(report)
+            self.assertEqual(plan["schema_version"], "repair-plan-v1")
+            self.assertEqual(plan["summary"]["repair_item_count"], 3)
+            actions = {item["action"] for item in plan["items"]}
+            self.assertIn("rewrite_with_locked_tokens", actions)
+            self.assertIn("repair_table_shape", actions)
+            self.assertEqual(plan["summary"]["priority_counts"]["P0"], 3)
         finally:
             if root.exists():
                 shutil.rmtree(root)
@@ -232,17 +242,22 @@ class StructureIRTests(unittest.TestCase):
             vision_path = work_dir / "output" / "vision_route.json"
             translation_qa_path = work_dir / "output" / "qa_report.json"
             translation_qa_md_path = work_dir / "output" / "qa_report.md"
+            repair_plan_path = work_dir / "output" / "repair_plan.json"
+            repair_plan_md_path = work_dir / "output" / "repair_plan.md"
             self.assertTrue(ir_path.is_file())
             self.assertTrue(manifest_path.is_file())
             self.assertTrue(qa_path.is_file())
             self.assertTrue(vision_path.is_file())
             self.assertTrue(translation_qa_path.is_file())
             self.assertTrue(translation_qa_md_path.is_file())
+            self.assertTrue(repair_plan_path.is_file())
+            self.assertTrue(repair_plan_md_path.is_file())
             ir = json.loads(ir_path.read_text(encoding="utf-8"))
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             qa = json.loads(qa_path.read_text(encoding="utf-8"))
             vision = json.loads(vision_path.read_text(encoding="utf-8"))
             translation_qa = json.loads(translation_qa_path.read_text(encoding="utf-8"))
+            repair_plan = json.loads(repair_plan_path.read_text(encoding="utf-8"))
             self.assertEqual(ir["schema_version"], "document-ir-v1")
             self.assertGreaterEqual(len(ir["pages"]), 1)
             self.assertIn("meta", ir["pages"][0])
@@ -255,6 +270,43 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("action_counts", vision["summary"])
             self.assertEqual(translation_qa["schema_version"], "translation-qa-v1")
             self.assertIn("issue_counts", translation_qa["summary"])
+            self.assertEqual(repair_plan["schema_version"], "repair-plan-v1")
+            self.assertIn("repair_item_count", repair_plan["summary"])
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
+    def test_bundle_includes_structure_qa_and_repair_artifacts(self) -> None:
+        root = Path.cwd() / "test-output" / "bundle"
+        if root.exists():
+            shutil.rmtree(root)
+        output = root / "output"
+        output.mkdir(parents=True)
+        try:
+            for name in [
+                "translated_full.md",
+                "document_ir.json",
+                "structure_chunks_manifest.json",
+                "structure_qa.json",
+                "vision_route.json",
+                "qa_report.json",
+                "qa_report.md",
+                "repair_plan.json",
+                "repair_plan.md",
+            ]:
+                (output / name).write_text("{}", encoding="utf-8")
+            rels = {
+                path.relative_to(root).as_posix()
+                for path in iter_bundle_files(root)
+            }
+            self.assertIn("output/repair_plan.json", rels)
+            self.assertIn("output/qa_report.md", rels)
+            self.assertIn("output/document_ir.json", rels)
+            self.assertEqual(map_bundle_arcname("output/repair_plan.md"), "质量/局部修复计划.md")
+            self.assertEqual(map_bundle_arcname("output/structure_qa.json"), "质量/结构QA.json")
         finally:
             if root.exists():
                 shutil.rmtree(root)
