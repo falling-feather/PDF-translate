@@ -485,6 +485,8 @@ class StructureIRTests(unittest.TestCase):
                     "chunk_count": 2,
                     "entity_candidate_count": 4,
                     "missing_entity_token_count": 1,
+                    "source_table_count": 2,
+                    "table_shape_error_count": 1,
                     "issue_count": 3,
                     "issue_counts": {"missing_numbers": 1, "missing_entity_tokens": 2},
                     "severity_counts": {"high": 1, "medium": 2},
@@ -508,6 +510,8 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["pipeline_variant"], "structure")
         self.assertEqual(metrics["quality"]["ocr_candidate_page_count"], 2)
         self.assertEqual(metrics["quality"]["repair_item_count"], 3)
+        self.assertEqual(metrics["quality"]["table_shape_error_count"], 1)
+        self.assertEqual(metrics["rates"]["table_shape_error_rate"], 0.5)
         self.assertEqual(metrics["rates"]["entity_missing_rate"], 0.25)
         self.assertEqual(metrics["rates"]["repair_item_per_chunk"], 1.5)
         self.assertEqual(metrics["rates"]["relationship_warning_rate"], 0.3333)
@@ -667,6 +671,80 @@ class StructureIRTests(unittest.TestCase):
             html = html_path.read_text(encoding="utf-8")
             self.assertIn("missing_entity_tokens", html)
             self.assertIn("rewrite_with_entity_tokens", html)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
+    def test_translation_qa_uses_document_ir_table_invariants_for_plain_text_source(self) -> None:
+        root = Path.cwd() / "test-output" / "translation-qa-document-table"
+        if root.exists():
+            shutil.rmtree(root)
+        chunk_dir = root / "chunks"
+        chunk_dir.mkdir(parents=True)
+        try:
+            chunks = [
+                TextChunk(
+                    chunk_id="c0000",
+                    pages_0based=[0],
+                    text="Model Acc\nA 91.2\nB 92.4",
+                    link_count=0,
+                    image_count=0,
+                )
+            ]
+            doc_ir = DocumentIR(
+                doc_id="table-invariant",
+                source_pdf="sample.pdf",
+                pages=[
+                    PageIR(
+                        page_no=1,
+                        width=600,
+                        height=800,
+                        text="Model Acc\nA 91.2\nB 92.4",
+                        blocks=[
+                            BlockIR(
+                                "p1-b0000",
+                                1,
+                                "table",
+                                "Model Acc\nA 91.2\nB 92.4",
+                                (40, 100, 520, 170),
+                                0,
+                                meta={
+                                    "table": {
+                                        "row_count": 3,
+                                        "column_count": 2,
+                                        "header": ["Model", "Acc"],
+                                        "numeric_tokens": ["91.2", "92.4"],
+                                        "confidence": "medium",
+                                    }
+                                },
+                            )
+                        ],
+                    )
+                ],
+            )
+            (chunk_dir / "c0000.md").write_text(
+                "---\n{}\n---\n\n模型 A 和 B 的准确率分别为 91.2 和 92.4。\n",
+                encoding="utf-8",
+            )
+            report = build_translation_qa(chunks, chunk_dir, document_ir=doc_ir)
+            issue = next(
+                issue for issue in report["chunks"][0]["issues"] if issue["type"] == "table_shape_mismatch"
+            )
+            self.assertEqual(report["summary"]["source_table_count"], 1)
+            self.assertEqual(report["summary"]["table_shape_error_count"], 1)
+            self.assertEqual(issue["severity"], "high")
+            self.assertEqual(issue["tables"][0]["block_id"], "p1-b0000")
+            self.assertEqual(issue["tables"][0]["reason"], "missing_markdown_table")
+            self.assertEqual(issue["tables"][0]["source"], {"row_count": 3, "column_count": 2})
+            self.assertIsNone(issue["tables"][0]["target"])
+
+            plan = build_repair_plan(report)
+            table_item = next(item for item in plan["items"] if item["issue_type"] == "table_shape_mismatch")
+            self.assertEqual(table_item["action"], "repair_table_shape")
+            self.assertEqual(table_item["scope"], "table")
         finally:
             if root.exists():
                 shutil.rmtree(root)

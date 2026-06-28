@@ -98,6 +98,8 @@ def build_experiment_metrics(
     entity_unique_count = _as_int(structure_summary.get("entity_unique_count"))
     translation_entity_candidate_count = _as_int(translation_summary.get("entity_candidate_count"))
     missing_entity_token_count = _as_int(translation_summary.get("missing_entity_token_count"))
+    source_table_count = _as_int(translation_summary.get("source_table_count")) or table_count
+    table_shape_error_count = _as_int(translation_summary.get("table_shape_error_count"))
     page_boundary_fragment_count = _as_int(structure_summary.get("page_boundary_fragment_count"))
     page_boundary_fragment_rate = _as_float(structure_summary.get("page_boundary_fragment_rate"))
     routed_page_count = _as_int(vision_summary.get("routed_page_count"))
@@ -135,6 +137,8 @@ def build_experiment_metrics(
             "entity_unique_count": entity_unique_count,
             "translation_entity_candidate_count": translation_entity_candidate_count,
             "missing_entity_token_count": missing_entity_token_count,
+            "source_table_count": source_table_count,
+            "table_shape_error_count": table_shape_error_count,
             "page_boundary_fragment_count": page_boundary_fragment_count,
             "page_boundary_fragment_rate": page_boundary_fragment_rate,
             "routed_page_count": routed_page_count,
@@ -148,6 +152,7 @@ def build_experiment_metrics(
             "caption_orphan_rate": _rate(caption_orphan_count, caption_count),
             "footnote_orphan_rate": _rate(footnote_orphan_count, footnote_count),
             "table_continuation_rate": _rate(table_continuation_count, table_count),
+            "table_shape_error_rate": _rate(table_shape_error_count, source_table_count),
             "entity_missing_rate": _rate(missing_entity_token_count, effective_entity_candidate_count),
             "repair_item_per_chunk": _rate(repair_item_count, chunk_count),
             "ocr_candidate_page_rate": _rate(ocr_candidate_page_count, page_count),

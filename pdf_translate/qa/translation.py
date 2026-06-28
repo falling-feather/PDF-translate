@@ -8,7 +8,7 @@ from typing import Any
 
 from pdf_translate.chunking import TextChunk
 from pdf_translate.deferral_markers import strip_yaml_front_matter
-from pdf_translate.extractors.document_ir import extract_entity_candidates
+from pdf_translate.extractors.document_ir import DocumentIR, extract_entity_candidates
 
 SCHEMA_VERSION = "translation-qa-v1"
 
@@ -107,6 +107,72 @@ def _markdown_table_shapes(text: str) -> list[dict[str, int]]:
         flush()
     flush()
     return shapes
+
+
+def _document_table_invariants(doc_ir: DocumentIR | None, chunk: TextChunk) -> list[dict[str, Any]]:
+    if doc_ir is None:
+        return []
+    block_ids = set(str(block_id) for block_id in getattr(chunk, "block_ids", []) if str(block_id))
+    pages = {page + 1 for page in chunk.pages_0based}
+    out: list[dict[str, Any]] = []
+    for page in doc_ir.pages:
+        if not block_ids and page.page_no not in pages:
+            continue
+        for block in page.blocks:
+            if block.type != "table":
+                continue
+            if block_ids and block.block_id not in block_ids:
+                continue
+            table = block.meta.get("table") if isinstance(block.meta, dict) else None
+            table = table if isinstance(table, dict) else {}
+            row_count = int(table.get("row_count") or 0)
+            column_count = int(table.get("column_count") or 0)
+            if row_count < 2 or column_count < 2:
+                continue
+            out.append(
+                {
+                    "block_id": block.block_id,
+                    "page_no": block.page_no,
+                    "row_count": row_count,
+                    "column_count": column_count,
+                    "header": table.get("header") or [],
+                    "numeric_tokens": table.get("numeric_tokens") or [],
+                    "warnings": table.get("warnings") or [],
+                    "confidence": table.get("confidence") or "low",
+                }
+            )
+    return out
+
+
+def _document_table_shape_errors(
+    table_invariants: list[dict[str, Any]],
+    target_tables: list[dict[str, int]],
+) -> list[dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    if not table_invariants:
+        return errors
+    for idx, table in enumerate(table_invariants):
+        expected = {
+            "row_count": int(table.get("row_count") or 0),
+            "column_count": int(table.get("column_count") or 0),
+        }
+        target = target_tables[idx] if idx < len(target_tables) else None
+        if target == expected:
+            continue
+        errors.append(
+            {
+                "table_index": idx,
+                "block_id": table.get("block_id"),
+                "page_no": table.get("page_no"),
+                "source": expected,
+                "target": target,
+                "reason": "missing_markdown_table" if target is None else "document_ir_table_shape_mismatch",
+                "header": table.get("header") or [],
+                "numeric_tokens": table.get("numeric_tokens") or [],
+                "confidence": table.get("confidence") or "low",
+            }
+        )
+    return errors
 
 
 def _english_residual_ratio(text: str) -> float:
@@ -285,6 +351,7 @@ def _chunk_report(
     target_text: str | None,
     glossary_terms: list[dict[str, Any]],
     glossary_conflicts: list[dict[str, Any]],
+    table_invariants: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     source = _source_text_for_qa(chunk.text)
     pages_1based = [p + 1 for p in chunk.pages_0based]
@@ -326,6 +393,8 @@ def _chunk_report(
                     "target": target_shape,
                 }
             )
+    if not source_tables:
+        table_shape_errors.extend(_document_table_shape_errors(table_invariants or [], target_tables))
 
     duplicates = _duplicate_paragraphs(target_text)
     english_ratio = _english_residual_ratio(target_text)
@@ -399,6 +468,12 @@ def _chunk_report(
             "missing_number_count": len(missing_numbers),
             "source_reference_count": len(source_refs),
             "missing_reference_count": len(missing_refs),
+            "source_table_count": len(source_tables) or len(table_invariants or []),
+            "source_table_ids": [
+                str(table.get("block_id"))
+                for table in (table_invariants or [])
+                if str(table.get("block_id") or "")
+            ],
             "table_shape_error_count": len(table_shape_errors),
             "english_residual_ratio": english_ratio,
             "duplicate_paragraph_count": len(duplicates),
@@ -416,11 +491,18 @@ def build_translation_qa(
     *,
     glossary: dict[str, Any] | None = None,
     pending_review: dict[str, Any] | None = None,
+    document_ir: DocumentIR | None = None,
 ) -> dict[str, Any]:
     terms = _glossary_terms(glossary)
     conflicts = _glossary_conflicts(glossary, pending_review)
     reports = [
-        _chunk_report(chunk, _chunk_translation_text(chunk_dir, chunk.chunk_id), terms, conflicts)
+        _chunk_report(
+            chunk,
+            _chunk_translation_text(chunk_dir, chunk.chunk_id),
+            terms,
+            conflicts,
+            table_invariants=_document_table_invariants(document_ir, chunk),
+        )
         for chunk in chunks
     ]
     issue_counts: Counter[str] = Counter()
@@ -428,12 +510,21 @@ def build_translation_qa(
     translated_count = 0
     entity_candidate_count = 0
     missing_entity_count = 0
+    source_table_count_without_ids = 0
+    source_table_ids: set[str] = set()
+    table_shape_error_count = 0
     for report in reports:
         if report["status"] != "missing_translation":
             translated_count += 1
         metrics = report.get("metrics") or {}
         entity_candidate_count += int(metrics.get("source_entity_candidate_count") or 0)
         missing_entity_count += int(metrics.get("missing_entity_token_count") or 0)
+        table_ids = [str(item) for item in metrics.get("source_table_ids") or [] if str(item)]
+        if table_ids:
+            source_table_ids.update(table_ids)
+        else:
+            source_table_count_without_ids += int(metrics.get("source_table_count") or 0)
+        table_shape_error_count += int(metrics.get("table_shape_error_count") or 0)
         for issue in report["issues"]:
             issue_counts[issue["type"]] += 1
             severity_counts[issue["severity"]] += 1
@@ -451,6 +542,8 @@ def build_translation_qa(
             "glossary_conflict_count": len(conflicts),
             "entity_candidate_count": entity_candidate_count,
             "missing_entity_token_count": missing_entity_count,
+            "source_table_count": len(source_table_ids) + source_table_count_without_ids,
+            "table_shape_error_count": table_shape_error_count,
             "issue_count": sum(issue_counts.values()),
             "issue_counts": dict(issue_counts),
             "severity_counts": dict(severity_counts),
@@ -474,6 +567,8 @@ def translation_qa_to_markdown(report: dict[str, Any]) -> str:
         f"| 术语冲突 | {summary.get('glossary_conflict_count', 0)} |",
         f"| 实体候选 | {summary.get('entity_candidate_count', 0)} |",
         f"| 缺失实体 | {summary.get('missing_entity_token_count', 0)} |",
+        f"| 源表格 | {summary.get('source_table_count', 0)} |",
+        f"| 表格形状异常 | {summary.get('table_shape_error_count', 0)} |",
         f"| 问题总数 | {summary.get('issue_count', 0)} |",
         f"| 最高英文残留比例 | {summary.get('max_english_residual_ratio', 0)} |",
         "",
@@ -546,12 +641,14 @@ def write_translation_qa(
     *,
     glossary: dict[str, Any] | None = None,
     pending_review: dict[str, Any] | None = None,
+    document_ir: DocumentIR | None = None,
 ) -> dict[str, Any]:
     report = build_translation_qa(
         chunks,
         chunk_dir,
         glossary=glossary,
         pending_review=pending_review,
+        document_ir=document_ir,
     )
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
