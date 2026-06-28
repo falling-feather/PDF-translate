@@ -21,7 +21,7 @@ from pdf_translate.extractors.document_ir import (
     extract_table_structure,
 )
 from pdf_translate.memory_store import MemoryStore
-from pdf_translate.qa.chunk_boundary import build_chunk_boundary_qa
+from pdf_translate.qa.chunk_boundary import build_chunk_boundary_qa, build_chunk_strategy_comparison
 from pdf_translate.qa.metrics import build_experiment_metrics
 from pdf_translate.qa.repair import build_repair_plan
 from pdf_translate.qa.structure import build_structure_qa
@@ -475,6 +475,24 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(structure_report["boundaries"][0]["status"], "protected")
         self.assertEqual(structure_report["boundaries"][0]["protected_by_chunk_ids"], ["c0000"])
 
+        comparison = build_chunk_strategy_comparison(
+            {
+                "page": page_chunks,
+                "structure": structure_chunks,
+            },
+            structure_qa,
+            active_strategy="structure",
+        )
+        self.assertEqual(comparison["schema_version"], "chunk-strategy-comparison-v1")
+        self.assertEqual(comparison["summary"]["baseline_split_boundary_count"], 1)
+        self.assertEqual(comparison["summary"]["active_split_boundary_count"], 0)
+        self.assertEqual(comparison["summary"]["active_split_reduction_vs_baseline"], 1)
+        self.assertEqual(comparison["summary"]["active_split_reduction_rate_vs_baseline"], 1.0)
+        self.assertEqual(comparison["summary"]["best_strategy_by_split_rate"], "structure")
+        boundary = comparison["boundaries"][0]
+        self.assertEqual(boundary["status_by_strategy"]["page"], "split")
+        self.assertEqual(boundary["status_by_strategy"]["structure"], "protected")
+
     def test_extract_table_structure_returns_dimensions_and_invariants(self) -> None:
         lines = [
             {"spans": [{"text": "Metric", "bbox": [40, 10, 90, 20]}, {"text": "Acc", "bbox": [140, 10, 170, 20]}]},
@@ -582,6 +600,15 @@ class StructureIRTests(unittest.TestCase):
                     "high_risk_split_count": 1,
                 },
             },
+            chunk_strategy_comparison={
+                "schema_version": "chunk-strategy-comparison-v1",
+                "summary": {
+                    "baseline_split_boundary_count": 2,
+                    "active_split_boundary_count": 1,
+                    "active_split_reduction_vs_baseline": 1,
+                    "active_split_reduction_rate_vs_baseline": 0.5,
+                },
+            },
             pipeline_variant="structure",
         )
         self.assertEqual(metrics["schema_version"], "experiment-metrics-v1")
@@ -592,9 +619,12 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["table_shape_error_count"], 1)
         self.assertEqual(metrics["quality"]["split_boundary_count"], 1)
         self.assertEqual(metrics["quality"]["protected_boundary_count"], 1)
+        self.assertEqual(metrics["quality"]["baseline_split_boundary_count"], 2)
+        self.assertEqual(metrics["quality"]["active_split_reduction_vs_baseline"], 1)
         self.assertEqual(metrics["rates"]["table_shape_error_rate"], 0.5)
         self.assertEqual(metrics["rates"]["split_boundary_rate"], 0.5)
         self.assertEqual(metrics["rates"]["protected_boundary_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["active_split_reduction_rate_vs_baseline"], 0.5)
         self.assertEqual(metrics["rates"]["entity_missing_rate"], 0.25)
         self.assertEqual(metrics["rates"]["repair_item_per_chunk"], 1.5)
         self.assertEqual(metrics["rates"]["relationship_warning_rate"], 0.3333)
@@ -940,6 +970,7 @@ class StructureIRTests(unittest.TestCase):
             manifest_path = work_dir / "output" / "structure_chunks_manifest.json"
             qa_path = work_dir / "output" / "structure_qa.json"
             chunk_boundary_qa_path = work_dir / "output" / "chunk_boundary_qa.json"
+            chunk_strategy_comparison_path = work_dir / "output" / "chunk_strategy_comparison.json"
             vision_path = work_dir / "output" / "vision_route.json"
             translation_qa_path = work_dir / "output" / "qa_report.json"
             translation_qa_md_path = work_dir / "output" / "qa_report.md"
@@ -951,6 +982,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(manifest_path.is_file())
             self.assertTrue(qa_path.is_file())
             self.assertTrue(chunk_boundary_qa_path.is_file())
+            self.assertTrue(chunk_strategy_comparison_path.is_file())
             self.assertTrue(vision_path.is_file())
             self.assertTrue(translation_qa_path.is_file())
             self.assertTrue(translation_qa_md_path.is_file())
@@ -962,6 +994,7 @@ class StructureIRTests(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             qa = json.loads(qa_path.read_text(encoding="utf-8"))
             chunk_boundary_qa = json.loads(chunk_boundary_qa_path.read_text(encoding="utf-8"))
+            chunk_strategy_comparison = json.loads(chunk_strategy_comparison_path.read_text(encoding="utf-8"))
             vision = json.loads(vision_path.read_text(encoding="utf-8"))
             translation_qa = json.loads(translation_qa_path.read_text(encoding="utf-8"))
             repair_plan = json.loads(repair_plan_path.read_text(encoding="utf-8"))
@@ -995,6 +1028,9 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(chunk_boundary_qa["schema_version"], "chunk-boundary-qa-v1")
             self.assertEqual(chunk_boundary_qa["pipeline_variant"], "structure")
             self.assertIn("split_boundary_count", chunk_boundary_qa["summary"])
+            self.assertEqual(chunk_strategy_comparison["schema_version"], "chunk-strategy-comparison-v1")
+            self.assertEqual(chunk_strategy_comparison["active_strategy"], "structure")
+            self.assertIn("active_split_reduction_vs_baseline", chunk_strategy_comparison["summary"])
             self.assertEqual(vision["schema_version"], "vision-route-v1")
             self.assertIn("action_counts", vision["summary"])
             self.assertEqual(translation_qa["schema_version"], "translation-qa-v1")
@@ -1013,6 +1049,10 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("entity_missing_rate", metrics["rates"])
             self.assertIn("split_boundary_rate", metrics["rates"])
             self.assertEqual(metrics["evidence_files"]["chunk_boundary_qa"], "output/chunk_boundary_qa.json")
+            self.assertEqual(
+                metrics["evidence_files"]["chunk_strategy_comparison"],
+                "output/chunk_strategy_comparison.json",
+            )
             self.assertEqual(metrics["evidence_files"]["repair_plan"], "output/repair_plan.json")
             self.assertIn("双语对照译文", bilingual_path.read_text(encoding="utf-8"))
         finally:
@@ -1036,6 +1076,7 @@ class StructureIRTests(unittest.TestCase):
                 "structure_chunks_manifest.json",
                 "structure_qa.json",
                 "chunk_boundary_qa.json",
+                "chunk_strategy_comparison.json",
                 "vision_route.json",
                 "qa_report.json",
                 "qa_report.md",
@@ -1053,11 +1094,13 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/qa_report.md", rels)
             self.assertIn("output/document_ir.json", rels)
             self.assertIn("output/chunk_boundary_qa.json", rels)
+            self.assertIn("output/chunk_strategy_comparison.json", rels)
             self.assertIn("output/experiment_metrics.json", rels)
             self.assertEqual(map_bundle_arcname("output/bilingual.html"), "译文/双语对照.html")
             self.assertEqual(map_bundle_arcname("output/repair_plan.md"), "质量/局部修复计划.md")
             self.assertEqual(map_bundle_arcname("output/structure_qa.json"), "质量/结构QA.json")
             self.assertEqual(map_bundle_arcname("output/chunk_boundary_qa.json"), "质量/分段边界QA.json")
+            self.assertEqual(map_bundle_arcname("output/chunk_strategy_comparison.json"), "质量/分段策略对比.json")
             self.assertEqual(map_bundle_arcname("output/experiment_metrics.json"), "质量/实验指标.json")
         finally:
             if root.exists():

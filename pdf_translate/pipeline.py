@@ -18,7 +18,7 @@ from pdf_translate.memory_store import MemoryStore
 from pdf_translate.pdf_structure import SplitManifest, split_main_and_references
 from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
 from pdf_translate.pipeline_merge import merge_chunks_markdown
-from pdf_translate.qa.chunk_boundary import write_chunk_boundary_qa
+from pdf_translate.qa.chunk_boundary import write_chunk_boundary_qa, write_chunk_strategy_comparison
 from pdf_translate.qa.metrics import write_experiment_metrics
 from pdf_translate.qa.repair import write_repair_plan
 from pdf_translate.qa.structure import write_structure_qa
@@ -213,16 +213,17 @@ def run_translate(
         max_pages_per_chunk=pages_per_chunk,
     )
     write_structure_manifest(structure_chunks, out_dir / "structure_chunks_manifest.json")
+    page_rows = _page_rows_for_main(main_pdf)
+    page_chunks = build_text_chunks(
+        page_rows,
+        pages_per_chunk=pages_per_chunk,
+        overlap_pages=overlap_pages,
+    )
 
     if chunk_strategy == "structure":
         chunks = structure_chunks
     elif chunk_strategy == "page":
-        rows = _page_rows_for_main(main_pdf)
-        chunks = build_text_chunks(
-            rows,
-            pages_per_chunk=pages_per_chunk,
-            overlap_pages=overlap_pages,
-        )
+        chunks = page_chunks
     else:
         raise ValueError("chunk_strategy must be 'page' or 'structure'")
 
@@ -248,6 +249,15 @@ def run_translate(
         structure_qa,
         out_dir / "chunk_boundary_qa.json",
         pipeline_variant=chunk_strategy,
+    )
+    chunk_strategy_comparison = write_chunk_strategy_comparison(
+        {
+            "page": page_chunks,
+            "structure": structure_chunks,
+        },
+        structure_qa,
+        out_dir / "chunk_strategy_comparison.json",
+        active_strategy=chunk_strategy,
     )
 
     state_path = out_dir / "state.json"
@@ -298,6 +308,7 @@ def run_translate(
             doc_id=doc_ir.doc_id,
             pipeline_variant=chunk_strategy,
             chunk_boundary_qa=chunk_boundary_qa,
+            chunk_strategy_comparison=chunk_strategy_comparison,
         )
         write_bilingual_html(
             chunks,

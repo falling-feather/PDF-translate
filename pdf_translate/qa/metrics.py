@@ -10,6 +10,7 @@ DEFAULT_EVIDENCE_FILES = {
     "structure_qa": "output/structure_qa.json",
     "vision_route": "output/vision_route.json",
     "chunk_boundary_qa": "output/chunk_boundary_qa.json",
+    "chunk_strategy_comparison": "output/chunk_strategy_comparison.json",
     "translation_qa": "output/qa_report.json",
     "repair_plan": "output/repair_plan.json",
 }
@@ -69,12 +70,14 @@ def build_experiment_metrics(
     doc_id: str | None = None,
     pipeline_variant: str | None = None,
     chunk_boundary_qa: dict[str, Any] | None = None,
+    chunk_strategy_comparison: dict[str, Any] | None = None,
     evidence_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Aggregate pipeline QA artifacts into a patent-facing experiment summary."""
     structure_summary = _summary(structure_qa)
     vision_summary = _summary(vision_route)
     chunk_boundary_summary = _summary(chunk_boundary_qa)
+    chunk_strategy_summary = _summary(chunk_strategy_comparison)
     translation_summary = _summary(translation_qa)
     repair_summary = _summary(repair_plan)
 
@@ -109,6 +112,12 @@ def build_experiment_metrics(
     protected_boundary_count = _as_int(chunk_boundary_summary.get("protected_boundary_count"))
     co_located_boundary_count = _as_int(chunk_boundary_summary.get("co_located_boundary_count"))
     high_risk_split_count = _as_int(chunk_boundary_summary.get("high_risk_split_count"))
+    baseline_split_boundary_count = _as_int(chunk_strategy_summary.get("baseline_split_boundary_count"))
+    active_split_boundary_count = _as_int(chunk_strategy_summary.get("active_split_boundary_count"))
+    active_split_reduction_vs_baseline = _as_int(chunk_strategy_summary.get("active_split_reduction_vs_baseline"))
+    active_split_reduction_rate_vs_baseline = _as_float(
+        chunk_strategy_summary.get("active_split_reduction_rate_vs_baseline")
+    )
     routed_page_count = _as_int(vision_summary.get("routed_page_count"))
     ocr_candidate_page_count = (
         vision_action_counts.get("local_ocr", 0) + vision_action_counts.get("vlm_review", 0)
@@ -152,6 +161,9 @@ def build_experiment_metrics(
             "protected_boundary_count": protected_boundary_count,
             "co_located_boundary_count": co_located_boundary_count,
             "high_risk_split_count": high_risk_split_count,
+            "baseline_split_boundary_count": baseline_split_boundary_count,
+            "active_split_boundary_count": active_split_boundary_count,
+            "active_split_reduction_vs_baseline": active_split_reduction_vs_baseline,
             "routed_page_count": routed_page_count,
             "ocr_candidate_page_count": ocr_candidate_page_count,
             "translation_issue_count": translation_issue_count,
@@ -167,6 +179,7 @@ def build_experiment_metrics(
             "split_boundary_rate": _rate(split_boundary_count, page_boundary_fragment_count),
             "protected_boundary_rate": _rate(protected_boundary_count, page_boundary_fragment_count),
             "co_located_boundary_rate": _rate(co_located_boundary_count, page_boundary_fragment_count),
+            "active_split_reduction_rate_vs_baseline": active_split_reduction_rate_vs_baseline,
             "entity_missing_rate": _rate(missing_entity_token_count, effective_entity_candidate_count),
             "repair_item_per_chunk": _rate(repair_item_count, chunk_count),
             "ocr_candidate_page_rate": _rate(ocr_candidate_page_count, page_count),
@@ -198,6 +211,7 @@ def write_experiment_metrics(
     doc_id: str | None = None,
     pipeline_variant: str | None = None,
     chunk_boundary_qa: dict[str, Any] | None = None,
+    chunk_strategy_comparison: dict[str, Any] | None = None,
     evidence_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     metrics = build_experiment_metrics(
@@ -208,6 +222,7 @@ def write_experiment_metrics(
         doc_id=doc_id,
         pipeline_variant=pipeline_variant,
         chunk_boundary_qa=chunk_boundary_qa,
+        chunk_strategy_comparison=chunk_strategy_comparison,
         evidence_files=evidence_files,
     )
     path.parent.mkdir(parents=True, exist_ok=True)

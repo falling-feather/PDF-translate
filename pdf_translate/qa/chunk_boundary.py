@@ -142,6 +142,131 @@ def build_chunk_boundary_qa(
     }
 
 
+def _rate(numerator: int, denominator: int) -> float:
+    if not denominator:
+        return 0.0
+    return round(numerator / denominator, 4)
+
+
+def build_chunk_strategy_comparison(
+    strategies: dict[str, list[TextChunk]],
+    structure_qa: dict[str, Any] | None,
+    *,
+    active_strategy: str | None = None,
+    baseline_strategy: str = "page",
+) -> dict[str, Any]:
+    reports = {
+        name: build_chunk_boundary_qa(chunks, structure_qa, pipeline_variant=name)
+        for name, chunks in strategies.items()
+    }
+    strategy_summaries: dict[str, dict[str, Any]] = {
+        name: report.get("summary", {}) if isinstance(report.get("summary"), dict) else {}
+        for name, report in reports.items()
+    }
+
+    baseline_summary = strategy_summaries.get(baseline_strategy, {})
+    baseline_split = int(baseline_summary.get("split_boundary_count") or 0)
+    best_strategy = None
+    best_split_rate: float | None = None
+    best_split_count: int | None = None
+    for name, summary in strategy_summaries.items():
+        split_rate = float(summary.get("split_boundary_rate") or 0.0)
+        split_count = int(summary.get("split_boundary_count") or 0)
+        if (
+            best_strategy is None
+            or split_rate < float(best_split_rate)
+            or (split_rate == best_split_rate and split_count < int(best_split_count or 0))
+        ):
+            best_strategy = name
+            best_split_rate = split_rate
+            best_split_count = split_count
+
+    boundary_rows: dict[str, dict[str, Any]] = {}
+    for strategy_name, report in reports.items():
+        for boundary in report.get("boundaries", []) or []:
+            if not isinstance(boundary, dict):
+                continue
+            boundary_id = str(boundary.get("boundary_id") or "")
+            if not boundary_id:
+                continue
+            row = boundary_rows.setdefault(
+                boundary_id,
+                {
+                    "boundary_id": boundary_id,
+                    "pages_1based": boundary.get("pages_1based") or [],
+                    "severity": boundary.get("severity") or "unknown",
+                    "reasons": boundary.get("reasons") or [],
+                    "status_by_strategy": {},
+                },
+            )
+            row["status_by_strategy"][strategy_name] = boundary.get("status") or "unknown"
+
+    strategy_entries = []
+    for name, summary in strategy_summaries.items():
+        split_count = int(summary.get("split_boundary_count") or 0)
+        split_delta = baseline_split - split_count if name != baseline_strategy else 0
+        strategy_entries.append(
+            {
+                "strategy": name,
+                "is_active": name == active_strategy,
+                "is_baseline": name == baseline_strategy,
+                "chunk_count": int(summary.get("chunk_count") or 0),
+                "boundary_fragment_count": int(summary.get("boundary_fragment_count") or 0),
+                "split_boundary_count": split_count,
+                "protected_boundary_count": int(summary.get("protected_boundary_count") or 0),
+                "co_located_boundary_count": int(summary.get("co_located_boundary_count") or 0),
+                "high_risk_split_count": int(summary.get("high_risk_split_count") or 0),
+                "split_boundary_rate": float(summary.get("split_boundary_rate") or 0.0),
+                "protected_boundary_rate": float(summary.get("protected_boundary_rate") or 0.0),
+                "split_reduction_vs_baseline": split_delta,
+                "split_reduction_rate_vs_baseline": _rate(split_delta, baseline_split),
+            }
+        )
+    strategy_entries.sort(key=lambda item: str(item["strategy"]))
+
+    active_summary = strategy_summaries.get(active_strategy or "", {})
+    active_split = int(active_summary.get("split_boundary_count") or 0)
+    return {
+        "schema_version": "chunk-strategy-comparison-v1",
+        "doc_id": (structure_qa or {}).get("doc_id") if isinstance(structure_qa, dict) else None,
+        "active_strategy": active_strategy or "unknown",
+        "baseline_strategy": baseline_strategy,
+        "summary": {
+            "strategy_count": len(strategies),
+            "boundary_fragment_count": max(
+                (int(summary.get("boundary_fragment_count") or 0) for summary in strategy_summaries.values()),
+                default=0,
+            ),
+            "best_strategy_by_split_rate": best_strategy,
+            "baseline_split_boundary_count": baseline_split,
+            "active_split_boundary_count": active_split,
+            "active_split_reduction_vs_baseline": baseline_split - active_split,
+            "active_split_reduction_rate_vs_baseline": _rate(baseline_split - active_split, baseline_split),
+        },
+        "strategies": strategy_entries,
+        "boundaries": sorted(boundary_rows.values(), key=lambda item: str(item["boundary_id"])),
+    }
+
+
+def write_chunk_strategy_comparison(
+    strategies: dict[str, list[TextChunk]],
+    structure_qa: dict[str, Any] | None,
+    path: Path,
+    *,
+    active_strategy: str | None = None,
+    baseline_strategy: str = "page",
+) -> dict[str, Any]:
+    report = build_chunk_strategy_comparison(
+        strategies,
+        structure_qa,
+        active_strategy=active_strategy,
+        baseline_strategy=baseline_strategy,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return report
+
+
 def write_chunk_boundary_qa(
     chunks: list[TextChunk],
     structure_qa: dict[str, Any] | None,
