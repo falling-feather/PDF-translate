@@ -208,6 +208,7 @@ my-paper/
     qa_report.md
     repair_plan.json
     repair_plan.md
+    bilingual.html
     chunks/c0000.md, c0001.md, …（每块独立 Markdown）
     translated_full.md
     state.json

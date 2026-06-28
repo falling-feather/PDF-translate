@@ -10,6 +10,7 @@ import fitz
 from pdf_translate.chunking import TextChunk
 from pdf_translate.chunkers.structure import build_structure_chunks
 from pdf_translate.config import AppConfig
+from pdf_translate.exporters.bilingual_html import write_bilingual_html
 from pdf_translate.extractors.document_ir import (
     BlockIR,
     DocumentIR,
@@ -199,6 +200,22 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("rewrite_with_locked_tokens", actions)
             self.assertIn("repair_table_shape", actions)
             self.assertEqual(plan["summary"]["priority_counts"]["P0"], 3)
+
+            html_path = root / "bilingual.html"
+            write_bilingual_html(
+                chunks,
+                chunk_dir,
+                html_path,
+                qa_report=report,
+                repair_plan=plan,
+                title="样例双语对照",
+            )
+            html = html_path.read_text(encoding="utf-8")
+            self.assertIn("样例双语对照", html)
+            self.assertIn("Table 1 reports", html)
+            self.assertIn("表 1 报告了结果", html)
+            self.assertIn("missing_numbers", html)
+            self.assertIn("repair_table_shape", html)
         finally:
             if root.exists():
                 shutil.rmtree(root)
@@ -244,6 +261,7 @@ class StructureIRTests(unittest.TestCase):
             translation_qa_md_path = work_dir / "output" / "qa_report.md"
             repair_plan_path = work_dir / "output" / "repair_plan.json"
             repair_plan_md_path = work_dir / "output" / "repair_plan.md"
+            bilingual_path = work_dir / "output" / "bilingual.html"
             self.assertTrue(ir_path.is_file())
             self.assertTrue(manifest_path.is_file())
             self.assertTrue(qa_path.is_file())
@@ -252,6 +270,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(translation_qa_md_path.is_file())
             self.assertTrue(repair_plan_path.is_file())
             self.assertTrue(repair_plan_md_path.is_file())
+            self.assertTrue(bilingual_path.is_file())
             ir = json.loads(ir_path.read_text(encoding="utf-8"))
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             qa = json.loads(qa_path.read_text(encoding="utf-8"))
@@ -272,6 +291,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("issue_counts", translation_qa["summary"])
             self.assertEqual(repair_plan["schema_version"], "repair-plan-v1")
             self.assertIn("repair_item_count", repair_plan["summary"])
+            self.assertIn("双语对照译文", bilingual_path.read_text(encoding="utf-8"))
         finally:
             if root.exists():
                 shutil.rmtree(root)
@@ -288,6 +308,7 @@ class StructureIRTests(unittest.TestCase):
         try:
             for name in [
                 "translated_full.md",
+                "bilingual.html",
                 "document_ir.json",
                 "structure_chunks_manifest.json",
                 "structure_qa.json",
@@ -303,8 +324,10 @@ class StructureIRTests(unittest.TestCase):
                 for path in iter_bundle_files(root)
             }
             self.assertIn("output/repair_plan.json", rels)
+            self.assertIn("output/bilingual.html", rels)
             self.assertIn("output/qa_report.md", rels)
             self.assertIn("output/document_ir.json", rels)
+            self.assertEqual(map_bundle_arcname("output/bilingual.html"), "译文/双语对照.html")
             self.assertEqual(map_bundle_arcname("output/repair_plan.md"), "质量/局部修复计划.md")
             self.assertEqual(map_bundle_arcname("output/structure_qa.json"), "质量/结构QA.json")
         finally:

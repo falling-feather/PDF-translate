@@ -12,6 +12,7 @@ import fitz
 from pdf_translate.chunkers.structure import build_structure_chunks, write_structure_manifest
 from pdf_translate.chunking import TextChunk, build_text_chunks
 from pdf_translate.config import AppConfig
+from pdf_translate.exporters.bilingual_html import write_bilingual_html
 from pdf_translate.extractors.document_ir import extract_document_ir
 from pdf_translate.memory_store import MemoryStore
 from pdf_translate.pdf_structure import SplitManifest, split_main_and_references
@@ -271,10 +272,18 @@ def run_translate(
             out_dir / "qa_report.json",
             out_dir / "qa_report.md",
         )
-        write_repair_plan(
+        repair_plan = write_repair_plan(
             qa_report,
             out_dir / "repair_plan.json",
             out_dir / "repair_plan.md",
+        )
+        write_bilingual_html(
+            chunks,
+            chunk_dir,
+            out_dir / "bilingual.html",
+            qa_report=qa_report,
+            repair_plan=repair_plan,
+            title=f"{main_pdf.stem} 双语对照译文",
         )
 
     if translate_mode == "parallel":
