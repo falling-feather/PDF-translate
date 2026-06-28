@@ -118,6 +118,59 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(qa["summary"]["table_count"], 1)
         self.assertEqual(qa["tables"][0]["column_count"], 3)
         self.assertEqual(qa["tables"][0]["numeric_tokens"], ["91", "88"])
+        self.assertIn("page_boundary_fragment_count", qa["summary"])
+
+    def test_structure_qa_reports_page_boundary_fragments(self) -> None:
+        doc_ir = DocumentIR(
+            doc_id="boundary-sample",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text="The proposed method improves",
+                    blocks=[
+                        BlockIR(
+                            "p1-b0000",
+                            1,
+                            "paragraph",
+                            "The proposed method improves",
+                            (40, 100, 520, 180),
+                            0,
+                        ),
+                    ],
+                ),
+                PageIR(
+                    page_no=2,
+                    width=600,
+                    height=800,
+                    text="accuracy under domain shift.",
+                    blocks=[
+                        BlockIR(
+                            "p2-b0000",
+                            2,
+                            "paragraph",
+                            "accuracy under domain shift.",
+                            (40, 80, 520, 140),
+                            0,
+                        ),
+                    ],
+                ),
+            ],
+        )
+        qa = build_structure_qa(doc_ir)
+        self.assertEqual(qa["summary"]["page_boundary_fragment_count"], 1)
+        self.assertEqual(qa["summary"]["page_boundary_fragment_rate"], 1.0)
+        fragment = qa["page_boundary_fragments"][0]
+        self.assertEqual(fragment["pages_1based"], [1, 2])
+        self.assertEqual(fragment["severity"], "high")
+        self.assertEqual(fragment["previous_block_id"], "p1-b0000")
+        self.assertEqual(fragment["next_block_id"], "p2-b0000")
+        self.assertIn("previous_page_ends_without_terminal_punctuation", fragment["reasons"])
+        self.assertIn("next_page_starts_like_continuation", fragment["reasons"])
+        self.assertIn("The proposed method improves", fragment["previous_tail"])
+        self.assertIn("accuracy under domain shift", fragment["next_head"])
 
     def test_extract_table_structure_returns_dimensions_and_invariants(self) -> None:
         lines = [
