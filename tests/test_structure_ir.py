@@ -172,6 +172,58 @@ class StructureIRTests(unittest.TestCase):
         self.assertIn("The proposed method improves", fragment["previous_tail"])
         self.assertIn("accuracy under domain shift", fragment["next_head"])
 
+    def test_structure_chunks_protect_page_boundary_fragments(self) -> None:
+        long_unfinished = "The proposed method improves " + ("robustness " * 105)
+        doc_ir = DocumentIR(
+            doc_id="protected-boundary-sample",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text=long_unfinished,
+                    blocks=[
+                        BlockIR(
+                            "p1-b0000",
+                            1,
+                            "paragraph",
+                            long_unfinished,
+                            (40, 100, 520, 760),
+                            0,
+                        ),
+                    ],
+                ),
+                PageIR(
+                    page_no=2,
+                    width=600,
+                    height=800,
+                    text="accuracy under domain shift.",
+                    blocks=[
+                        BlockIR(
+                            "p2-b0000",
+                            2,
+                            "paragraph",
+                            "accuracy under domain shift.",
+                            (40, 80, 520, 140),
+                            0,
+                        ),
+                    ],
+                ),
+            ],
+        )
+        chunks = build_structure_chunks(
+            doc_ir,
+            target_chars=1000,
+            max_chars=2000,
+            max_pages_per_chunk=1,
+        )
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].pages_0based, [0, 1])
+        self.assertEqual(chunks[0].boundary_fragment_ids, ["p1-p2"])
+        self.assertIn("protected_page_boundary:p1-p2", chunks[0].warnings)
+        self.assertIn("accuracy under domain shift", chunks[0].text)
+
     def test_extract_table_structure_returns_dimensions_and_invariants(self) -> None:
         lines = [
             {"spans": [{"text": "Metric", "bbox": [40, 10, 90, 20]}, {"text": "Acc", "bbox": [140, 10, 170, 20]}]},
@@ -344,6 +396,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("meta", ir["pages"][0])
             self.assertGreaterEqual(len(manifest), 1)
             self.assertIn("block_ids", manifest[0])
+            self.assertIn("boundary_fragment_ids", manifest[0])
             self.assertEqual(qa["schema_version"], "structure-qa-v1")
             self.assertIn("table_count", qa["summary"])
             self.assertGreaterEqual(qa["summary"]["table_count"], 1)

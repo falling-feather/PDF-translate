@@ -234,6 +234,7 @@ def run_translate(
             "block_ids": getattr(c, "block_ids", []),
             "block_types": getattr(c, "block_types", {}),
             "warnings": getattr(c, "warnings", []),
+            "boundary_fragment_ids": getattr(c, "boundary_fragment_ids", []),
         }
         for c in chunks
     ]

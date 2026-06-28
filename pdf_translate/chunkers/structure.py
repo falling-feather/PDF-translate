@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pdf_translate.chunking import TextChunk
 from pdf_translate.extractors.document_ir import BlockIR, DocumentIR
+from pdf_translate.structure_boundaries import detect_page_boundary_fragments
 
 
 @dataclass
@@ -16,6 +17,7 @@ class StructureChunk(TextChunk):
     block_ids: list[str] = field(default_factory=list)
     block_types: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    boundary_fragment_ids: list[str] = field(default_factory=list)
 
     def to_manifest_entry(self) -> dict:
         return {
@@ -27,6 +29,7 @@ class StructureChunk(TextChunk):
             "image_count": self.image_count,
             "approx_chars": len(self.text),
             "warnings": self.warnings,
+            "boundary_fragment_ids": self.boundary_fragment_ids,
         }
 
 
@@ -74,7 +77,14 @@ def _format_block(block: BlockIR) -> str:
     return f"[第 {block.page_no} 页｜{label}｜{block.block_id}]\n{block.text.strip()}"
 
 
-def _make_chunk(chunk_index: int, blocks: list[BlockIR], link_count: int, image_count: int, warnings: list[str]) -> StructureChunk:
+def _make_chunk(
+    chunk_index: int,
+    blocks: list[BlockIR],
+    link_count: int,
+    image_count: int,
+    warnings: list[str],
+    boundary_fragment_ids: list[str],
+) -> StructureChunk:
     pages = sorted({b.page_no - 1 for b in blocks})
     type_counts = Counter(b.type for b in blocks)
     text = "\n\n".join(_format_block(b) for b in blocks)
@@ -87,7 +97,30 @@ def _make_chunk(chunk_index: int, blocks: list[BlockIR], link_count: int, image_
         block_ids=[b.block_id for b in blocks],
         block_types=dict(type_counts),
         warnings=warnings,
+        boundary_fragment_ids=boundary_fragment_ids,
     )
+
+
+def _boundary_fragment_map(doc_ir: DocumentIR) -> dict[tuple[int, int], dict]:
+    out: dict[tuple[int, int], dict] = {}
+    for fragment in detect_page_boundary_fragments(doc_ir):
+        pages = fragment.get("pages_1based")
+        if isinstance(pages, list) and len(pages) == 2:
+            out[(int(pages[0]), int(pages[1]))] = fragment
+    return out
+
+
+def _protected_boundary_fragment(
+    current: list[BlockIR],
+    next_block: BlockIR,
+    boundary_fragments: dict[tuple[int, int], dict],
+) -> dict | None:
+    if not current:
+        return None
+    previous_page = max(block.page_no for block in current)
+    if next_block.page_no != previous_page + 1:
+        return None
+    return boundary_fragments.get((previous_page, next_block.page_no))
 
 
 def build_structure_chunks(
@@ -111,17 +144,30 @@ def build_structure_chunks(
     current_images = 0
     current_warnings: list[str] = []
     current_page_nos: set[int] = set()
+    current_boundary_fragment_ids: list[str] = []
+    boundary_fragments = _boundary_fragment_map(doc_ir)
+    protected_page_limit = max_pages_per_chunk + 1
 
     def flush() -> None:
-        nonlocal current, current_links, current_images, current_warnings, current_page_nos
+        nonlocal current, current_links, current_images, current_warnings, current_page_nos, current_boundary_fragment_ids
         if not current:
             return
-        chunks.append(_make_chunk(len(chunks), current, current_links, current_images, sorted(set(current_warnings))))
+        chunks.append(
+            _make_chunk(
+                len(chunks),
+                current,
+                current_links,
+                current_images,
+                sorted(set(current_warnings)),
+                sorted(set(current_boundary_fragment_ids)),
+            )
+        )
         current = []
         current_links = 0
         current_images = 0
         current_warnings = []
         current_page_nos = set()
+        current_boundary_fragment_ids = []
 
     for page in doc_ir.pages:
         page_blocks = [b for b in page.blocks if _block_for_translation(b)]
@@ -129,13 +175,22 @@ def build_structure_chunks(
             candidate_len = sum(len(b.text) for b in current) + len(block.text)
             pages_if_added = {b.page_no for b in current}
             pages_if_added.add(block.page_no)
+            protected_fragment = _protected_boundary_fragment(current, block, boundary_fragments)
+            page_limit_exceeded = len(pages_if_added) > max_pages_per_chunk
+            protected_page_limit_exceeded = len(pages_if_added) > protected_page_limit
             should_flush = bool(current) and (
                 candidate_len > max_chars
-                or (candidate_len > target_chars and len(pages_if_added) > 1)
-                or len(pages_if_added) > max_pages_per_chunk
+                or (candidate_len > target_chars and len(pages_if_added) > 1 and not protected_fragment)
+                or (page_limit_exceeded and (not protected_fragment or protected_page_limit_exceeded))
             )
             if should_flush:
                 flush()
+                protected_fragment = None
+            elif protected_fragment:
+                boundary_id = str(protected_fragment.get("boundary_id") or "")
+                if boundary_id:
+                    current_boundary_fragment_ids.append(boundary_id)
+                    current_warnings.append(f"protected_page_boundary:{boundary_id}")
             current.append(block)
             if page.page_no not in current_page_nos:
                 current_page_nos.add(page.page_no)
