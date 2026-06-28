@@ -291,7 +291,12 @@ def assign_block_parents(blocks: list[BlockIR]) -> None:
             block.meta["parent_warning"] = "orphan_footnote"
             continue
         block.parent_id = parent.block_id
-        block.meta["parent_relation"] = "footnote_for_block"
+        if parent.type == "table":
+            block.meta["parent_relation"] = "footnote_for_table"
+            block.meta["table_footnote"] = True
+        else:
+            block.meta["parent_relation"] = "footnote_for_block"
+            block.meta.pop("table_footnote", None)
         block.meta.pop("parent_warning", None)
 
 

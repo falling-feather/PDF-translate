@@ -83,10 +83,11 @@ class StructureIRTests(unittest.TestCase):
             3,
             meta={"table": {"row_count": 2, "column_count": 2}},
         )
-        paragraph = BlockIR("p1-b0004", 1, "paragraph", "The method is robust.", (60, 500, 500, 545), 4)
-        footnote = BlockIR("p1-b0005", 1, "footnote", "1 Additional implementation note.", (60, 700, 500, 730), 5)
-        orphan_caption = BlockIR("p1-b0006", 1, "caption", "Algorithm note", (60, 745, 500, 765), 6)
-        blocks = [image, figure_caption, table_caption, table, paragraph, footnote, orphan_caption]
+        table_footnote = BlockIR("p1-b0004", 1, "footnote", "1 Standard deviation in parentheses.", (60, 470, 500, 490), 4)
+        paragraph = BlockIR("p1-b0005", 1, "paragraph", "The method is robust.", (60, 500, 500, 545), 5)
+        footnote = BlockIR("p1-b0006", 1, "footnote", "2 Additional implementation note.", (60, 700, 500, 730), 6)
+        orphan_caption = BlockIR("p1-b0007", 1, "caption", "Algorithm note", (60, 745, 500, 765), 7)
+        blocks = [image, figure_caption, table_caption, table, table_footnote, paragraph, footnote, orphan_caption]
 
         assign_block_parents(blocks)
 
@@ -96,6 +97,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(table_caption.parent_id, table.block_id)
         self.assertEqual(table_caption.meta["caption_kind"], "table")
         self.assertEqual(table_caption.meta["parent_relation"], "caption_for_table")
+        self.assertEqual(table_footnote.parent_id, table.block_id)
+        self.assertEqual(table_footnote.meta["parent_relation"], "footnote_for_table")
+        self.assertTrue(table_footnote.meta["table_footnote"])
         self.assertEqual(footnote.parent_id, paragraph.block_id)
         self.assertEqual(footnote.meta["parent_relation"], "footnote_for_block")
         self.assertIsNone(orphan_caption.parent_id)
@@ -119,9 +123,10 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(qa["summary"]["caption_count"], 3)
         self.assertEqual(qa["summary"]["caption_linked_count"], 2)
         self.assertEqual(qa["summary"]["caption_orphan_count"], 1)
-        self.assertEqual(qa["summary"]["footnote_count"], 1)
-        self.assertEqual(qa["summary"]["footnote_linked_count"], 1)
-        self.assertEqual(qa["summary"]["relationship_count"], 3)
+        self.assertEqual(qa["summary"]["footnote_count"], 2)
+        self.assertEqual(qa["summary"]["footnote_linked_count"], 2)
+        self.assertEqual(qa["summary"]["table_footnote_count"], 1)
+        self.assertEqual(qa["summary"]["relationship_count"], 4)
         self.assertEqual(qa["summary"]["relationship_warning_count"], 1)
         warnings = [item for item in qa["relationships"] if item["warning"]]
         self.assertEqual(warnings[0]["block_id"], orphan_caption.block_id)
@@ -187,6 +192,65 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(qa["tables"][0]["column_count"], 3)
         self.assertEqual(qa["tables"][0]["numeric_tokens"], ["91", "88"])
         self.assertIn("page_boundary_fragment_count", qa["summary"])
+
+    def test_structure_qa_reports_table_continuations(self) -> None:
+        doc_ir = DocumentIR(
+            doc_id="continued-table",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text="Metric Acc\nA 91",
+                    blocks=[
+                        BlockIR(
+                            "p1-b0000",
+                            1,
+                            "table",
+                            "Metric Acc\nA 91",
+                            (40, 640, 540, 760),
+                            0,
+                            meta={"table": {"row_count": 2, "column_count": 2, "confidence": "medium"}},
+                        ),
+                    ],
+                ),
+                PageIR(
+                    page_no=2,
+                    width=600,
+                    height=800,
+                    text="B 92\nC 93",
+                    blocks=[
+                        BlockIR(
+                            "p2-b0000",
+                            2,
+                            "table",
+                            "B 92\nC 93",
+                            (40, 80, 540, 180),
+                            0,
+                            meta={"table": {"row_count": 2, "column_count": 2, "confidence": "medium"}},
+                        ),
+                    ],
+                ),
+            ],
+        )
+        qa = build_structure_qa(doc_ir)
+        self.assertEqual(qa["summary"]["page_boundary_fragment_count"], 1)
+        self.assertEqual(qa["summary"]["table_continuation_count"], 1)
+        self.assertEqual(qa["table_continuations"][0]["previous_table_block_id"], "p1-b0000")
+        self.assertEqual(qa["table_continuations"][0]["next_table_block_id"], "p2-b0000")
+        self.assertEqual(qa["tables"][0]["continued_to_block_id"], "p2-b0000")
+        self.assertEqual(qa["tables"][1]["continued_from_block_id"], "p1-b0000")
+
+        chunks = build_structure_chunks(
+            doc_ir,
+            target_chars=1000,
+            max_chars=2000,
+            max_pages_per_chunk=1,
+        )
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].boundary_fragment_ids, ["p1-p2"])
+        self.assertIn("protected_page_boundary:p1-p2", chunks[0].warnings)
 
     def test_structure_qa_reports_page_boundary_fragments(self) -> None:
         doc_ir = DocumentIR(
@@ -573,7 +637,10 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("table_count", qa["summary"])
             self.assertIn("caption_orphan_count", qa["summary"])
             self.assertIn("footnote_orphan_count", qa["summary"])
+            self.assertIn("table_footnote_count", qa["summary"])
+            self.assertIn("table_continuation_count", qa["summary"])
             self.assertIn("relationships", qa)
+            self.assertIn("table_continuations", qa)
             self.assertGreaterEqual(qa["summary"]["table_count"], 1)
             self.assertEqual(vision["schema_version"], "vision-route-v1")
             self.assertIn("action_counts", vision["summary"])
