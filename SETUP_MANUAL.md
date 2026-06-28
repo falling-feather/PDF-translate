@@ -204,6 +204,8 @@ my-paper/
     structure_chunks_manifest.json
     structure_qa.json
     vision_route.json
+    qa_report.json
+    qa_report.md
     chunks/c0000.md, c0001.md, …（每块独立 Markdown）
     translated_full.md
     state.json

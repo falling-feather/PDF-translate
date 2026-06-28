@@ -7,6 +7,7 @@ from pathlib import Path
 
 import fitz
 
+from pdf_translate.chunking import TextChunk
 from pdf_translate.chunkers.structure import build_structure_chunks
 from pdf_translate.config import AppConfig
 from pdf_translate.extractors.document_ir import (
@@ -17,6 +18,7 @@ from pdf_translate.extractors.document_ir import (
     extract_table_structure,
 )
 from pdf_translate.qa.structure import build_structure_qa
+from pdf_translate.qa.translation import build_translation_qa
 from pdf_translate.pipeline import init_workdir, run_split, run_translate
 from pdf_translate.vision.routing import build_vision_route
 
@@ -156,6 +158,44 @@ class StructureIRTests(unittest.TestCase):
         self.assertIn("very_low_text", route["pages"][0]["reasons"])
         self.assertEqual(route["pages"][0]["metrics"]["image_count"], 1)
 
+    def test_translation_qa_reports_missing_invariants(self) -> None:
+        root = Path.cwd() / "test-output" / "translation-qa"
+        if root.exists():
+            shutil.rmtree(root)
+        chunk_dir = root / "chunks"
+        chunk_dir.mkdir(parents=True)
+        try:
+            chunks = [
+                TextChunk(
+                    chunk_id="c0000",
+                    pages_0based=[0],
+                    text=(
+                        "Table 1 reports [3].\n"
+                        "| Metric | Acc |\n"
+                        "| --- | --- |\n"
+                        "| A | 91.2% |"
+                    ),
+                    link_count=0,
+                    image_count=0,
+                )
+            ]
+            (chunk_dir / "c0000.md").write_text(
+                "---\n{}\n---\n\n表 1 报告了结果。\n| 指标 |\n| --- |\n| A |\n",
+                encoding="utf-8",
+            )
+            report = build_translation_qa(chunks, chunk_dir)
+            issue_types = {issue["type"] for issue in report["chunks"][0]["issues"]}
+            self.assertIn("missing_numbers", issue_types)
+            self.assertIn("missing_references", issue_types)
+            self.assertIn("table_shape_mismatch", issue_types)
+            self.assertEqual(report["summary"]["issue_count"], 3)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
     def test_pipeline_writes_document_ir_and_structure_manifest(self) -> None:
         root = Path.cwd() / "test-output" / "structure-ir"
         if root.exists():
@@ -190,14 +230,19 @@ class StructureIRTests(unittest.TestCase):
             manifest_path = work_dir / "output" / "structure_chunks_manifest.json"
             qa_path = work_dir / "output" / "structure_qa.json"
             vision_path = work_dir / "output" / "vision_route.json"
+            translation_qa_path = work_dir / "output" / "qa_report.json"
+            translation_qa_md_path = work_dir / "output" / "qa_report.md"
             self.assertTrue(ir_path.is_file())
             self.assertTrue(manifest_path.is_file())
             self.assertTrue(qa_path.is_file())
             self.assertTrue(vision_path.is_file())
+            self.assertTrue(translation_qa_path.is_file())
+            self.assertTrue(translation_qa_md_path.is_file())
             ir = json.loads(ir_path.read_text(encoding="utf-8"))
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             qa = json.loads(qa_path.read_text(encoding="utf-8"))
             vision = json.loads(vision_path.read_text(encoding="utf-8"))
+            translation_qa = json.loads(translation_qa_path.read_text(encoding="utf-8"))
             self.assertEqual(ir["schema_version"], "document-ir-v1")
             self.assertGreaterEqual(len(ir["pages"]), 1)
             self.assertIn("meta", ir["pages"][0])
@@ -208,6 +253,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertGreaterEqual(qa["summary"]["table_count"], 1)
             self.assertEqual(vision["schema_version"], "vision-route-v1")
             self.assertIn("action_counts", vision["summary"])
+            self.assertEqual(translation_qa["schema_version"], "translation-qa-v1")
+            self.assertIn("issue_counts", translation_qa["summary"])
         finally:
             if root.exists():
                 shutil.rmtree(root)

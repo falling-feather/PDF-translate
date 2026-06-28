@@ -18,6 +18,7 @@ from pdf_translate.pdf_structure import SplitManifest, split_main_and_references
 from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
 from pdf_translate.pipeline_merge import merge_chunks_markdown
 from pdf_translate.qa.structure import write_structure_qa
+from pdf_translate.qa.translation import write_translation_qa
 from pdf_translate.rich_content import extract_page_rich_meta
 from pdf_translate.continuation_extract import translation_tail_for_next_chunk
 from pdf_translate.deferral_markers import (
@@ -262,6 +263,14 @@ def run_translate(
         if translate_mode == "serial" and chunks and len(d) == len(chunks):
             mem.save_deferred_carry("")
 
+    def _write_translation_qa_report() -> None:
+        write_translation_qa(
+            chunks,
+            chunk_dir,
+            out_dir / "qa_report.json",
+            out_dir / "qa_report.md",
+        )
+
     if translate_mode == "parallel":
         mem.save_deferred_carry("")
         pending: list[tuple[int, TextChunk]] = []
@@ -340,6 +349,7 @@ def run_translate(
                     )
         merge_chunks_markdown(chunk_dir, merged_path, chunks)
         _maybe_clear_carry_when_fully_done()
+        _write_translation_qa_report()
         return merged_path
 
     # —— 串联：按顺序调用模型，注入前文摘要；每块写盘后全量重建合并稿 ——
@@ -455,6 +465,7 @@ def run_translate(
 
     merge_chunks_markdown(chunk_dir, merged_path, chunks)
     _maybe_clear_carry_when_fully_done()
+    _write_translation_qa_report()
     return merged_path
 
 
