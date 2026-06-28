@@ -32,6 +32,7 @@ _LOCKED_TOKEN_RE = re.compile(
     r"(\[[0-9,\-\s]+\]|\([A-Z][A-Za-z]+,\s*\d{4}\)|Table\s+\d+|Fig(?:ure)?\.?\s+\d+|"
     r"\b\d+(?:\.\d+)?%?\b|[A-Za-z]\d\b|[A-Z]{2,}(?:-[A-Z0-9]+)*)"
 )
+_NUMBER_RE = re.compile(r"\b\d+(?:\.\d+)?%?\b")
 
 
 @dataclass
@@ -127,18 +128,95 @@ def _span_sizes(lines: list[dict[str, Any]]) -> list[float]:
     return sizes
 
 
+def _line_cells(line: dict[str, Any], fallback_text: str) -> list[str]:
+    spans: list[tuple[float, str]] = []
+    for span in line.get("spans") or []:
+        text = str(span.get("text") or "").strip()
+        bbox = span.get("bbox")
+        if not text or not isinstance(bbox, (list, tuple)) or not bbox:
+            continue
+        spans.append((float(bbox[0]), text))
+    if len(spans) >= 2:
+        return [text for _x, text in sorted(spans, key=lambda item: item[0])]
+
+    text = fallback_text.strip()
+    if not text:
+        return []
+    parts = [p.strip() for p in re.split(r"\t+|\s{2,}", text) if p.strip()]
+    if len(parts) >= 2:
+        return parts
+
+    # Table blocks often arrive as one span per line after PyMuPDF extraction.
+    # Split compact scientific rows while keeping ordinary paragraphs outside this path.
+    tokens = text.split()
+    if 2 <= len(tokens) <= 16 and (_NUMBER_RE.search(text) or len(tokens) <= 6):
+        return tokens
+    return [text]
+
+
 def _looks_like_table(line_texts: list[str], line_xs: list[list[float]]) -> bool:
     if not line_texts:
         return False
     multi_span_lines = sum(1 for xs in line_xs if len(xs) >= 3 and (max(xs) - min(xs) > 120))
     numeric_dense = 0
+    has_numeric_row = False
+    has_short_header_like_row = False
     for text in line_texts:
         tokens = re.findall(r"\b\d+(?:\.\d+)?%?\b", text)
         if len(tokens) >= 3:
             numeric_dense += 1
+            has_numeric_row = True
         if "\t" in text or re.search(r"\S\s{3,}\S", text):
             numeric_dense += 1
-    return multi_span_lines >= 2 or numeric_dense >= 2
+        words = text.split()
+        if 2 <= len(words) <= 8 and not text.rstrip().endswith("."):
+            has_short_header_like_row = True
+    return multi_span_lines >= 2 or numeric_dense >= 2 or (has_numeric_row and has_short_header_like_row)
+
+
+def extract_table_structure(lines: list[dict[str, Any]], line_texts: list[str]) -> dict[str, Any]:
+    """Best-effort table structure for patent-facing IR and downstream QA."""
+    rows: list[list[str]] = []
+    for line, fallback in zip(lines, line_texts):
+        cells = _line_cells(line, fallback)
+        if cells:
+            rows.append(cells)
+    if not rows:
+        return {}
+
+    column_count = max(len(r) for r in rows)
+    row_lengths = [len(r) for r in rows]
+    numeric_tokens: list[str] = []
+    seen_numbers: set[str] = set()
+    for row in rows:
+        for cell in row:
+            for token in _NUMBER_RE.findall(cell):
+                if token not in seen_numbers:
+                    seen_numbers.add(token)
+                    numeric_tokens.append(token)
+
+    warnings: list[str] = []
+    if len(set(row_lengths)) > 1:
+        warnings.append("ragged_table_rows")
+    if column_count < 2:
+        warnings.append("low_confidence_table_columns")
+    if len(numeric_tokens) >= 3:
+        warnings.append("numeric_dense_table")
+    if rows and not any(_NUMBER_RE.search(cell) for cell in rows[0]):
+        header = rows[0]
+    else:
+        header = []
+
+    normalized_rows = [r + [""] * (column_count - len(r)) for r in rows]
+    return {
+        "rows": normalized_rows,
+        "row_count": len(rows),
+        "column_count": column_count,
+        "header": header,
+        "numeric_tokens": numeric_tokens[:200],
+        "warnings": warnings,
+        "confidence": "medium" if column_count >= 2 and len(rows) >= 2 else "low",
+    }
 
 
 def _locked_tokens(text: str) -> list[str]:
@@ -173,7 +251,7 @@ def classify_text_block(
         return "header_footer"
     if _REFERENCE_RE.match(stripped):
         return "reference"
-    if _CAPTION_RE.match(stripped):
+    if _CAPTION_RE.match(stripped) and len(line_texts) <= 1:
         return "caption"
     if _FOOTNOTE_RE.match(stripped) and (y0 > page_height * 0.70 or avg_size <= 9.5):
         return "footnote"
@@ -261,6 +339,9 @@ def extract_document_ir(pdf_path: Path, *, doc_id: str | None = None) -> Documen
                     line_xs=line_xs,
                     span_sizes=sizes,
                 )
+                meta: dict[str, Any] = {"avg_font_size": round(sum(sizes) / len(sizes), 2) if sizes else None}
+                if block_type == "table":
+                    meta["table"] = extract_table_structure(lines, line_texts)
                 block = BlockIR(
                     block_id=block_id,
                     page_no=page_no,
@@ -269,7 +350,7 @@ def extract_document_ir(pdf_path: Path, *, doc_id: str | None = None) -> Documen
                     bbox=bbox,
                     order=order,
                     locked_tokens=_locked_tokens(text),
-                    meta={"avg_font_size": round(sum(sizes) / len(sizes), 2) if sizes else None},
+                    meta=meta,
                 )
                 blocks.append(block)
                 type_counts[block.type] += 1
@@ -308,4 +389,3 @@ def extract_document_ir(pdf_path: Path, *, doc_id: str | None = None) -> Documen
         )
     finally:
         doc.close()
-

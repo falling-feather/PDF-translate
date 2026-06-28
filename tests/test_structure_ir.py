@@ -9,7 +9,14 @@ import fitz
 
 from pdf_translate.chunkers.structure import build_structure_chunks
 from pdf_translate.config import AppConfig
-from pdf_translate.extractors.document_ir import BlockIR, DocumentIR, PageIR, classify_text_block
+from pdf_translate.extractors.document_ir import (
+    BlockIR,
+    DocumentIR,
+    PageIR,
+    classify_text_block,
+    extract_table_structure,
+)
+from pdf_translate.qa.structure import build_structure_qa
 from pdf_translate.pipeline import init_workdir, run_split, run_translate
 
 
@@ -46,6 +53,15 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(footnote_type, "footnote")
 
     def test_structure_chunks_preserve_block_provenance(self) -> None:
+        table_meta = {
+            "rows": [["Metric", "Acc", "F1"], ["A", "91", "88"]],
+            "row_count": 2,
+            "column_count": 3,
+            "header": ["Metric", "Acc", "F1"],
+            "numeric_tokens": ["91", "88"],
+            "warnings": ["numeric_dense_table"],
+            "confidence": "medium",
+        }
         doc_ir = DocumentIR(
             doc_id="sample",
             source_pdf="sample.pdf",
@@ -60,7 +76,15 @@ class StructureIRTests(unittest.TestCase):
                     warnings=["table_like_content"],
                     blocks=[
                         BlockIR("p1-b0000", 1, "heading", "1 Introduction", (0, 0, 100, 20), 0),
-                        BlockIR("p1-b0001", 1, "table", "Metric Acc F1\nA 91 88", (0, 30, 300, 90), 1),
+                        BlockIR(
+                            "p1-b0001",
+                            1,
+                            "table",
+                            "Metric Acc F1\nA 91 88",
+                            (0, 30, 300, 90),
+                            1,
+                            meta={"table": table_meta},
+                        ),
                     ],
                 ),
                 PageIR(
@@ -81,7 +105,24 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(chunks[0].link_count, 2)
         self.assertEqual(chunks[0].image_count, 1)
         self.assertIn("table_like_content", chunks[0].warnings)
+        self.assertIn("| Metric | Acc | F1 |", chunks[0].text)
         self.assertEqual(chunks[1].pages_0based, [1])
+
+        qa = build_structure_qa(doc_ir)
+        self.assertEqual(qa["summary"]["table_count"], 1)
+        self.assertEqual(qa["tables"][0]["column_count"], 3)
+        self.assertEqual(qa["tables"][0]["numeric_tokens"], ["91", "88"])
+
+    def test_extract_table_structure_returns_dimensions_and_invariants(self) -> None:
+        lines = [
+            {"spans": [{"text": "Metric", "bbox": [40, 10, 90, 20]}, {"text": "Acc", "bbox": [140, 10, 170, 20]}]},
+            {"spans": [{"text": "A", "bbox": [40, 30, 55, 40]}, {"text": "91.2", "bbox": [140, 30, 170, 40]}]},
+        ]
+        table = extract_table_structure(lines, ["Metric Acc", "A 91.2"])
+        self.assertEqual(table["row_count"], 2)
+        self.assertEqual(table["column_count"], 2)
+        self.assertEqual(table["header"], ["Metric", "Acc"])
+        self.assertEqual(table["numeric_tokens"], ["91.2"])
 
     def test_pipeline_writes_document_ir_and_structure_manifest(self) -> None:
         root = Path.cwd() / "test-output" / "structure-ir"
@@ -115,14 +156,20 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(out.is_file())
             ir_path = work_dir / "output" / "document_ir.json"
             manifest_path = work_dir / "output" / "structure_chunks_manifest.json"
+            qa_path = work_dir / "output" / "structure_qa.json"
             self.assertTrue(ir_path.is_file())
             self.assertTrue(manifest_path.is_file())
+            self.assertTrue(qa_path.is_file())
             ir = json.loads(ir_path.read_text(encoding="utf-8"))
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            qa = json.loads(qa_path.read_text(encoding="utf-8"))
             self.assertEqual(ir["schema_version"], "document-ir-v1")
             self.assertGreaterEqual(len(ir["pages"]), 1)
             self.assertGreaterEqual(len(manifest), 1)
             self.assertIn("block_ids", manifest[0])
+            self.assertEqual(qa["schema_version"], "structure-qa-v1")
+            self.assertIn("table_count", qa["summary"])
+            self.assertGreaterEqual(qa["summary"]["table_count"], 1)
         finally:
             if root.exists():
                 shutil.rmtree(root)

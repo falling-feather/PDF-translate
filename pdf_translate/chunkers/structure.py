@@ -36,6 +36,24 @@ def _block_for_translation(block: BlockIR) -> bool:
     return bool(block.text.strip())
 
 
+def _markdown_table(rows: list[list[str]]) -> str:
+    if not rows:
+        return ""
+    column_count = max(len(r) for r in rows)
+    normalized = [r + [""] * (column_count - len(r)) for r in rows]
+    if column_count < 2:
+        return "\n".join(" ".join(r).strip() for r in normalized)
+    header = normalized[0]
+    body = normalized[1:] or [[""] * column_count]
+    lines = [
+        "| " + " | ".join(cell.strip() for cell in header) + " |",
+        "| " + " | ".join("---" for _ in range(column_count)) + " |",
+    ]
+    for row in body:
+        lines.append("| " + " | ".join(cell.strip() for cell in row) + " |")
+    return "\n".join(lines)
+
+
 def _format_block(block: BlockIR) -> str:
     label = {
         "heading": "标题",
@@ -46,6 +64,13 @@ def _format_block(block: BlockIR) -> str:
         "formula": "公式",
         "reference": "参考文献",
     }.get(block.type, block.type)
+    if block.type == "table":
+        table = block.meta.get("table") if isinstance(block.meta, dict) else None
+        rows = table.get("rows") if isinstance(table, dict) else None
+        if isinstance(rows, list) and rows:
+            md = _markdown_table([[str(cell) for cell in row] for row in rows if isinstance(row, list)])
+            if md:
+                return f"[第 {block.page_no} 页｜{label}｜{block.block_id}]\n{md}"
     return f"[第 {block.page_no} 页｜{label}｜{block.block_id}]\n{block.text.strip()}"
 
 

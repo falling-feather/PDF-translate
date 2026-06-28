@@ -17,6 +17,7 @@ from pdf_translate.memory_store import MemoryStore
 from pdf_translate.pdf_structure import SplitManifest, split_main_and_references
 from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
 from pdf_translate.pipeline_merge import merge_chunks_markdown
+from pdf_translate.qa.structure import write_structure_qa
 from pdf_translate.rich_content import extract_page_rich_meta
 from pdf_translate.continuation_extract import translation_tail_for_next_chunk
 from pdf_translate.deferral_markers import (
@@ -199,6 +200,7 @@ def run_translate(
 
     doc_ir = extract_document_ir(main_pdf)
     doc_ir.write_json(out_dir / "document_ir.json")
+    write_structure_qa(doc_ir, out_dir / "structure_qa.json")
     structure_chunks = build_structure_chunks(
         doc_ir,
         max_pages_per_chunk=pages_per_chunk,
