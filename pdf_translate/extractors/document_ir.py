@@ -23,7 +23,7 @@ BlockType = Literal[
 
 SCHEMA_VERSION = "document-ir-v1"
 
-_CAPTION_RE = re.compile(r"^\s*(fig(?:ure)?|table|图|表)\s*[\dIVX一二三四五六七八九十]+[\.:：、\s]", re.I)
+_CAPTION_RE = re.compile(r"^\s*(fig(?:ure)?|table|图|表)\.?\s*[\dIVX一二三四五六七八九十]+[\.:：、\s]", re.I)
 _REFERENCE_RE = re.compile(r"^\s*(references|bibliography|参考文献|参考资料)\s*$", re.I)
 _HEADING_RE = re.compile(r"^\s*((\d+(\.\d+)*)|[IVX]+)\s+[\w\u4e00-\u9fff].{0,90}$", re.I)
 _FOOTNOTE_RE = re.compile(r"^\s*(\d+|[*†‡§])[\).、\s]")
@@ -232,6 +232,69 @@ def _locked_tokens(text: str) -> list[str]:
     return out[:80]
 
 
+def _caption_kind(text: str) -> str | None:
+    match = _CAPTION_RE.match(text.strip())
+    if not match:
+        return None
+    label = match.group(1).lower()
+    if label in {"table", "表"}:
+        return "table"
+    if label.startswith("fig") or label == "图":
+        return "figure"
+    return None
+
+
+def _nearest_previous(block: BlockIR, candidates: list[BlockIR]) -> BlockIR | None:
+    previous = [item for item in candidates if item.page_no == block.page_no and item.order < block.order]
+    if not previous:
+        return None
+    return max(previous, key=lambda item: item.order)
+
+
+def _nearest_following(block: BlockIR, candidates: list[BlockIR]) -> BlockIR | None:
+    following = [item for item in candidates if item.page_no == block.page_no and item.order > block.order]
+    if not following:
+        return None
+    return min(following, key=lambda item: item.order)
+
+
+def assign_block_parents(blocks: list[BlockIR]) -> None:
+    """Attach captions and footnotes to nearby same-page structure parents."""
+    image_blocks = [block for block in blocks if block.type == "image"]
+    table_blocks = [block for block in blocks if block.type == "table"]
+    footnote_parent_types = {"paragraph", "table", "formula"}
+
+    for block in blocks:
+        if block.type != "caption":
+            continue
+        kind = _caption_kind(block.text)
+        parent: BlockIR | None = None
+        if kind == "table":
+            parent = _nearest_following(block, table_blocks) or _nearest_previous(block, table_blocks)
+        elif kind == "figure":
+            parent = _nearest_previous(block, image_blocks) or _nearest_following(block, image_blocks)
+
+        block.meta["caption_kind"] = kind or "unknown"
+        if parent is None:
+            block.meta["parent_warning"] = "orphan_caption"
+            continue
+        block.parent_id = parent.block_id
+        block.meta["parent_relation"] = f"caption_for_{kind}"
+        block.meta.pop("parent_warning", None)
+
+    for block in blocks:
+        if block.type != "footnote":
+            continue
+        candidates = [item for item in blocks if item.type in footnote_parent_types]
+        parent = _nearest_previous(block, candidates)
+        if parent is None:
+            block.meta["parent_warning"] = "orphan_footnote"
+            continue
+        block.parent_id = parent.block_id
+        block.meta["parent_relation"] = "footnote_for_block"
+        block.meta.pop("parent_warning", None)
+
+
 def classify_text_block(
     text: str,
     *,
@@ -370,6 +433,8 @@ def extract_document_ir(pdf_path: Path, *, doc_id: str | None = None) -> Documen
                 type_counts[block.type] += 1
                 if block.type != "header_footer":
                     text_parts.append(text)
+
+            assign_block_parents(blocks)
 
             page_text = "\n\n".join(text_parts)
             image_count = len(page.get_images() or [])

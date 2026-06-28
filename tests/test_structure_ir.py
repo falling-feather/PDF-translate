@@ -15,6 +15,7 @@ from pdf_translate.extractors.document_ir import (
     BlockIR,
     DocumentIR,
     PageIR,
+    assign_block_parents,
     classify_text_block,
     extract_table_structure,
 )
@@ -49,6 +50,16 @@ class StructureIRTests(unittest.TestCase):
         )
         self.assertEqual(caption_type, "caption")
 
+        figure_caption_type = classify_text_block(
+            "Fig. 1 Overview.",
+            bbox=(40, 340, 520, 365),
+            page_height=800,
+            line_texts=["Fig. 1 Overview."],
+            line_xs=[[40]],
+            span_sizes=[10.0],
+        )
+        self.assertEqual(figure_caption_type, "caption")
+
         footnote_type = classify_text_block(
             "1 Additional implementation details are available online.",
             bbox=(40, 690, 520, 720),
@@ -58,6 +69,62 @@ class StructureIRTests(unittest.TestCase):
             span_sizes=[8.5],
         )
         self.assertEqual(footnote_type, "footnote")
+
+    def test_assign_block_parents_links_captions_and_footnotes(self) -> None:
+        image = BlockIR("p1-b0000", 1, "image", "", (40, 80, 560, 300), 0)
+        figure_caption = BlockIR("p1-b0001", 1, "caption", "Fig. 1 Overview.", (60, 320, 500, 345), 1)
+        table_caption = BlockIR("p1-b0002", 1, "caption", "Table 1: Results", (60, 360, 500, 385), 2)
+        table = BlockIR(
+            "p1-b0003",
+            1,
+            "table",
+            "Metric Acc\nA 91.2",
+            (60, 390, 500, 460),
+            3,
+            meta={"table": {"row_count": 2, "column_count": 2}},
+        )
+        paragraph = BlockIR("p1-b0004", 1, "paragraph", "The method is robust.", (60, 500, 500, 545), 4)
+        footnote = BlockIR("p1-b0005", 1, "footnote", "1 Additional implementation note.", (60, 700, 500, 730), 5)
+        orphan_caption = BlockIR("p1-b0006", 1, "caption", "Algorithm note", (60, 745, 500, 765), 6)
+        blocks = [image, figure_caption, table_caption, table, paragraph, footnote, orphan_caption]
+
+        assign_block_parents(blocks)
+
+        self.assertEqual(figure_caption.parent_id, image.block_id)
+        self.assertEqual(figure_caption.meta["caption_kind"], "figure")
+        self.assertEqual(figure_caption.meta["parent_relation"], "caption_for_figure")
+        self.assertEqual(table_caption.parent_id, table.block_id)
+        self.assertEqual(table_caption.meta["caption_kind"], "table")
+        self.assertEqual(table_caption.meta["parent_relation"], "caption_for_table")
+        self.assertEqual(footnote.parent_id, paragraph.block_id)
+        self.assertEqual(footnote.meta["parent_relation"], "footnote_for_block")
+        self.assertIsNone(orphan_caption.parent_id)
+        self.assertEqual(orphan_caption.meta["parent_warning"], "orphan_caption")
+
+        qa = build_structure_qa(
+            DocumentIR(
+                doc_id="relationships",
+                source_pdf="sample.pdf",
+                pages=[
+                    PageIR(
+                        page_no=1,
+                        width=600,
+                        height=800,
+                        text="sample",
+                        blocks=blocks,
+                    )
+                ],
+            )
+        )
+        self.assertEqual(qa["summary"]["caption_count"], 3)
+        self.assertEqual(qa["summary"]["caption_linked_count"], 2)
+        self.assertEqual(qa["summary"]["caption_orphan_count"], 1)
+        self.assertEqual(qa["summary"]["footnote_count"], 1)
+        self.assertEqual(qa["summary"]["footnote_linked_count"], 1)
+        self.assertEqual(qa["summary"]["relationship_count"], 3)
+        self.assertEqual(qa["summary"]["relationship_warning_count"], 1)
+        warnings = [item for item in qa["relationships"] if item["warning"]]
+        self.assertEqual(warnings[0]["block_id"], orphan_caption.block_id)
 
     def test_structure_chunks_preserve_block_provenance(self) -> None:
         table_meta = {
@@ -504,6 +571,9 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("boundary_fragment_ids", manifest[0])
             self.assertEqual(qa["schema_version"], "structure-qa-v1")
             self.assertIn("table_count", qa["summary"])
+            self.assertIn("caption_orphan_count", qa["summary"])
+            self.assertIn("footnote_orphan_count", qa["summary"])
+            self.assertIn("relationships", qa)
             self.assertGreaterEqual(qa["summary"]["table_count"], 1)
             self.assertEqual(vision["schema_version"], "vision-route-v1")
             self.assertIn("action_counts", vision["summary"])
