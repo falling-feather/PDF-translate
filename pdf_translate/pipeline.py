@@ -273,6 +273,7 @@ def run_translate(
             out_dir / "qa_report.json",
             out_dir / "qa_report.md",
             glossary=mem.load_glossary(),
+            pending_review=mem.load_pending_review(),
         )
         repair_plan = write_repair_plan(
             qa_report,

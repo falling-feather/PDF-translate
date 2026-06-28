@@ -151,21 +151,92 @@ def _glossary_terms(glossary: dict[str, Any] | None) -> list[dict[str, Any]]:
                 "zh": zh,
                 "first_page": term.get("first_page"),
                 "source": term.get("source"),
+                "status": term.get("status"),
             }
         )
     return out
+
+
+def _glossary_conflicts(
+    glossary: dict[str, Any] | None,
+    pending_review: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    conflicts: list[dict[str, Any]] = []
+    by_en: dict[str, dict[str, Any]] = {}
+    for term in (glossary or {}).get("terms") or []:
+        if not isinstance(term, dict):
+            continue
+        en = str(term.get("en") or "").strip()
+        zh = str(term.get("zh") or "").strip()
+        if not en or not zh:
+            continue
+        if str(term.get("status") or "").strip().lower() == "rejected":
+            continue
+        key = en.lower()
+        entry = by_en.setdefault(
+            key,
+            {
+                "en": en,
+                "translations": [],
+                "sources": [],
+                "first_pages": [],
+            },
+        )
+        if zh not in entry["translations"]:
+            entry["translations"].append(zh)
+        source = term.get("source")
+        if source and source not in entry["sources"]:
+            entry["sources"].append(source)
+        first_page = term.get("first_page")
+        if first_page is not None and first_page not in entry["first_pages"]:
+            entry["first_pages"].append(first_page)
+    for entry in by_en.values():
+        if len(entry["translations"]) > 1:
+            conflicts.append(entry)
+
+    seen_pending: set[tuple[str, tuple[str, ...]]] = set()
+    for item in (pending_review or {}).get("items") or []:
+        if not isinstance(item, dict) or item.get("type") != "glossary_conflict":
+            continue
+        if str(item.get("status") or "pending").lower() not in {"pending", "open", ""}:
+            continue
+        en = str(item.get("en") or "").strip()
+        existing = [str(v).strip() for v in item.get("existing_zh") or [] if str(v).strip()]
+        candidate = str(item.get("candidate_zh") or "").strip()
+        translations = existing + ([candidate] if candidate and candidate not in existing else [])
+        if not en or len(translations) < 2:
+            continue
+        key = (en.lower(), tuple(sorted(translations)))
+        if key in seen_pending:
+            continue
+        seen_pending.add(key)
+        conflicts.append(
+            {
+                "en": en,
+                "translations": translations,
+                "first_pages": [item.get("first_page")] if item.get("first_page") is not None else [],
+                "sources": [item.get("source")] if item.get("source") else [],
+                "status": "pending_review",
+            }
+        )
+    return conflicts
 
 
 def _missing_glossary_terms(
     source: str,
     target: str,
     glossary_terms: list[dict[str, Any]],
+    conflict_en: set[str],
 ) -> list[dict[str, Any]]:
     missing: list[dict[str, Any]] = []
     for term in glossary_terms:
         en = str(term.get("en") or "").strip()
         zh = str(term.get("zh") or "").strip()
         if not en or not zh:
+            continue
+        if str(term.get("status") or "").strip().lower() == "rejected":
+            continue
+        if en.lower() in conflict_en:
             continue
         if not re.search(re.escape(en), source, flags=re.I):
             continue
@@ -186,6 +257,7 @@ def _chunk_report(
     chunk: TextChunk,
     target_text: str | None,
     glossary_terms: list[dict[str, Any]],
+    glossary_conflicts: list[dict[str, Any]],
 ) -> dict[str, Any]:
     source = _source_text_for_qa(chunk.text)
     pages_1based = [p + 1 for p in chunk.pages_0based]
@@ -230,7 +302,13 @@ def _chunk_report(
 
     duplicates = _duplicate_paragraphs(target_text)
     english_ratio = _english_residual_ratio(target_text)
-    missing_glossary = _missing_glossary_terms(source, target_text, glossary_terms)
+    source_conflicts = [
+        conflict
+        for conflict in glossary_conflicts
+        if re.search(re.escape(str(conflict.get("en") or "")), source, flags=re.I)
+    ]
+    conflict_en = {str(conflict.get("en") or "").lower() for conflict in source_conflicts}
+    missing_glossary = _missing_glossary_terms(source, target_text, glossary_terms, conflict_en)
 
     issues: list[dict[str, Any]] = []
     if missing_numbers:
@@ -261,6 +339,14 @@ def _chunk_report(
                 "terms": missing_glossary[:80],
             }
         )
+    if source_conflicts:
+        issues.append(
+            {
+                "type": "glossary_translation_conflict",
+                "severity": "medium",
+                "conflicts": source_conflicts[:40],
+            }
+        )
 
     return {
         "chunk_id": chunk.chunk_id,
@@ -276,6 +362,7 @@ def _chunk_report(
             "english_residual_ratio": english_ratio,
             "duplicate_paragraph_count": len(duplicates),
             "missing_glossary_term_count": len(missing_glossary),
+            "glossary_conflict_count": len(source_conflicts),
         },
     }
 
@@ -285,10 +372,12 @@ def build_translation_qa(
     chunk_dir: Path,
     *,
     glossary: dict[str, Any] | None = None,
+    pending_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     terms = _glossary_terms(glossary)
+    conflicts = _glossary_conflicts(glossary, pending_review)
     reports = [
-        _chunk_report(chunk, _chunk_translation_text(chunk_dir, chunk.chunk_id), terms)
+        _chunk_report(chunk, _chunk_translation_text(chunk_dir, chunk.chunk_id), terms, conflicts)
         for chunk in chunks
     ]
     issue_counts: Counter[str] = Counter()
@@ -311,11 +400,13 @@ def build_translation_qa(
             "chunk_count": len(chunks),
             "translated_chunk_count": translated_count,
             "glossary_term_count": len(terms),
+            "glossary_conflict_count": len(conflicts),
             "issue_count": sum(issue_counts.values()),
             "issue_counts": dict(issue_counts),
             "severity_counts": dict(severity_counts),
             "max_english_residual_ratio": max_english_ratio,
         },
+        "glossary_conflicts": conflicts,
         "chunks": reports,
     }
 
@@ -330,6 +421,7 @@ def translation_qa_to_markdown(report: dict[str, Any]) -> str:
         f"| 块总数 | {summary.get('chunk_count', 0)} |",
         f"| 已有译文块 | {summary.get('translated_chunk_count', 0)} |",
         f"| 术语库条目 | {summary.get('glossary_term_count', 0)} |",
+        f"| 术语冲突 | {summary.get('glossary_conflict_count', 0)} |",
         f"| 问题总数 | {summary.get('issue_count', 0)} |",
         f"| 最高英文残留比例 | {summary.get('max_english_residual_ratio', 0)} |",
         "",
@@ -367,6 +459,13 @@ def translation_qa_to_markdown(report: dict[str, Any]) -> str:
                     if isinstance(term, dict)
                 )
                 lines.append(f"- `{severity}` `{issue_type}`：{terms}")
+            elif "conflicts" in issue:
+                conflicts = ", ".join(
+                    f"{conflict.get('en')} -> {' / '.join(str(v) for v in conflict.get('translations', []))}"
+                    for conflict in issue.get("conflicts", [])[:20]
+                    if isinstance(conflict, dict)
+                )
+                lines.append(f"- `{severity}` `{issue_type}`：{conflicts}")
             elif "ratio" in issue:
                 lines.append(f"- `{severity}` `{issue_type}`：{issue.get('ratio')}")
             elif "tables" in issue:
@@ -387,8 +486,14 @@ def write_translation_qa(
     markdown_path: Path,
     *,
     glossary: dict[str, Any] | None = None,
+    pending_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    report = build_translation_qa(chunks, chunk_dir, glossary=glossary)
+    report = build_translation_qa(
+        chunks,
+        chunk_dir,
+        glossary=glossary,
+        pending_review=pending_review,
+    )
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     markdown_path.parent.mkdir(parents=True, exist_ok=True)

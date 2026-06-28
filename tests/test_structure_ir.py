@@ -18,6 +18,7 @@ from pdf_translate.extractors.document_ir import (
     classify_text_block,
     extract_table_structure,
 )
+from pdf_translate.memory_store import MemoryStore
 from pdf_translate.qa.repair import build_repair_plan
 from pdf_translate.qa.structure import build_structure_qa
 from pdf_translate.qa.translation import build_translation_qa
@@ -265,6 +266,110 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(route["pages"][0]["action"], "local_ocr")
         self.assertIn("very_low_text", route["pages"][0]["reasons"])
         self.assertEqual(route["pages"][0]["metrics"]["image_count"], 1)
+
+    def test_memory_store_records_glossary_conflicts_for_review(self) -> None:
+        root = Path.cwd() / "test-output" / "glossary-conflict-memory"
+        if root.exists():
+            shutil.rmtree(root)
+        try:
+            mem = MemoryStore(root / "memory")
+            mem.ensure_files()
+            added_first = mem.merge_glossary_terms_from_survey(
+                [{"en": "Accuracy", "zh": "准确率"}],
+                first_page_1based=1,
+            )
+            added_conflict = mem.merge_glossary_terms_from_survey(
+                [{"en": "accuracy", "zh": "精度"}],
+                first_page_1based=2,
+                source="survey",
+            )
+            glossary = mem.load_glossary()
+            pending = mem.load_pending_review()
+            self.assertEqual(added_first, 1)
+            self.assertEqual(added_conflict, 0)
+            self.assertEqual(len(glossary["terms"]), 1)
+            self.assertEqual(glossary["terms"][0]["status"], "candidate")
+            conflicts = [item for item in pending["items"] if item["type"] == "glossary_conflict"]
+            self.assertEqual(len(conflicts), 1)
+            self.assertEqual(conflicts[0]["en"], "accuracy")
+            self.assertEqual(conflicts[0]["existing_zh"], ["准确率"])
+            self.assertEqual(conflicts[0]["candidate_zh"], "精度")
+            self.assertEqual(conflicts[0]["status"], "pending")
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
+    def test_translation_qa_reports_glossary_conflicts(self) -> None:
+        root = Path.cwd() / "test-output" / "translation-qa-glossary-conflict"
+        if root.exists():
+            shutil.rmtree(root)
+        chunk_dir = root / "chunks"
+        chunk_dir.mkdir(parents=True)
+        try:
+            chunks = [
+                TextChunk(
+                    chunk_id="c0000",
+                    pages_0based=[0],
+                    text="Accuracy improves under domain shift.",
+                    link_count=0,
+                    image_count=0,
+                )
+            ]
+            (chunk_dir / "c0000.md").write_text(
+                "---\n{}\n---\n\n准确率在领域偏移下提升。\n",
+                encoding="utf-8",
+            )
+            report = build_translation_qa(
+                chunks,
+                chunk_dir,
+                glossary={"terms": [{"en": "Accuracy", "zh": "准确率", "first_page": 1}]},
+                pending_review={
+                    "items": [
+                        {
+                            "type": "glossary_conflict",
+                            "status": "pending",
+                            "en": "Accuracy",
+                            "existing_zh": ["准确率"],
+                            "candidate_zh": "精度",
+                            "first_page": 1,
+                            "source": "survey",
+                        }
+                    ]
+                },
+            )
+            issue_types = {issue["type"] for issue in report["chunks"][0]["issues"]}
+            self.assertIn("glossary_translation_conflict", issue_types)
+            self.assertNotIn("missing_glossary_terms", issue_types)
+            self.assertEqual(report["summary"]["glossary_conflict_count"], 1)
+            self.assertEqual(report["summary"]["issue_count"], 1)
+
+            plan = build_repair_plan(report)
+            self.assertEqual(plan["summary"]["repair_item_count"], 1)
+            self.assertEqual(plan["items"][0]["action"], "review_glossary_conflict")
+            self.assertEqual(plan["items"][0]["scope"], "glossary")
+            self.assertEqual(plan["items"][0]["executor"], "human_review")
+
+            html_path = root / "bilingual.html"
+            write_bilingual_html(
+                chunks,
+                chunk_dir,
+                html_path,
+                qa_report=report,
+                repair_plan=plan,
+                title="术语冲突样例",
+            )
+            html = html_path.read_text(encoding="utf-8")
+            self.assertIn("glossary_translation_conflict", html)
+            self.assertIn("review_glossary_conflict", html)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
 
     def test_translation_qa_reports_missing_invariants(self) -> None:
         root = Path.cwd() / "test-output" / "translation-qa"

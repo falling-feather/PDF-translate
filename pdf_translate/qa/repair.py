@@ -44,6 +44,12 @@ _ISSUE_RULES = {
         "executor": "translation_backend",
         "reason": "术语库中的期望译名未出现在译文中，重译时必须注入并锁定术语。",
     },
+    "glossary_translation_conflict": {
+        "action": "review_glossary_conflict",
+        "scope": "glossary",
+        "executor": "human_review",
+        "reason": "同一英文术语存在多个候选译名，需要先人工确认术语再重译相关块。",
+    },
     "table_shape_mismatch": {
         "action": "repair_table_shape",
         "scope": "table",
@@ -77,7 +83,7 @@ def _priority(severity: str, issue_type: str) -> str:
 
 def _issue_evidence(issue: dict[str, Any]) -> dict[str, Any]:
     evidence: dict[str, Any] = {}
-    for key in ("tokens", "terms", "tables", "samples", "ratio", "detail"):
+    for key in ("tokens", "terms", "conflicts", "tables", "samples", "ratio", "detail"):
         if key in issue:
             evidence[key] = issue[key]
     return evidence

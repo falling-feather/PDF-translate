@@ -20,6 +20,25 @@ DEFAULT_STYLE = {
 }
 
 
+def _normalize_term_key(text: str) -> str:
+    return " ".join(text.strip().lower().split())
+
+
+def _load_json_or_default(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    if not path.is_file():
+        return json.loads(json.dumps(default, ensure_ascii=False))
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _pending_dedupe_key(item: dict[str, Any]) -> str:
+    if item.get("dedupe_key"):
+        return str(item["dedupe_key"])
+    kind = str(item.get("type") or "pending")
+    en = _normalize_term_key(str(item.get("en") or ""))
+    zh = str(item.get("candidate_zh") or item.get("zh") or "").strip()
+    return f"{kind}:{en}:{zh}"
+
+
 class MemoryStore:
     """memory/ 目录：glossary、entities、chunk_summaries、style_notes、pending_review。"""
 
@@ -82,6 +101,30 @@ class MemoryStore:
     def load_glossary(self) -> dict[str, Any]:
         return json.loads(self.glossary_path.read_text(encoding="utf-8"))
 
+    def load_pending_review(self) -> dict[str, Any]:
+        return _load_json_or_default(self.pending_path, DEFAULT_PENDING)
+
+    def _append_pending_items_locked(self, items: list[dict[str, Any]]) -> int:
+        if not items:
+            return 0
+        data = self.load_pending_review()
+        existing = list(data.get("items") or [])
+        keys = {_pending_dedupe_key(item) for item in existing if isinstance(item, dict)}
+        added = 0
+        for item in items:
+            key = _pending_dedupe_key(item)
+            if key in keys:
+                continue
+            item = dict(item)
+            item["dedupe_key"] = key
+            existing.append(item)
+            keys.add(key)
+            added += 1
+        if added:
+            data["items"] = existing
+            self.pending_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return added
+
     def merge_glossary_terms_from_survey(
         self,
         terms: list[dict[str, str]],
@@ -89,22 +132,67 @@ class MemoryStore:
         first_page_1based: int,
         source: str = "survey",
     ) -> int:
-        """将巡视产出的 en/zh 术语合并入 glossary；按英文去重，返回新增条数。"""
+        """将巡视产出的 en/zh 术语合并入 glossary；冲突写入 pending_review。"""
         if not terms:
             return 0
         with _glossary_write_lock:
             data = self.load_glossary()
             existing: list[dict[str, Any]] = list(data.get("terms") or [])
-            seen_en = {str(t.get("en", "")).strip().lower() for t in existing if t.get("en")}
+            seen_en = {_normalize_term_key(str(t.get("en", ""))) for t in existing if t.get("en")}
             added = 0
+            pending: list[dict[str, Any]] = []
             for t in terms:
                 en = str(t.get("en", "")).strip()
                 zh = str(t.get("zh", "")).strip()
                 if not en or not zh:
                     continue
-                key = en.lower()
+                key = _normalize_term_key(en)
                 if key in seen_en:
+                    same_en = [
+                        item
+                        for item in existing
+                        if _normalize_term_key(str(item.get("en") or "")) == key
+                    ]
+                    existing_zh = sorted(
+                        {
+                            str(item.get("zh") or "").strip()
+                            for item in same_en
+                            if str(item.get("zh") or "").strip()
+                        }
+                    )
+                    if existing_zh and zh not in existing_zh:
+                        pending.append(
+                            {
+                                "type": "glossary_conflict",
+                                "status": "pending",
+                                "en": en,
+                                "existing_zh": existing_zh,
+                                "candidate_zh": zh,
+                                "first_page": int(first_page_1based),
+                                "source": source,
+                                "reason": "同一英文术语出现不同中文译名，需要人工确认。",
+                            }
+                        )
                     continue
+                same_zh_terms = [
+                    item
+                    for item in existing
+                    if str(item.get("zh") or "").strip() == zh
+                    and _normalize_term_key(str(item.get("en") or "")) != key
+                ]
+                if same_zh_terms:
+                    pending.append(
+                        {
+                            "type": "shared_translation_review",
+                            "status": "pending",
+                            "en": en,
+                            "candidate_zh": zh,
+                            "existing_en": [str(item.get("en") or "").strip() for item in same_zh_terms],
+                            "first_page": int(first_page_1based),
+                            "source": source,
+                            "reason": "多个英文术语共享同一中文译名，需要确认是否为同义术语。",
+                        }
+                    )
                 seen_en.add(key)
                 existing.append(
                     {
@@ -112,11 +200,13 @@ class MemoryStore:
                         "zh": zh,
                         "first_page": int(first_page_1based),
                         "source": source,
+                        "status": "candidate",
                     }
                 )
                 added += 1
             data["terms"] = existing
             self.glossary_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._append_pending_items_locked(pending)
             return added
 
     def load_style_notes(self) -> dict[str, Any]:
@@ -136,6 +226,8 @@ class MemoryStore:
         in_range: list[dict[str, Any]] = []
         no_page: list[dict[str, Any]] = []
         for t in terms:
+            if str(t.get("status") or "").strip().lower() == "rejected":
+                continue
             fp = t.get("first_page")
             if fp is None:
                 no_page.append(t)
@@ -201,8 +293,5 @@ class MemoryStore:
     def add_pending_items(self, items: list[dict[str, Any]]) -> None:
         if not items:
             return
-        data = json.loads(self.pending_path.read_text(encoding="utf-8"))
-        data.setdefault("items", []).extend(items)
-        self.pending_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        with _glossary_write_lock:
+            self._append_pending_items_locked(items)
