@@ -21,6 +21,7 @@ from pdf_translate.extractors.document_ir import (
     extract_table_structure,
 )
 from pdf_translate.memory_store import MemoryStore
+from pdf_translate.qa.chunk_boundary import build_chunk_boundary_qa
 from pdf_translate.qa.metrics import build_experiment_metrics
 from pdf_translate.qa.repair import build_repair_plan
 from pdf_translate.qa.structure import build_structure_qa
@@ -405,6 +406,75 @@ class StructureIRTests(unittest.TestCase):
         self.assertIn("protected_page_boundary:p1-p2", chunks[0].warnings)
         self.assertIn("accuracy under domain shift", chunks[0].text)
 
+    def test_chunk_boundary_qa_reports_split_and_protected_fragments(self) -> None:
+        doc_ir = DocumentIR(
+            doc_id="chunk-boundary-sample",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text="The proposed method improves",
+                    blocks=[
+                        BlockIR(
+                            "p1-b0000",
+                            1,
+                            "paragraph",
+                            "The proposed method improves",
+                            (40, 100, 520, 180),
+                            0,
+                        ),
+                    ],
+                ),
+                PageIR(
+                    page_no=2,
+                    width=600,
+                    height=800,
+                    text="accuracy under domain shift.",
+                    blocks=[
+                        BlockIR(
+                            "p2-b0000",
+                            2,
+                            "paragraph",
+                            "accuracy under domain shift.",
+                            (40, 80, 520, 140),
+                            0,
+                        ),
+                    ],
+                ),
+            ],
+        )
+        structure_qa = build_structure_qa(doc_ir)
+        page_chunks = [
+            TextChunk("c0000", [0], "The proposed method improves", 0, 0),
+            TextChunk("c0001", [1], "accuracy under domain shift.", 0, 0),
+        ]
+        page_report = build_chunk_boundary_qa(page_chunks, structure_qa, pipeline_variant="page")
+        self.assertEqual(page_report["schema_version"], "chunk-boundary-qa-v1")
+        self.assertEqual(page_report["summary"]["boundary_fragment_count"], 1)
+        self.assertEqual(page_report["summary"]["split_boundary_count"], 1)
+        self.assertEqual(page_report["summary"]["high_risk_split_count"], 1)
+        self.assertEqual(page_report["summary"]["split_boundary_rate"], 1.0)
+        self.assertEqual(page_report["boundaries"][0]["status"], "split")
+
+        structure_chunks = build_structure_chunks(
+            doc_ir,
+            target_chars=1000,
+            max_chars=2000,
+            max_pages_per_chunk=1,
+        )
+        structure_report = build_chunk_boundary_qa(
+            structure_chunks,
+            structure_qa,
+            pipeline_variant="structure",
+        )
+        self.assertEqual(structure_report["summary"]["protected_boundary_count"], 1)
+        self.assertEqual(structure_report["summary"]["split_boundary_count"], 0)
+        self.assertEqual(structure_report["summary"]["protected_boundary_rate"], 1.0)
+        self.assertEqual(structure_report["boundaries"][0]["status"], "protected")
+        self.assertEqual(structure_report["boundaries"][0]["protected_by_chunk_ids"], ["c0000"])
+
     def test_extract_table_structure_returns_dimensions_and_invariants(self) -> None:
         lines = [
             {"spans": [{"text": "Metric", "bbox": [40, 10, 90, 20]}, {"text": "Acc", "bbox": [140, 10, 170, 20]}]},
@@ -466,8 +536,8 @@ class StructureIRTests(unittest.TestCase):
                     "entity_candidate_count": 6,
                     "entity_unique_count": 5,
                     "entity_type_counts": {"model_or_dataset": 2, "person": 1},
-                    "page_boundary_fragment_count": 1,
-                    "page_boundary_fragment_rate": 0.3333,
+                    "page_boundary_fragment_count": 2,
+                    "page_boundary_fragment_rate": 0.6667,
                 },
             },
             {
@@ -503,6 +573,15 @@ class StructureIRTests(unittest.TestCase):
                     "scope_counts": {"chunk": 3},
                 },
             },
+            chunk_boundary_qa={
+                "schema_version": "chunk-boundary-qa-v1",
+                "summary": {
+                    "split_boundary_count": 1,
+                    "protected_boundary_count": 1,
+                    "co_located_boundary_count": 1,
+                    "high_risk_split_count": 1,
+                },
+            },
             pipeline_variant="structure",
         )
         self.assertEqual(metrics["schema_version"], "experiment-metrics-v1")
@@ -511,7 +590,11 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_candidate_page_count"], 2)
         self.assertEqual(metrics["quality"]["repair_item_count"], 3)
         self.assertEqual(metrics["quality"]["table_shape_error_count"], 1)
+        self.assertEqual(metrics["quality"]["split_boundary_count"], 1)
+        self.assertEqual(metrics["quality"]["protected_boundary_count"], 1)
         self.assertEqual(metrics["rates"]["table_shape_error_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["split_boundary_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["protected_boundary_rate"], 0.5)
         self.assertEqual(metrics["rates"]["entity_missing_rate"], 0.25)
         self.assertEqual(metrics["rates"]["repair_item_per_chunk"], 1.5)
         self.assertEqual(metrics["rates"]["relationship_warning_rate"], 0.3333)
@@ -856,6 +939,7 @@ class StructureIRTests(unittest.TestCase):
             ir_path = work_dir / "output" / "document_ir.json"
             manifest_path = work_dir / "output" / "structure_chunks_manifest.json"
             qa_path = work_dir / "output" / "structure_qa.json"
+            chunk_boundary_qa_path = work_dir / "output" / "chunk_boundary_qa.json"
             vision_path = work_dir / "output" / "vision_route.json"
             translation_qa_path = work_dir / "output" / "qa_report.json"
             translation_qa_md_path = work_dir / "output" / "qa_report.md"
@@ -866,6 +950,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(ir_path.is_file())
             self.assertTrue(manifest_path.is_file())
             self.assertTrue(qa_path.is_file())
+            self.assertTrue(chunk_boundary_qa_path.is_file())
             self.assertTrue(vision_path.is_file())
             self.assertTrue(translation_qa_path.is_file())
             self.assertTrue(translation_qa_md_path.is_file())
@@ -876,6 +961,7 @@ class StructureIRTests(unittest.TestCase):
             ir = json.loads(ir_path.read_text(encoding="utf-8"))
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             qa = json.loads(qa_path.read_text(encoding="utf-8"))
+            chunk_boundary_qa = json.loads(chunk_boundary_qa_path.read_text(encoding="utf-8"))
             vision = json.loads(vision_path.read_text(encoding="utf-8"))
             translation_qa = json.loads(translation_qa_path.read_text(encoding="utf-8"))
             repair_plan = json.loads(repair_plan_path.read_text(encoding="utf-8"))
@@ -906,6 +992,9 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("entities", qa)
             self.assertGreaterEqual(qa["summary"]["entity_candidate_count"], 1)
             self.assertGreaterEqual(qa["summary"]["table_count"], 1)
+            self.assertEqual(chunk_boundary_qa["schema_version"], "chunk-boundary-qa-v1")
+            self.assertEqual(chunk_boundary_qa["pipeline_variant"], "structure")
+            self.assertIn("split_boundary_count", chunk_boundary_qa["summary"])
             self.assertEqual(vision["schema_version"], "vision-route-v1")
             self.assertIn("action_counts", vision["summary"])
             self.assertEqual(translation_qa["schema_version"], "translation-qa-v1")
@@ -922,6 +1011,8 @@ class StructureIRTests(unittest.TestCase):
                 vision["summary"]["action_counts"],
             )
             self.assertIn("entity_missing_rate", metrics["rates"])
+            self.assertIn("split_boundary_rate", metrics["rates"])
+            self.assertEqual(metrics["evidence_files"]["chunk_boundary_qa"], "output/chunk_boundary_qa.json")
             self.assertEqual(metrics["evidence_files"]["repair_plan"], "output/repair_plan.json")
             self.assertIn("双语对照译文", bilingual_path.read_text(encoding="utf-8"))
         finally:
@@ -944,6 +1035,7 @@ class StructureIRTests(unittest.TestCase):
                 "document_ir.json",
                 "structure_chunks_manifest.json",
                 "structure_qa.json",
+                "chunk_boundary_qa.json",
                 "vision_route.json",
                 "qa_report.json",
                 "qa_report.md",
@@ -960,10 +1052,12 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/bilingual.html", rels)
             self.assertIn("output/qa_report.md", rels)
             self.assertIn("output/document_ir.json", rels)
+            self.assertIn("output/chunk_boundary_qa.json", rels)
             self.assertIn("output/experiment_metrics.json", rels)
             self.assertEqual(map_bundle_arcname("output/bilingual.html"), "译文/双语对照.html")
             self.assertEqual(map_bundle_arcname("output/repair_plan.md"), "质量/局部修复计划.md")
             self.assertEqual(map_bundle_arcname("output/structure_qa.json"), "质量/结构QA.json")
+            self.assertEqual(map_bundle_arcname("output/chunk_boundary_qa.json"), "质量/分段边界QA.json")
             self.assertEqual(map_bundle_arcname("output/experiment_metrics.json"), "质量/实验指标.json")
         finally:
             if root.exists():

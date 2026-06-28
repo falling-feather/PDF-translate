@@ -18,6 +18,7 @@ from pdf_translate.memory_store import MemoryStore
 from pdf_translate.pdf_structure import SplitManifest, split_main_and_references
 from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
 from pdf_translate.pipeline_merge import merge_chunks_markdown
+from pdf_translate.qa.chunk_boundary import write_chunk_boundary_qa
 from pdf_translate.qa.metrics import write_experiment_metrics
 from pdf_translate.qa.repair import write_repair_plan
 from pdf_translate.qa.structure import write_structure_qa
@@ -242,6 +243,12 @@ def run_translate(
     (out_dir / "chunks_manifest.json").write_text(
         json.dumps(chunk_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    chunk_boundary_qa = write_chunk_boundary_qa(
+        chunks,
+        structure_qa,
+        out_dir / "chunk_boundary_qa.json",
+        pipeline_variant=chunk_strategy,
+    )
 
     state_path = out_dir / "state.json"
     state: dict = {"completed": [], "prompt_version": SYSTEM_PROMPT_VERSION, "prompt_hash": prompt_fingerprint()}
@@ -290,6 +297,7 @@ def run_translate(
             out_dir / "experiment_metrics.json",
             doc_id=doc_ir.doc_id,
             pipeline_variant=chunk_strategy,
+            chunk_boundary_qa=chunk_boundary_qa,
         )
         write_bilingual_html(
             chunks,
