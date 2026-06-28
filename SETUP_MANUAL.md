@@ -208,7 +208,7 @@ my-paper/
     links_index.csv   # 执行 links 后
 ```
 
-**巡视与路线图**：详见 **`plans/plan-survey-orchestration.md`**。
+**巡视与路线图**：当前巡视配置见上文环境变量；后续“译前计划、术语确认、结构感知分段、OCR 与 QA”规划见 **[docs/02-更新规划.md](./docs/02-更新规划.md)**。
 
 ---
 
