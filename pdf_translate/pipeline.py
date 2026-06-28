@@ -271,6 +271,7 @@ def run_translate(
             chunk_dir,
             out_dir / "qa_report.json",
             out_dir / "qa_report.md",
+            glossary=mem.load_glossary(),
         )
         repair_plan = write_repair_plan(
             qa_report,

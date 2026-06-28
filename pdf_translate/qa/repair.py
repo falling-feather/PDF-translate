@@ -38,6 +38,12 @@ _ISSUE_RULES = {
         "executor": "translation_backend",
         "reason": "公式或变量符号缺失，优先修复公式邻近段落。",
     },
+    "missing_glossary_terms": {
+        "action": "rewrite_with_glossary_terms",
+        "scope": "chunk",
+        "executor": "translation_backend",
+        "reason": "术语库中的期望译名未出现在译文中，重译时必须注入并锁定术语。",
+    },
     "table_shape_mismatch": {
         "action": "repair_table_shape",
         "scope": "table",
@@ -71,7 +77,7 @@ def _priority(severity: str, issue_type: str) -> str:
 
 def _issue_evidence(issue: dict[str, Any]) -> dict[str, Any]:
     evidence: dict[str, Any] = {}
-    for key in ("tokens", "tables", "samples", "ratio", "detail"):
+    for key in ("tokens", "terms", "tables", "samples", "ratio", "detail"):
         if key in issue:
             evidence[key] = issue[key]
     return evidence

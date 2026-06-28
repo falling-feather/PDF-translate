@@ -111,7 +111,7 @@ def _issue_list(issues: list[dict[str, Any]]) -> str:
         issue_type = escape(str(issue.get("type") or "unknown"))
         severity = escape(str(issue.get("severity") or "unknown"))
         evidence = []
-        for key in ("tokens", "tables", "samples", "ratio", "detail"):
+        for key in ("tokens", "terms", "tables", "samples", "ratio", "detail"):
             if key in issue:
                 evidence.append(f"{escape(key)}={escape(str(issue[key]))}")
         evidence_text = "；".join(evidence)

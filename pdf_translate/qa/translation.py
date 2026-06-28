@@ -134,7 +134,59 @@ def _chunk_translation_text(chunk_dir: Path, chunk_id: str) -> str | None:
     return strip_yaml_front_matter(path.read_text(encoding="utf-8")).strip()
 
 
-def _chunk_report(chunk: TextChunk, target_text: str | None) -> dict[str, Any]:
+def _glossary_terms(glossary: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not glossary:
+        return []
+    out: list[dict[str, Any]] = []
+    for term in glossary.get("terms") or []:
+        if not isinstance(term, dict):
+            continue
+        en = str(term.get("en") or "").strip()
+        zh = str(term.get("zh") or "").strip()
+        if not en or not zh:
+            continue
+        out.append(
+            {
+                "en": en,
+                "zh": zh,
+                "first_page": term.get("first_page"),
+                "source": term.get("source"),
+            }
+        )
+    return out
+
+
+def _missing_glossary_terms(
+    source: str,
+    target: str,
+    glossary_terms: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    missing: list[dict[str, Any]] = []
+    for term in glossary_terms:
+        en = str(term.get("en") or "").strip()
+        zh = str(term.get("zh") or "").strip()
+        if not en or not zh:
+            continue
+        if not re.search(re.escape(en), source, flags=re.I):
+            continue
+        if zh in target:
+            continue
+        missing.append(
+            {
+                "en": en,
+                "expected_zh": zh,
+                "first_page": term.get("first_page"),
+                "source": term.get("source"),
+            }
+        )
+    return missing
+
+
+def _chunk_report(
+    chunk: TextChunk,
+    target_text: str | None,
+    glossary_terms: list[dict[str, Any]],
+) -> dict[str, Any]:
     source = _source_text_for_qa(chunk.text)
     pages_1based = [p + 1 for p in chunk.pages_0based]
     if target_text is None:
@@ -178,6 +230,7 @@ def _chunk_report(chunk: TextChunk, target_text: str | None) -> dict[str, Any]:
 
     duplicates = _duplicate_paragraphs(target_text)
     english_ratio = _english_residual_ratio(target_text)
+    missing_glossary = _missing_glossary_terms(source, target_text, glossary_terms)
 
     issues: list[dict[str, Any]] = []
     if missing_numbers:
@@ -200,6 +253,14 @@ def _chunk_report(chunk: TextChunk, target_text: str | None) -> dict[str, Any]:
         issues.append({"type": "duplicate_paragraphs", "severity": "medium", "samples": duplicates[:5]})
     if english_ratio >= 0.45:
         issues.append({"type": "high_english_residual", "severity": "low", "ratio": english_ratio})
+    if missing_glossary:
+        issues.append(
+            {
+                "type": "missing_glossary_terms",
+                "severity": "medium",
+                "terms": missing_glossary[:80],
+            }
+        )
 
     return {
         "chunk_id": chunk.chunk_id,
@@ -214,12 +275,22 @@ def _chunk_report(chunk: TextChunk, target_text: str | None) -> dict[str, Any]:
             "table_shape_error_count": len(table_shape_errors),
             "english_residual_ratio": english_ratio,
             "duplicate_paragraph_count": len(duplicates),
+            "missing_glossary_term_count": len(missing_glossary),
         },
     }
 
 
-def build_translation_qa(chunks: list[TextChunk], chunk_dir: Path) -> dict[str, Any]:
-    reports = [_chunk_report(chunk, _chunk_translation_text(chunk_dir, chunk.chunk_id)) for chunk in chunks]
+def build_translation_qa(
+    chunks: list[TextChunk],
+    chunk_dir: Path,
+    *,
+    glossary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    terms = _glossary_terms(glossary)
+    reports = [
+        _chunk_report(chunk, _chunk_translation_text(chunk_dir, chunk.chunk_id), terms)
+        for chunk in chunks
+    ]
     issue_counts: Counter[str] = Counter()
     severity_counts: Counter[str] = Counter()
     translated_count = 0
@@ -239,6 +310,7 @@ def build_translation_qa(chunks: list[TextChunk], chunk_dir: Path) -> dict[str, 
         "summary": {
             "chunk_count": len(chunks),
             "translated_chunk_count": translated_count,
+            "glossary_term_count": len(terms),
             "issue_count": sum(issue_counts.values()),
             "issue_counts": dict(issue_counts),
             "severity_counts": dict(severity_counts),
@@ -257,6 +329,7 @@ def translation_qa_to_markdown(report: dict[str, Any]) -> str:
         "| --- | --- |",
         f"| 块总数 | {summary.get('chunk_count', 0)} |",
         f"| 已有译文块 | {summary.get('translated_chunk_count', 0)} |",
+        f"| 术语库条目 | {summary.get('glossary_term_count', 0)} |",
         f"| 问题总数 | {summary.get('issue_count', 0)} |",
         f"| 最高英文残留比例 | {summary.get('max_english_residual_ratio', 0)} |",
         "",
@@ -287,6 +360,13 @@ def translation_qa_to_markdown(report: dict[str, Any]) -> str:
             elif "tokens" in issue:
                 tokens = ", ".join(str(token) for token in issue.get("tokens", [])[:20])
                 lines.append(f"- `{severity}` `{issue_type}`：{tokens}")
+            elif "terms" in issue:
+                terms = ", ".join(
+                    f"{term.get('en')} -> {term.get('expected_zh')}"
+                    for term in issue.get("terms", [])[:20]
+                    if isinstance(term, dict)
+                )
+                lines.append(f"- `{severity}` `{issue_type}`：{terms}")
             elif "ratio" in issue:
                 lines.append(f"- `{severity}` `{issue_type}`：{issue.get('ratio')}")
             elif "tables" in issue:
@@ -305,8 +385,10 @@ def write_translation_qa(
     chunk_dir: Path,
     json_path: Path,
     markdown_path: Path,
+    *,
+    glossary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    report = build_translation_qa(chunks, chunk_dir)
+    report = build_translation_qa(chunks, chunk_dir, glossary=glossary)
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     markdown_path.parent.mkdir(parents=True, exist_ok=True)

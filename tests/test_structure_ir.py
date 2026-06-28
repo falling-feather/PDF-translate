@@ -186,20 +186,28 @@ class StructureIRTests(unittest.TestCase):
                 "---\n{}\n---\n\n表 1 报告了结果。\n| 指标 |\n| --- |\n| A |\n",
                 encoding="utf-8",
             )
-            report = build_translation_qa(chunks, chunk_dir)
+            report = build_translation_qa(
+                chunks,
+                chunk_dir,
+                glossary={"terms": [{"en": "Acc", "zh": "准确率", "first_page": 1}]},
+            )
             issue_types = {issue["type"] for issue in report["chunks"][0]["issues"]}
             self.assertIn("missing_numbers", issue_types)
             self.assertIn("missing_references", issue_types)
             self.assertIn("table_shape_mismatch", issue_types)
-            self.assertEqual(report["summary"]["issue_count"], 3)
+            self.assertIn("missing_glossary_terms", issue_types)
+            self.assertEqual(report["summary"]["issue_count"], 4)
+            self.assertEqual(report["summary"]["glossary_term_count"], 1)
 
             plan = build_repair_plan(report)
             self.assertEqual(plan["schema_version"], "repair-plan-v1")
-            self.assertEqual(plan["summary"]["repair_item_count"], 3)
+            self.assertEqual(plan["summary"]["repair_item_count"], 4)
             actions = {item["action"] for item in plan["items"]}
             self.assertIn("rewrite_with_locked_tokens", actions)
             self.assertIn("repair_table_shape", actions)
+            self.assertIn("rewrite_with_glossary_terms", actions)
             self.assertEqual(plan["summary"]["priority_counts"]["P0"], 3)
+            self.assertEqual(plan["summary"]["priority_counts"]["P1"], 1)
 
             html_path = root / "bilingual.html"
             write_bilingual_html(
@@ -215,6 +223,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("Table 1 reports", html)
             self.assertIn("表 1 报告了结果", html)
             self.assertIn("missing_numbers", html)
+            self.assertIn("missing_glossary_terms", html)
             self.assertIn("repair_table_shape", html)
         finally:
             if root.exists():
