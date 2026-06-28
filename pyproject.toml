@@ -30,6 +30,7 @@ packages = [
   "pdf_translate.chunkers",
   "pdf_translate.extractors",
   "pdf_translate.qa",
+  "pdf_translate.vision",
   "pdf_translate.translators",
   "pdf_translate.server",
 ]

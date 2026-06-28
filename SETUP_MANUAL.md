@@ -203,6 +203,7 @@ my-paper/
     document_ir.json
     structure_chunks_manifest.json
     structure_qa.json
+    vision_route.json
     chunks/c0000.md, c0001.md, …（每块独立 Markdown）
     translated_full.md
     state.json

@@ -29,6 +29,7 @@ from pdf_translate.text_sanitize import collapse_toc_dot_leaders
 from pdf_translate.translators.base import TranslationRequest
 from pdf_translate.translators.factory import build_translator
 from pdf_translate.translators.openai_compatible import SYSTEM_PROMPT_VERSION, prompt_fingerprint
+from pdf_translate.vision.routing import write_vision_route
 
 
 def init_workdir(work_dir: Path) -> None:
@@ -201,6 +202,7 @@ def run_translate(
     doc_ir = extract_document_ir(main_pdf)
     doc_ir.write_json(out_dir / "document_ir.json")
     write_structure_qa(doc_ir, out_dir / "structure_qa.json")
+    write_vision_route(doc_ir, out_dir / "vision_route.json")
     structure_chunks = build_structure_chunks(
         doc_ir,
         max_pages_per_chunk=pages_per_chunk,

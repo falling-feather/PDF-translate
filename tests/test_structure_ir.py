@@ -18,6 +18,7 @@ from pdf_translate.extractors.document_ir import (
 )
 from pdf_translate.qa.structure import build_structure_qa
 from pdf_translate.pipeline import init_workdir, run_split, run_translate
+from pdf_translate.vision.routing import build_vision_route
 
 
 class StructureIRTests(unittest.TestCase):
@@ -124,6 +125,37 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(table["header"], ["Metric", "Acc"])
         self.assertEqual(table["numeric_tokens"], ["91.2"])
 
+    def test_vision_route_flags_low_text_image_page_for_local_ocr(self) -> None:
+        doc_ir = DocumentIR(
+            doc_id="vision-sample",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text="Fig. 1",
+                    image_count=1,
+                    warnings=["low_text_image_heavy_page"],
+                    meta={
+                        "text_char_count": 6,
+                        "text_area_ratio": 0.01,
+                        "image_area_ratio": 0.52,
+                    },
+                    blocks=[
+                        BlockIR("p1-b0000", 1, "image", "", (40, 80, 560, 520), 0),
+                        BlockIR("p1-b0001", 1, "caption", "Fig. 1 Overview", (60, 540, 500, 570), 1),
+                    ],
+                )
+            ],
+        )
+        route = build_vision_route(doc_ir)
+        self.assertEqual(route["schema_version"], "vision-route-v1")
+        self.assertEqual(route["summary"]["routed_page_count"], 1)
+        self.assertEqual(route["pages"][0]["action"], "local_ocr")
+        self.assertIn("very_low_text", route["pages"][0]["reasons"])
+        self.assertEqual(route["pages"][0]["metrics"]["image_count"], 1)
+
     def test_pipeline_writes_document_ir_and_structure_manifest(self) -> None:
         root = Path.cwd() / "test-output" / "structure-ir"
         if root.exists():
@@ -157,19 +189,25 @@ class StructureIRTests(unittest.TestCase):
             ir_path = work_dir / "output" / "document_ir.json"
             manifest_path = work_dir / "output" / "structure_chunks_manifest.json"
             qa_path = work_dir / "output" / "structure_qa.json"
+            vision_path = work_dir / "output" / "vision_route.json"
             self.assertTrue(ir_path.is_file())
             self.assertTrue(manifest_path.is_file())
             self.assertTrue(qa_path.is_file())
+            self.assertTrue(vision_path.is_file())
             ir = json.loads(ir_path.read_text(encoding="utf-8"))
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             qa = json.loads(qa_path.read_text(encoding="utf-8"))
+            vision = json.loads(vision_path.read_text(encoding="utf-8"))
             self.assertEqual(ir["schema_version"], "document-ir-v1")
             self.assertGreaterEqual(len(ir["pages"]), 1)
+            self.assertIn("meta", ir["pages"][0])
             self.assertGreaterEqual(len(manifest), 1)
             self.assertIn("block_ids", manifest[0])
             self.assertEqual(qa["schema_version"], "structure-qa-v1")
             self.assertIn("table_count", qa["summary"])
             self.assertGreaterEqual(qa["summary"]["table_count"], 1)
+            self.assertEqual(vision["schema_version"], "vision-route-v1")
+            self.assertIn("action_counts", vision["summary"])
         finally:
             if root.exists():
                 shutil.rmtree(root)

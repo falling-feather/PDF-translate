@@ -71,6 +71,7 @@ class PageIR:
     link_count: int = 0
     image_count: int = 0
     warnings: list[str] = field(default_factory=list)
+    meta: dict[str, Any] = field(default_factory=dict)
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +82,7 @@ class PageIR:
             "link_count": self.link_count,
             "image_count": self.image_count,
             "warnings": self.warnings,
+            "meta": self.meta,
             "blocks": [b.to_json_dict() for b in self.blocks],
         }
 
@@ -282,6 +284,18 @@ def _image_area_ratio(raw_blocks: list[dict[str, Any]], page_area: float) -> flo
     return min(1.0, area / page_area)
 
 
+def _block_area_ratio(blocks: list[BlockIR], page_area: float, *, include_types: set[str]) -> float:
+    if page_area <= 0:
+        return 0.0
+    area = 0.0
+    for block in blocks:
+        if block.type not in include_types:
+            continue
+        x0, y0, x1, y1 = block.bbox
+        area += max(0.0, x1 - x0) * max(0.0, y1 - y0)
+    return min(1.0, area / page_area)
+
+
 def extract_document_ir(pdf_path: Path, *, doc_id: str | None = None) -> DocumentIR:
     """Extract a lightweight structure IR from a PDF using local PyMuPDF data only."""
     pdf_path = pdf_path.resolve()
@@ -360,14 +374,38 @@ def extract_document_ir(pdf_path: Path, *, doc_id: str | None = None) -> Documen
             page_text = "\n\n".join(text_parts)
             image_count = len(page.get_images() or [])
             link_count = len(page.get_links() or [])
-            image_ratio = _image_area_ratio(raw_blocks, float(rect.width * rect.height))
+            page_area = float(rect.width * rect.height)
+            image_ratio = _image_area_ratio(raw_blocks, page_area)
+            text_ratio = _block_area_ratio(
+                blocks,
+                page_area,
+                include_types={
+                    "paragraph",
+                    "heading",
+                    "table",
+                    "caption",
+                    "footnote",
+                    "formula",
+                    "reference",
+                },
+            )
             warnings: list[str] = []
             if len(page_text.strip()) < 120 and (image_count > 0 or image_ratio > 0.35):
                 warnings.append("low_text_image_heavy_page")
+            if len(page_text.strip()) < 300 and text_ratio < 0.03:
+                warnings.append("low_text_area_page")
+            if image_count > 0 and image_ratio > 0.45:
+                warnings.append("image_area_heavy_page")
             if type_counts.get("table", 0):
                 warnings.append("table_like_content")
             if type_counts.get("caption", 0) and type_counts.get("image", 0):
                 warnings.append("image_caption_page")
+            page_meta = {
+                "text_char_count": len(page_text.strip()),
+                "text_area_ratio": round(text_ratio, 4),
+                "image_area_ratio": round(image_ratio, 4),
+                "block_type_counts": dict(type_counts),
+            }
 
             pages.append(
                 PageIR(
@@ -379,6 +417,7 @@ def extract_document_ir(pdf_path: Path, *, doc_id: str | None = None) -> Documen
                     link_count=link_count,
                     image_count=image_count,
                     warnings=warnings,
+                    meta=page_meta,
                 )
             )
 
