@@ -44,6 +44,12 @@ _ISSUE_RULES = {
         "executor": "translation_backend",
         "reason": "术语库中的期望译名未出现在译文中，重译时必须注入并锁定术语。",
     },
+    "missing_entity_tokens": {
+        "action": "rewrite_with_entity_tokens",
+        "scope": "chunk",
+        "executor": "translation_backend",
+        "reason": "源文实体候选未在译文中保留，重译时应锁定模型、数据集、机构或缩写等实体 token。",
+    },
     "glossary_translation_conflict": {
         "action": "review_glossary_conflict",
         "scope": "glossary",
@@ -83,7 +89,7 @@ def _priority(severity: str, issue_type: str) -> str:
 
 def _issue_evidence(issue: dict[str, Any]) -> dict[str, Any]:
     evidence: dict[str, Any] = {}
-    for key in ("tokens", "terms", "conflicts", "tables", "samples", "ratio", "detail"):
+    for key in ("tokens", "terms", "entities", "conflicts", "tables", "samples", "ratio", "detail"):
         if key in issue:
             evidence[key] = issue[key]
     return evidence

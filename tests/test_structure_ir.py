@@ -550,6 +550,62 @@ class StructureIRTests(unittest.TestCase):
             if parent.is_dir() and not any(parent.iterdir()):
                 shutil.rmtree(parent)
 
+    def test_translation_qa_reports_missing_entity_tokens(self) -> None:
+        root = Path.cwd() / "test-output" / "translation-qa-entities"
+        if root.exists():
+            shutil.rmtree(root)
+        chunk_dir = root / "chunks"
+        chunk_dir.mkdir(parents=True)
+        try:
+            chunks = [
+                TextChunk(
+                    chunk_id="c0000",
+                    pages_0based=[0],
+                    text="BERT improves CNN baselines on ImageNet.",
+                    link_count=0,
+                    image_count=0,
+                )
+            ]
+            (chunk_dir / "c0000.md").write_text(
+                "---\n{}\n---\n\n该方法提升了基线效果。\n",
+                encoding="utf-8",
+            )
+            report = build_translation_qa(chunks, chunk_dir)
+            issue_types = {issue["type"] for issue in report["chunks"][0]["issues"]}
+            self.assertIn("missing_entity_tokens", issue_types)
+            self.assertEqual(report["summary"]["entity_candidate_count"], 3)
+            self.assertEqual(report["summary"]["missing_entity_token_count"], 3)
+            entity_issue = next(
+                issue for issue in report["chunks"][0]["issues"] if issue["type"] == "missing_entity_tokens"
+            )
+            self.assertEqual(entity_issue["severity"], "medium")
+            self.assertEqual({entity["text"] for entity in entity_issue["entities"]}, {"BERT", "CNN", "ImageNet"})
+
+            plan = build_repair_plan(report)
+            self.assertEqual(plan["summary"]["repair_item_count"], 1)
+            self.assertEqual(plan["items"][0]["action"], "rewrite_with_entity_tokens")
+            self.assertEqual(plan["items"][0]["scope"], "chunk")
+            self.assertEqual(plan["items"][0]["executor"], "translation_backend")
+
+            html_path = root / "bilingual.html"
+            write_bilingual_html(
+                chunks,
+                chunk_dir,
+                html_path,
+                qa_report=report,
+                repair_plan=plan,
+                title="实体缺失样例",
+            )
+            html = html_path.read_text(encoding="utf-8")
+            self.assertIn("missing_entity_tokens", html)
+            self.assertIn("rewrite_with_entity_tokens", html)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
     def test_translation_qa_reports_missing_invariants(self) -> None:
         root = Path.cwd() / "test-output" / "translation-qa"
         if root.exists():
@@ -705,6 +761,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("action_counts", vision["summary"])
             self.assertEqual(translation_qa["schema_version"], "translation-qa-v1")
             self.assertIn("issue_counts", translation_qa["summary"])
+            self.assertIn("entity_candidate_count", translation_qa["summary"])
+            self.assertIn("missing_entity_token_count", translation_qa["summary"])
             self.assertEqual(repair_plan["schema_version"], "repair-plan-v1")
             self.assertIn("repair_item_count", repair_plan["summary"])
             self.assertIn("双语对照译文", bilingual_path.read_text(encoding="utf-8"))

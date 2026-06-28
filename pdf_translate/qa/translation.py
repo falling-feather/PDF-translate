@@ -8,6 +8,7 @@ from typing import Any
 
 from pdf_translate.chunking import TextChunk
 from pdf_translate.deferral_markers import strip_yaml_front_matter
+from pdf_translate.extractors.document_ir import extract_entity_candidates
 
 SCHEMA_VERSION = "translation-qa-v1"
 
@@ -19,6 +20,7 @@ _TABLE_FIGURE_RE = re.compile(
     re.I,
 )
 _MATH_SYMBOL_RE = re.compile(r"(≤|≥|±|≈|=|∑|∫|√|α|β|γ|λ|μ|σ)")
+_ENTITY_MEDIUM_SEVERITY_TYPES = {"model_or_dataset", "acronym"}
 
 
 def _unique_in_order(items: list[str]) -> list[str]:
@@ -253,6 +255,31 @@ def _missing_glossary_terms(
     return missing
 
 
+def _missing_entity_tokens(source: str, target: str) -> list[dict[str, str]]:
+    missing: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for entity in extract_entity_candidates(source):
+        entity_text = str(entity.get("text") or "").strip()
+        entity_type = str(entity.get("type") or "unknown").strip() or "unknown"
+        if not entity_text:
+            continue
+        key = (entity_text.casefold(), entity_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        if re.search(re.escape(entity_text), target, flags=re.I):
+            continue
+        missing.append(
+            {
+                "text": entity_text,
+                "type": entity_type,
+                "confidence": str(entity.get("confidence") or "unknown"),
+                "source": str(entity.get("source") or "unknown"),
+            }
+        )
+    return missing
+
+
 def _chunk_report(
     chunk: TextChunk,
     target_text: str | None,
@@ -309,6 +336,7 @@ def _chunk_report(
     ]
     conflict_en = {str(conflict.get("en") or "").lower() for conflict in source_conflicts}
     missing_glossary = _missing_glossary_terms(source, target_text, glossary_terms, conflict_en)
+    missing_entities = _missing_entity_tokens(source, target_text)
 
     issues: list[dict[str, Any]] = []
     if missing_numbers:
@@ -339,6 +367,19 @@ def _chunk_report(
                 "terms": missing_glossary[:80],
             }
         )
+    if missing_entities:
+        severity = (
+            "medium"
+            if any(entity.get("type") in _ENTITY_MEDIUM_SEVERITY_TYPES for entity in missing_entities)
+            else "low"
+        )
+        issues.append(
+            {
+                "type": "missing_entity_tokens",
+                "severity": severity,
+                "entities": missing_entities[:80],
+            }
+        )
     if source_conflicts:
         issues.append(
             {
@@ -363,6 +404,8 @@ def _chunk_report(
             "duplicate_paragraph_count": len(duplicates),
             "missing_glossary_term_count": len(missing_glossary),
             "glossary_conflict_count": len(source_conflicts),
+            "source_entity_candidate_count": len(extract_entity_candidates(source)),
+            "missing_entity_token_count": len(missing_entities),
         },
     }
 
@@ -383,9 +426,14 @@ def build_translation_qa(
     issue_counts: Counter[str] = Counter()
     severity_counts: Counter[str] = Counter()
     translated_count = 0
+    entity_candidate_count = 0
+    missing_entity_count = 0
     for report in reports:
         if report["status"] != "missing_translation":
             translated_count += 1
+        metrics = report.get("metrics") or {}
+        entity_candidate_count += int(metrics.get("source_entity_candidate_count") or 0)
+        missing_entity_count += int(metrics.get("missing_entity_token_count") or 0)
         for issue in report["issues"]:
             issue_counts[issue["type"]] += 1
             severity_counts[issue["severity"]] += 1
@@ -401,6 +449,8 @@ def build_translation_qa(
             "translated_chunk_count": translated_count,
             "glossary_term_count": len(terms),
             "glossary_conflict_count": len(conflicts),
+            "entity_candidate_count": entity_candidate_count,
+            "missing_entity_token_count": missing_entity_count,
             "issue_count": sum(issue_counts.values()),
             "issue_counts": dict(issue_counts),
             "severity_counts": dict(severity_counts),
@@ -422,6 +472,8 @@ def translation_qa_to_markdown(report: dict[str, Any]) -> str:
         f"| 已有译文块 | {summary.get('translated_chunk_count', 0)} |",
         f"| 术语库条目 | {summary.get('glossary_term_count', 0)} |",
         f"| 术语冲突 | {summary.get('glossary_conflict_count', 0)} |",
+        f"| 实体候选 | {summary.get('entity_candidate_count', 0)} |",
+        f"| 缺失实体 | {summary.get('missing_entity_token_count', 0)} |",
         f"| 问题总数 | {summary.get('issue_count', 0)} |",
         f"| 最高英文残留比例 | {summary.get('max_english_residual_ratio', 0)} |",
         "",
@@ -459,6 +511,13 @@ def translation_qa_to_markdown(report: dict[str, Any]) -> str:
                     if isinstance(term, dict)
                 )
                 lines.append(f"- `{severity}` `{issue_type}`：{terms}")
+            elif "entities" in issue:
+                entities = ", ".join(
+                    f"{entity.get('text')} ({entity.get('type')})"
+                    for entity in issue.get("entities", [])[:20]
+                    if isinstance(entity, dict)
+                )
+                lines.append(f"- `{severity}` `{issue_type}`：{entities}")
             elif "conflicts" in issue:
                 conflicts = ", ".join(
                     f"{conflict.get('en')} -> {' / '.join(str(v) for v in conflict.get('translations', []))}"
