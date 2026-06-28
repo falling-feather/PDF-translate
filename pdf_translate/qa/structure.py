@@ -15,6 +15,8 @@ def build_structure_qa(doc_ir: DocumentIR) -> dict[str, Any]:
     page_warnings: list[dict[str, Any]] = []
     table_blocks: list[dict[str, Any]] = []
     relationships: list[dict[str, Any]] = []
+    entity_candidates: list[dict[str, Any]] = []
+    entity_type_counts: Counter[str] = Counter()
     page_boundary_fragments = detect_page_boundary_fragments(doc_ir)
     table_continuations = _table_continuations(page_boundary_fragments)
     continued_from_by_block = {
@@ -29,8 +31,29 @@ def build_structure_qa(doc_ir: DocumentIR) -> dict[str, Any]:
             page_warnings.append({"page_no": page.page_no, "warnings": page.warnings})
         for block in page.blocks:
             block_counts[block.type] += 1
+            meta = block.meta if isinstance(block.meta, dict) else {}
+            entities = meta.get("entities")
+            if isinstance(entities, list):
+                for entity in entities:
+                    if not isinstance(entity, dict):
+                        continue
+                    entity_text = str(entity.get("text") or "").strip()
+                    entity_type = str(entity.get("type") or "unknown").strip() or "unknown"
+                    if not entity_text:
+                        continue
+                    entity_type_counts[entity_type] += 1
+                    entity_candidates.append(
+                        {
+                            "block_id": block.block_id,
+                            "page_no": block.page_no,
+                            "block_type": block.type,
+                            "type": entity_type,
+                            "text": entity_text,
+                            "confidence": entity.get("confidence") or "unknown",
+                            "source": entity.get("source") or "unknown",
+                        }
+                    )
             if block.type in {"caption", "footnote"}:
-                meta = block.meta if isinstance(block.meta, dict) else {}
                 relationships.append(
                     {
                         "block_id": block.block_id,
@@ -71,6 +94,7 @@ def build_structure_qa(doc_ir: DocumentIR) -> dict[str, Any]:
     caption_orphan_count = sum(1 for item in relationships if item["type"] == "caption" and not item.get("parent_id"))
     footnote_orphan_count = sum(1 for item in relationships if item["type"] == "footnote" and not item.get("parent_id"))
     table_footnote_count = sum(1 for item in relationships if item.get("parent_relation") == "footnote_for_table")
+    unique_entity_count = len({item["text"].casefold() for item in entity_candidates})
     return {
         "schema_version": "structure-qa-v1",
         "doc_id": doc_ir.doc_id,
@@ -78,6 +102,9 @@ def build_structure_qa(doc_ir: DocumentIR) -> dict[str, Any]:
             "page_count": len(doc_ir.pages),
             "block_counts": dict(block_counts),
             "table_count": len(table_blocks),
+            "entity_candidate_count": len(entity_candidates),
+            "entity_unique_count": unique_entity_count,
+            "entity_type_counts": dict(entity_type_counts),
             "caption_count": caption_count,
             "caption_linked_count": caption_count - caption_orphan_count,
             "caption_orphan_count": caption_orphan_count,
@@ -96,6 +123,7 @@ def build_structure_qa(doc_ir: DocumentIR) -> dict[str, Any]:
         },
         "tables": table_blocks,
         "table_continuations": table_continuations,
+        "entities": entity_candidates,
         "relationships": relationships,
         "page_boundary_fragments": page_boundary_fragments,
         "page_warnings": page_warnings,

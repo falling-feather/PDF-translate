@@ -33,6 +33,29 @@ _LOCKED_TOKEN_RE = re.compile(
     r"\b\d+(?:\.\d+)?%?\b|[A-Za-z]\d\b|[A-Z]{2,}(?:-[A-Z0-9]+)*)"
 )
 _NUMBER_RE = re.compile(r"\b\d+(?:\.\d+)?%?\b")
+_CITATION_AUTHOR_RE = re.compile(
+    r"\b(?P<entity>[A-Z][A-Za-z'-]+)(?:\s+et\s+al\.)?(?=(?:,\s*|\s+\()(?:19|20)\d{2}\)?)"
+)
+_ORG_RE = re.compile(
+    r"\b(?P<entity>[A-Z][A-Za-z&.-]+(?:\s+(?:of|and|for|the|[A-Z][A-Za-z&.-]+)){0,6}\s+"
+    r"(?:University|Institute|Laborator(?:y|ies)|Labs|College|School|Corporation|Corp\.?|Inc\.?|"
+    r"Ltd\.?|LLC|Center|Centre|Department))\b"
+)
+_MODEL_DATASET_RE = re.compile(
+    r"\b(?P<entity>BERT|RoBERTa|GPT(?:-\d+(?:\.\d+)?)?|ResNet-\d+|ImageNet|COCO|GLUE|MNIST|"
+    r"CIFAR-\d+|SQuAD|WikiText-\d+|Transformer|LLaMA(?:-\d+)?|CLIP|ViT(?:-[A-Z0-9/]+)?|"
+    r"[A-Z][A-Za-z]+Net(?:-\d+)?)\b"
+)
+_ACRONYM_RE = re.compile(r"\b(?P<entity>[A-Z]{2,}(?:-[A-Z0-9]+)*)\b")
+_ENTITY_STOPWORDS = {
+    "API",
+    "CPU",
+    "DOI",
+    "HTTP",
+    "PDF",
+    "QA",
+    "URL",
+}
 
 
 @dataclass
@@ -232,6 +255,39 @@ def _locked_tokens(text: str) -> list[str]:
     return out[:80]
 
 
+def extract_entity_candidates(text: str) -> list[dict[str, str]]:
+    """Extract conservative local entity candidates for terminology and structure QA."""
+    candidates: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add(match: re.Match[str], entity_type: str, source: str, confidence: str) -> None:
+        entity = re.sub(r"\s+", " ", match.group("entity").strip())
+        if len(entity) < 2 or entity in _ENTITY_STOPWORDS:
+            return
+        key = entity.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(
+            {
+                "type": entity_type,
+                "text": entity,
+                "source": source,
+                "confidence": confidence,
+            }
+        )
+
+    for match in _ORG_RE.finditer(text):
+        add(match, "organization", "organization_suffix", "medium")
+    for match in _MODEL_DATASET_RE.finditer(text):
+        add(match, "model_or_dataset", "model_dataset_pattern", "medium")
+    for match in _CITATION_AUTHOR_RE.finditer(text):
+        add(match, "person", "citation_author_year", "medium")
+    for match in _ACRONYM_RE.finditer(text):
+        add(match, "acronym", "uppercase_acronym", "low")
+    return candidates[:80]
+
+
 def _caption_kind(text: str) -> str | None:
     match = _CAPTION_RE.match(text.strip())
     if not match:
@@ -424,6 +480,9 @@ def extract_document_ir(pdf_path: Path, *, doc_id: str | None = None) -> Documen
                 meta: dict[str, Any] = {"avg_font_size": round(sum(sizes) / len(sizes), 2) if sizes else None}
                 if block_type == "table":
                     meta["table"] = extract_table_structure(lines, line_texts)
+                entities = extract_entity_candidates(text)
+                if entities:
+                    meta["entities"] = entities
                 block = BlockIR(
                     block_id=block_id,
                     page_no=page_no,

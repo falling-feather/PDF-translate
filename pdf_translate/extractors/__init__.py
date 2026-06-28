@@ -5,6 +5,7 @@ from pdf_translate.extractors.document_ir import (
     DocumentIR,
     PageIR,
     classify_text_block,
+    extract_entity_candidates,
     extract_document_ir,
 )
 
@@ -13,6 +14,6 @@ __all__ = [
     "DocumentIR",
     "PageIR",
     "classify_text_block",
+    "extract_entity_candidates",
     "extract_document_ir",
 ]
-

@@ -17,6 +17,7 @@ from pdf_translate.extractors.document_ir import (
     PageIR,
     assign_block_parents,
     classify_text_block,
+    extract_entity_candidates,
     extract_table_structure,
 )
 from pdf_translate.memory_store import MemoryStore
@@ -69,6 +70,17 @@ class StructureIRTests(unittest.TestCase):
             span_sizes=[8.5],
         )
         self.assertEqual(footnote_type, "footnote")
+
+    def test_extract_entity_candidates_for_academic_names(self) -> None:
+        entities = extract_entity_candidates(
+            "Smith et al. (2024) evaluated BERT and ImageNet at Stanford University with CNN baselines."
+        )
+        by_text = {item["text"]: item for item in entities}
+        self.assertEqual(by_text["Smith"]["type"], "person")
+        self.assertEqual(by_text["BERT"]["type"], "model_or_dataset")
+        self.assertEqual(by_text["ImageNet"]["type"], "model_or_dataset")
+        self.assertEqual(by_text["Stanford University"]["type"], "organization")
+        self.assertEqual(by_text["CNN"]["type"], "acronym")
 
     def test_assign_block_parents_links_captions_and_footnotes(self) -> None:
         image = BlockIR("p1-b0000", 1, "image", "", (40, 80, 560, 300), 0)
@@ -192,6 +204,42 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(qa["tables"][0]["column_count"], 3)
         self.assertEqual(qa["tables"][0]["numeric_tokens"], ["91", "88"])
         self.assertIn("page_boundary_fragment_count", qa["summary"])
+
+    def test_structure_qa_reports_entity_candidates(self) -> None:
+        doc_ir = DocumentIR(
+            doc_id="entities",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text="Smith et al. (2024) evaluated BERT at Stanford University.",
+                    blocks=[
+                        BlockIR(
+                            "p1-b0000",
+                            1,
+                            "paragraph",
+                            "Smith et al. (2024) evaluated BERT at Stanford University.",
+                            (40, 100, 520, 160),
+                            0,
+                            meta={
+                                "entities": extract_entity_candidates(
+                                    "Smith et al. (2024) evaluated BERT at Stanford University."
+                                )
+                            },
+                        ),
+                    ],
+                )
+            ],
+        )
+        qa = build_structure_qa(doc_ir)
+        self.assertEqual(qa["summary"]["entity_candidate_count"], 3)
+        self.assertEqual(qa["summary"]["entity_unique_count"], 3)
+        self.assertEqual(qa["summary"]["entity_type_counts"]["person"], 1)
+        self.assertEqual(qa["summary"]["entity_type_counts"]["model_or_dataset"], 1)
+        self.assertEqual(qa["summary"]["entity_type_counts"]["organization"], 1)
+        self.assertEqual({item["text"] for item in qa["entities"]}, {"Smith", "BERT", "Stanford University"})
 
     def test_structure_qa_reports_table_continuations(self) -> None:
         doc_ir = DocumentIR(
@@ -582,7 +630,7 @@ class StructureIRTests(unittest.TestCase):
             pdf_path = root / "sample.pdf"
             doc = fitz.open()
             p1 = doc.new_page(width=595, height=842)
-            p1.insert_text((72, 72), "1 Introduction\nThis is a short academic paragraph.")
+            p1.insert_text((72, 72), "1 Introduction\nSmith et al. (2024) evaluated BERT at Stanford University.")
             p2 = doc.new_page(width=595, height=842)
             p2.insert_text((72, 72), "Table 1: Results\nModel Acc F1 N\nA 91.2 88.1 120")
             pdf_path.write_bytes(doc.tobytes())
@@ -630,6 +678,13 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(ir["schema_version"], "document-ir-v1")
             self.assertGreaterEqual(len(ir["pages"]), 1)
             self.assertIn("meta", ir["pages"][0])
+            ir_entities = [
+                entity
+                for page in ir["pages"]
+                for block in page["blocks"]
+                for entity in block.get("meta", {}).get("entities", [])
+            ]
+            self.assertTrue(any(entity["text"] == "BERT" for entity in ir_entities))
             self.assertGreaterEqual(len(manifest), 1)
             self.assertIn("block_ids", manifest[0])
             self.assertIn("boundary_fragment_ids", manifest[0])
@@ -639,8 +694,12 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("footnote_orphan_count", qa["summary"])
             self.assertIn("table_footnote_count", qa["summary"])
             self.assertIn("table_continuation_count", qa["summary"])
+            self.assertIn("entity_candidate_count", qa["summary"])
+            self.assertIn("entity_type_counts", qa["summary"])
             self.assertIn("relationships", qa)
             self.assertIn("table_continuations", qa)
+            self.assertIn("entities", qa)
+            self.assertGreaterEqual(qa["summary"]["entity_candidate_count"], 1)
             self.assertGreaterEqual(qa["summary"]["table_count"], 1)
             self.assertEqual(vision["schema_version"], "vision-route-v1")
             self.assertIn("action_counts", vision["summary"])
