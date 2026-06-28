@@ -21,6 +21,7 @@ from pdf_translate.extractors.document_ir import (
     extract_table_structure,
 )
 from pdf_translate.memory_store import MemoryStore
+from pdf_translate.qa.metrics import build_experiment_metrics
 from pdf_translate.qa.repair import build_repair_plan
 from pdf_translate.qa.structure import build_structure_qa
 from pdf_translate.qa.translation import build_translation_qa
@@ -446,6 +447,73 @@ class StructureIRTests(unittest.TestCase):
         self.assertIn("very_low_text", route["pages"][0]["reasons"])
         self.assertEqual(route["pages"][0]["metrics"]["image_count"], 1)
 
+    def test_experiment_metrics_aggregates_quality_evidence(self) -> None:
+        metrics = build_experiment_metrics(
+            {
+                "schema_version": "structure-qa-v1",
+                "doc_id": "metrics-sample",
+                "summary": {
+                    "page_count": 4,
+                    "block_counts": {"paragraph": 8, "table": 2},
+                    "table_count": 2,
+                    "table_continuation_count": 1,
+                    "table_footnote_count": 1,
+                    "caption_count": 2,
+                    "caption_orphan_count": 1,
+                    "footnote_count": 1,
+                    "footnote_orphan_count": 0,
+                    "relationship_warning_count": 1,
+                    "entity_candidate_count": 6,
+                    "entity_unique_count": 5,
+                    "entity_type_counts": {"model_or_dataset": 2, "person": 1},
+                    "page_boundary_fragment_count": 1,
+                    "page_boundary_fragment_rate": 0.3333,
+                },
+            },
+            {
+                "schema_version": "vision-route-v1",
+                "summary": {
+                    "page_count": 4,
+                    "routed_page_count": 2,
+                    "action_counts": {"text_only": 2, "local_ocr": 1, "vlm_review": 1},
+                    "risk_counts": {"low": 2, "medium": 1, "high": 1},
+                },
+            },
+            {
+                "schema_version": "translation-qa-v1",
+                "summary": {
+                    "chunk_count": 2,
+                    "entity_candidate_count": 4,
+                    "missing_entity_token_count": 1,
+                    "issue_count": 3,
+                    "issue_counts": {"missing_numbers": 1, "missing_entity_tokens": 2},
+                    "severity_counts": {"high": 1, "medium": 2},
+                    "max_english_residual_ratio": 0.125,
+                },
+            },
+            {
+                "schema_version": "repair-plan-v1",
+                "summary": {
+                    "chunk_count": 2,
+                    "repair_item_count": 3,
+                    "action_counts": {"rewrite_with_locked_tokens": 1, "rewrite_with_entity_tokens": 2},
+                    "priority_counts": {"P0": 1, "P1": 2},
+                    "scope_counts": {"chunk": 3},
+                },
+            },
+            pipeline_variant="structure",
+        )
+        self.assertEqual(metrics["schema_version"], "experiment-metrics-v1")
+        self.assertEqual(metrics["doc_id"], "metrics-sample")
+        self.assertEqual(metrics["pipeline_variant"], "structure")
+        self.assertEqual(metrics["quality"]["ocr_candidate_page_count"], 2)
+        self.assertEqual(metrics["quality"]["repair_item_count"], 3)
+        self.assertEqual(metrics["rates"]["entity_missing_rate"], 0.25)
+        self.assertEqual(metrics["rates"]["repair_item_per_chunk"], 1.5)
+        self.assertEqual(metrics["rates"]["relationship_warning_rate"], 0.3333)
+        self.assertEqual(metrics["breakdowns"]["vision_action_counts"]["local_ocr"], 1)
+        self.assertEqual(metrics["evidence_files"]["translation_qa"], "output/qa_report.json")
+
     def test_memory_store_records_glossary_conflicts_for_review(self) -> None:
         root = Path.cwd() / "test-output" / "glossary-conflict-memory"
         if root.exists():
@@ -715,6 +783,7 @@ class StructureIRTests(unittest.TestCase):
             translation_qa_md_path = work_dir / "output" / "qa_report.md"
             repair_plan_path = work_dir / "output" / "repair_plan.json"
             repair_plan_md_path = work_dir / "output" / "repair_plan.md"
+            metrics_path = work_dir / "output" / "experiment_metrics.json"
             bilingual_path = work_dir / "output" / "bilingual.html"
             self.assertTrue(ir_path.is_file())
             self.assertTrue(manifest_path.is_file())
@@ -724,6 +793,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(translation_qa_md_path.is_file())
             self.assertTrue(repair_plan_path.is_file())
             self.assertTrue(repair_plan_md_path.is_file())
+            self.assertTrue(metrics_path.is_file())
             self.assertTrue(bilingual_path.is_file())
             ir = json.loads(ir_path.read_text(encoding="utf-8"))
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -731,6 +801,7 @@ class StructureIRTests(unittest.TestCase):
             vision = json.loads(vision_path.read_text(encoding="utf-8"))
             translation_qa = json.loads(translation_qa_path.read_text(encoding="utf-8"))
             repair_plan = json.loads(repair_plan_path.read_text(encoding="utf-8"))
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
             self.assertEqual(ir["schema_version"], "document-ir-v1")
             self.assertGreaterEqual(len(ir["pages"]), 1)
             self.assertIn("meta", ir["pages"][0])
@@ -765,6 +836,15 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("missing_entity_token_count", translation_qa["summary"])
             self.assertEqual(repair_plan["schema_version"], "repair-plan-v1")
             self.assertIn("repair_item_count", repair_plan["summary"])
+            self.assertEqual(metrics["schema_version"], "experiment-metrics-v1")
+            self.assertEqual(metrics["pipeline_variant"], "structure")
+            self.assertEqual(metrics["quality"]["table_count"], qa["summary"]["table_count"])
+            self.assertEqual(
+                metrics["breakdowns"]["vision_action_counts"],
+                vision["summary"]["action_counts"],
+            )
+            self.assertIn("entity_missing_rate", metrics["rates"])
+            self.assertEqual(metrics["evidence_files"]["repair_plan"], "output/repair_plan.json")
             self.assertIn("双语对照译文", bilingual_path.read_text(encoding="utf-8"))
         finally:
             if root.exists():
@@ -791,6 +871,7 @@ class StructureIRTests(unittest.TestCase):
                 "qa_report.md",
                 "repair_plan.json",
                 "repair_plan.md",
+                "experiment_metrics.json",
             ]:
                 (output / name).write_text("{}", encoding="utf-8")
             rels = {
@@ -801,9 +882,11 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/bilingual.html", rels)
             self.assertIn("output/qa_report.md", rels)
             self.assertIn("output/document_ir.json", rels)
+            self.assertIn("output/experiment_metrics.json", rels)
             self.assertEqual(map_bundle_arcname("output/bilingual.html"), "译文/双语对照.html")
             self.assertEqual(map_bundle_arcname("output/repair_plan.md"), "质量/局部修复计划.md")
             self.assertEqual(map_bundle_arcname("output/structure_qa.json"), "质量/结构QA.json")
+            self.assertEqual(map_bundle_arcname("output/experiment_metrics.json"), "质量/实验指标.json")
         finally:
             if root.exists():
                 shutil.rmtree(root)

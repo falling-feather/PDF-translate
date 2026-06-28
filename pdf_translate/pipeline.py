@@ -18,6 +18,7 @@ from pdf_translate.memory_store import MemoryStore
 from pdf_translate.pdf_structure import SplitManifest, split_main_and_references
 from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
 from pdf_translate.pipeline_merge import merge_chunks_markdown
+from pdf_translate.qa.metrics import write_experiment_metrics
 from pdf_translate.qa.repair import write_repair_plan
 from pdf_translate.qa.structure import write_structure_qa
 from pdf_translate.qa.translation import write_translation_qa
@@ -204,8 +205,8 @@ def run_translate(
 
     doc_ir = extract_document_ir(main_pdf)
     doc_ir.write_json(out_dir / "document_ir.json")
-    write_structure_qa(doc_ir, out_dir / "structure_qa.json")
-    write_vision_route(doc_ir, out_dir / "vision_route.json")
+    structure_qa = write_structure_qa(doc_ir, out_dir / "structure_qa.json")
+    vision_route = write_vision_route(doc_ir, out_dir / "vision_route.json")
     structure_chunks = build_structure_chunks(
         doc_ir,
         max_pages_per_chunk=pages_per_chunk,
@@ -279,6 +280,15 @@ def run_translate(
             qa_report,
             out_dir / "repair_plan.json",
             out_dir / "repair_plan.md",
+        )
+        write_experiment_metrics(
+            structure_qa,
+            vision_route,
+            qa_report,
+            repair_plan,
+            out_dir / "experiment_metrics.json",
+            doc_id=doc_ir.doc_id,
+            pipeline_variant=chunk_strategy,
         )
         write_bilingual_html(
             chunks,

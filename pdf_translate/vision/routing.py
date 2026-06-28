@@ -188,9 +188,11 @@ def build_vision_route(doc_ir: DocumentIR) -> dict[str, Any]:
     }
 
 
-def write_vision_route(doc_ir: DocumentIR, path: Path) -> None:
+def write_vision_route(doc_ir: DocumentIR, path: Path) -> dict[str, Any]:
+    route = build_vision_route(doc_ir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(build_vision_route(doc_ir), ensure_ascii=False, indent=2),
+        json.dumps(route, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    return route
