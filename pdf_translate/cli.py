@@ -54,6 +54,11 @@ def cmd_translate(
     overlap: int = typer.Option(1, "--overlap", min=0, help="块间重叠页数"),
     no_resume: bool = typer.Option(False, "--no-resume", help="忽略断点，重译所有块"),
     max_chunks: int = typer.Option(None, "--max-chunks", help="仅处理前 N 块（调试）"),
+    chunk_strategy: str = typer.Option(
+        "page",
+        "--chunk-strategy",
+        help="page | structure；structure 使用 DocumentIR 结构块分段（实验性）",
+    ),
 ) -> None:
     cfg = AppConfig.from_env()
     out = pipeline.run_translate(
@@ -64,6 +69,7 @@ def cmd_translate(
         overlap_pages=overlap,
         resume=not no_resume,
         max_chunks=max_chunks,
+        chunk_strategy=chunk_strategy,  # type: ignore[arg-type]
     )
     typer.echo(f"已写入合并稿: {out}")
 
@@ -85,6 +91,11 @@ def cmd_run(
     pages_per_chunk: int = typer.Option(3, "--pages", min=1, max=3),
     overlap: int = typer.Option(1, "--overlap", min=0),
     max_chunks: int = typer.Option(None, "--max-chunks"),
+    chunk_strategy: str = typer.Option(
+        "page",
+        "--chunk-strategy",
+        help="page | structure；structure 使用 DocumentIR 结构块分段（实验性）",
+    ),
 ) -> None:
     """init → split → translate 一键执行。"""
     pipeline.init_workdir(work_dir)
@@ -98,6 +109,7 @@ def cmd_run(
         overlap_pages=overlap,
         resume=True,
         max_chunks=max_chunks,
+        chunk_strategy=chunk_strategy,  # type: ignore[arg-type]
     )
     typer.echo(f"完成: {out}")
 

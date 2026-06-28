@@ -200,6 +200,8 @@ my-paper/
     manifest.json
   output/
     chunks_manifest.json
+    document_ir.json
+    structure_chunks_manifest.json
     chunks/c0000.md, c0001.md, …（每块独立 Markdown）
     translated_full.md
     state.json

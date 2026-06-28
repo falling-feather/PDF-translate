@@ -27,6 +27,8 @@ pdf-translate-web = "pdf_translate.server.__main__:main"
 [tool.setuptools]
 packages = [
   "pdf_translate",
+  "pdf_translate.chunkers",
+  "pdf_translate.extractors",
   "pdf_translate.translators",
   "pdf_translate.server",
 ]

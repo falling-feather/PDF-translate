@@ -9,8 +9,10 @@ from typing import Literal
 
 import fitz
 
+from pdf_translate.chunkers.structure import build_structure_chunks, write_structure_manifest
 from pdf_translate.chunking import TextChunk, build_text_chunks
 from pdf_translate.config import AppConfig
+from pdf_translate.extractors.document_ir import extract_document_ir
 from pdf_translate.memory_store import MemoryStore
 from pdf_translate.pdf_structure import SplitManifest, split_main_and_references
 from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
@@ -177,6 +179,7 @@ def run_translate(
     translate_mode: Literal["serial", "parallel"] = "serial",
     parallel_workers: int = 4,
     survey_override: bool | None = None,
+    chunk_strategy: Literal["page", "structure"] = "page",
 ) -> Path:
     """survey_override：None 使用 cfg.survey_enabled；True/False 强制开关译前巡视（精品翻译传 True）。"""
     cfg = replace(cfg, survey_enabled=survey_override) if survey_override is not None else cfg
@@ -189,17 +192,30 @@ def run_translate(
     if not main_pdf.is_file():
         raise FileNotFoundError(main_pdf)
 
-    rows = _page_rows_for_main(main_pdf)
-    chunks = build_text_chunks(
-        rows,
-        pages_per_chunk=pages_per_chunk,
-        overlap_pages=overlap_pages,
-    )
-
     out_dir = work_dir / "output"
     chunk_dir = out_dir / "chunks"
     out_dir.mkdir(parents=True, exist_ok=True)
     chunk_dir.mkdir(parents=True, exist_ok=True)
+
+    doc_ir = extract_document_ir(main_pdf)
+    doc_ir.write_json(out_dir / "document_ir.json")
+    structure_chunks = build_structure_chunks(
+        doc_ir,
+        max_pages_per_chunk=pages_per_chunk,
+    )
+    write_structure_manifest(structure_chunks, out_dir / "structure_chunks_manifest.json")
+
+    if chunk_strategy == "structure":
+        chunks = structure_chunks
+    elif chunk_strategy == "page":
+        rows = _page_rows_for_main(main_pdf)
+        chunks = build_text_chunks(
+            rows,
+            pages_per_chunk=pages_per_chunk,
+            overlap_pages=overlap_pages,
+        )
+    else:
+        raise ValueError("chunk_strategy must be 'page' or 'structure'")
 
     chunk_manifest = [
         {
@@ -207,6 +223,10 @@ def run_translate(
             "pages_1based": [c.pages_0based[0] + 1, c.pages_0based[-1] + 1],
             "link_count": c.link_count,
             "image_count": c.image_count,
+            "strategy": chunk_strategy,
+            "block_ids": getattr(c, "block_ids", []),
+            "block_types": getattr(c, "block_types", {}),
+            "warnings": getattr(c, "warnings", []),
         }
         for c in chunks
     ]

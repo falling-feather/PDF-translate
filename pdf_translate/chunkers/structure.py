@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+import json
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from pdf_translate.chunking import TextChunk
+from pdf_translate.extractors.document_ir import BlockIR, DocumentIR
+
+
+@dataclass
+class StructureChunk(TextChunk):
+    """TextChunk compatible chunk that preserves source IR block provenance."""
+
+    block_ids: list[str] = field(default_factory=list)
+    block_types: dict[str, int] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+
+    def to_manifest_entry(self) -> dict:
+        return {
+            "chunk_id": self.chunk_id,
+            "pages_1based": [self.pages_0based[0] + 1, self.pages_0based[-1] + 1] if self.pages_0based else [],
+            "block_ids": self.block_ids,
+            "block_types": self.block_types,
+            "link_count": self.link_count,
+            "image_count": self.image_count,
+            "approx_chars": len(self.text),
+            "warnings": self.warnings,
+        }
+
+
+def _block_for_translation(block: BlockIR) -> bool:
+    if block.type in ("header_footer", "image"):
+        return False
+    return bool(block.text.strip())
+
+
+def _format_block(block: BlockIR) -> str:
+    label = {
+        "heading": "标题",
+        "paragraph": "正文",
+        "table": "表格",
+        "caption": "图表注",
+        "footnote": "脚注",
+        "formula": "公式",
+        "reference": "参考文献",
+    }.get(block.type, block.type)
+    return f"[第 {block.page_no} 页｜{label}｜{block.block_id}]\n{block.text.strip()}"
+
+
+def _make_chunk(chunk_index: int, blocks: list[BlockIR], link_count: int, image_count: int, warnings: list[str]) -> StructureChunk:
+    pages = sorted({b.page_no - 1 for b in blocks})
+    type_counts = Counter(b.type for b in blocks)
+    text = "\n\n".join(_format_block(b) for b in blocks)
+    return StructureChunk(
+        chunk_id=f"c{chunk_index:04d}",
+        pages_0based=pages,
+        text=text,
+        link_count=link_count,
+        image_count=image_count,
+        block_ids=[b.block_id for b in blocks],
+        block_types=dict(type_counts),
+        warnings=warnings,
+    )
+
+
+def build_structure_chunks(
+    doc_ir: DocumentIR,
+    *,
+    target_chars: int = 9000,
+    max_chars: int = 14000,
+    max_pages_per_chunk: int = 3,
+) -> list[StructureChunk]:
+    """Build chunks from structure blocks, keeping tables/captions/formulas atomic."""
+    if max_pages_per_chunk < 1:
+        raise ValueError("max_pages_per_chunk must be >= 1")
+    if target_chars < 1000:
+        raise ValueError("target_chars must be >= 1000")
+    if max_chars < target_chars:
+        raise ValueError("max_chars must be >= target_chars")
+
+    chunks: list[StructureChunk] = []
+    current: list[BlockIR] = []
+    current_links = 0
+    current_images = 0
+    current_warnings: list[str] = []
+    current_page_nos: set[int] = set()
+
+    def flush() -> None:
+        nonlocal current, current_links, current_images, current_warnings, current_page_nos
+        if not current:
+            return
+        chunks.append(_make_chunk(len(chunks), current, current_links, current_images, sorted(set(current_warnings))))
+        current = []
+        current_links = 0
+        current_images = 0
+        current_warnings = []
+        current_page_nos = set()
+
+    for page in doc_ir.pages:
+        page_blocks = [b for b in page.blocks if _block_for_translation(b)]
+        for block in page_blocks:
+            candidate_len = sum(len(b.text) for b in current) + len(block.text)
+            pages_if_added = {b.page_no for b in current}
+            pages_if_added.add(block.page_no)
+            should_flush = bool(current) and (
+                candidate_len > max_chars
+                or (candidate_len > target_chars and len(pages_if_added) > 1)
+                or len(pages_if_added) > max_pages_per_chunk
+            )
+            if should_flush:
+                flush()
+            current.append(block)
+            if page.page_no not in current_page_nos:
+                current_page_nos.add(page.page_no)
+                current_links += page.link_count
+                current_images += page.image_count
+                current_warnings.extend(page.warnings)
+    flush()
+    return chunks
+
+
+def write_structure_manifest(chunks: list[StructureChunk], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps([c.to_manifest_entry() for c in chunks], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
