@@ -11,9 +11,11 @@ from pdf_translate.qa.repair import (
     build_repair_plan,
     build_repair_requests,
     build_repair_results,
+    build_repair_validation,
     write_repair_plan,
     write_repair_requests,
     write_repair_results,
+    write_repair_validation,
 )
 from pdf_translate.qa.structure import build_structure_qa, write_structure_qa
 from pdf_translate.qa.table_reconstruction import (
@@ -32,9 +34,11 @@ __all__ = [
     "build_repair_plan",
     "build_repair_requests",
     "build_repair_results",
+    "build_repair_validation",
     "write_repair_plan",
     "write_repair_requests",
     "write_repair_results",
+    "write_repair_validation",
     "build_structure_qa",
     "write_structure_qa",
     "build_table_reconstruction_report",

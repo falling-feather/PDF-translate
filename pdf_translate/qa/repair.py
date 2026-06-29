@@ -12,6 +12,7 @@ from pdf_translate.translators.base import TranslationRequest, Translator
 SCHEMA_VERSION = "repair-plan-v1"
 REQUEST_SCHEMA_VERSION = "repair-requests-v1"
 RESULT_SCHEMA_VERSION = "repair-results-v1"
+VALIDATION_SCHEMA_VERSION = "repair-validation-v1"
 
 _ISSUE_RULES = {
     "missing_translation": {
@@ -140,6 +141,61 @@ def _locked_tokens_from_evidence(evidence: dict[str, Any]) -> list[str]:
         if isinstance(cell, dict):
             tokens.extend(str(token) for token in cell.get("missing_tokens") or [] if str(token))
     return list(dict.fromkeys(token.strip() for token in tokens if token.strip()))
+
+
+def _markdown_separator_row(row: list[str]) -> bool:
+    return bool(row) and all(cell.replace("-", "").replace(":", "").strip() == "" for cell in row)
+
+
+def _markdown_table_shapes(text: str) -> list[dict[str, int]]:
+    tables: list[dict[str, int]] = []
+    current_rows: list[list[str]] = []
+
+    def flush() -> None:
+        nonlocal current_rows
+        if not current_rows:
+            return
+        data_rows = [row for row in current_rows if not _markdown_separator_row(row)]
+        if len(data_rows) >= 2:
+            column_count = max(len(row) for row in data_rows)
+            tables.append({"row_count": len(data_rows), "column_count": column_count})
+        current_rows = []
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("|") and "|" in stripped[1:]:
+            current_rows.append([cell.strip() for cell in stripped.strip("|").split("|")])
+        else:
+            flush()
+    flush()
+    return tables
+
+
+def _expected_table_shapes_from_evidence(evidence: dict[str, Any]) -> list[dict[str, int]]:
+    shapes: list[dict[str, int]] = []
+    for table in evidence.get("tables") or []:
+        if not isinstance(table, dict):
+            continue
+        source = table.get("source")
+        if not isinstance(source, dict):
+            continue
+        row_count = int(source.get("row_count") or 0)
+        column_count = int(source.get("column_count") or 0)
+        if row_count >= 2 and column_count >= 2:
+            shapes.append({"row_count": row_count, "column_count": column_count})
+    return shapes
+
+
+def _repair_result_text(result: dict[str, Any]) -> str:
+    path_value = str(result.get("result_path") or "")
+    if path_value:
+        try:
+            path = Path(path_value)
+            if path.is_file():
+                return path.read_text(encoding="utf-8")
+        except OSError:
+            pass
+    return str(result.get("result_excerpt") or "")
 
 
 def _repair_instruction(item: dict[str, Any], locked_tokens: list[str]) -> str:
@@ -558,6 +614,183 @@ def repair_results_to_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def build_repair_validation(
+    repair_requests: dict[str, Any],
+    repair_results: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate candidate repair fragments against local invariants."""
+    results_by_id = {
+        str(result.get("request_id") or ""): result
+        for result in repair_results.get("results") or []
+        if isinstance(result, dict)
+    }
+    validations: list[dict[str, Any]] = []
+    status_counts: Counter[str] = Counter()
+    action_counts: Counter[str] = Counter()
+    checked_locked_token_count = 0
+    missing_locked_token_count = 0
+    table_shape_check_count = 0
+    table_shape_passed_count = 0
+
+    for raw_request in repair_requests.get("requests") or []:
+        if not isinstance(raw_request, dict):
+            continue
+        request_id = str(raw_request.get("request_id") or f"rq{len(validations):04d}")
+        action = str(raw_request.get("action") or "unknown")
+        result = results_by_id.get(request_id)
+        locked_tokens = [str(token) for token in raw_request.get("locked_tokens") or [] if str(token)]
+        evidence = raw_request.get("evidence") if isinstance(raw_request.get("evidence"), dict) else {}
+        expected_shapes = _expected_table_shapes_from_evidence(evidence)
+        base = {
+            "request_id": request_id,
+            "repair_id": raw_request.get("repair_id"),
+            "chunk_id": raw_request.get("chunk_id"),
+            "pages_1based": raw_request.get("pages_1based") or [],
+            "priority": raw_request.get("priority"),
+            "issue_type": raw_request.get("issue_type"),
+            "action": action,
+            "scope": raw_request.get("scope"),
+            "executor": raw_request.get("executor"),
+            "locked_token_count": len(locked_tokens),
+            "expected_table_shape_count": len(expected_shapes),
+        }
+        action_counts[action] += 1
+
+        if not result:
+            status = "skipped_missing_result"
+            status_counts[status] += 1
+            validations.append({**base, "status": status, "reason": "未找到对应的修复执行结果。"})
+            continue
+        if result.get("status") != "succeeded":
+            status = "skipped_not_succeeded"
+            status_counts[status] += 1
+            validations.append(
+                {
+                    **base,
+                    "status": status,
+                    "result_status": result.get("status"),
+                    "reason": "候选修复片段未成功生成，暂不做不变量验证。",
+                }
+            )
+            continue
+
+        repaired_text = _repair_result_text(result)
+        if not repaired_text.strip():
+            status = "failed"
+            status_counts[status] += 1
+            validations.append({**base, "status": status, "reason": "候选修复片段为空。"})
+            continue
+
+        missing_tokens = [token for token in locked_tokens if token not in repaired_text]
+        checked_locked_token_count += len(locked_tokens)
+        missing_locked_token_count += len(missing_tokens)
+
+        target_shapes = _markdown_table_shapes(repaired_text)
+        table_shape_errors: list[dict[str, Any]] = []
+        for index, expected in enumerate(expected_shapes):
+            table_shape_check_count += 1
+            actual = target_shapes[index] if index < len(target_shapes) else None
+            if actual == expected:
+                table_shape_passed_count += 1
+            else:
+                table_shape_errors.append({"index": index, "expected": expected, "actual": actual})
+
+        if missing_tokens or table_shape_errors:
+            status = "failed"
+        elif locked_tokens or expected_shapes:
+            status = "passed"
+        else:
+            status = "unchecked"
+        status_counts[status] += 1
+        validations.append(
+            {
+                **base,
+                "status": status,
+                "missing_locked_tokens": missing_tokens,
+                "table_shape_errors": table_shape_errors,
+                "result_path": result.get("result_path") or "",
+                "result_excerpt": _clip_text(repaired_text, 500),
+            }
+        )
+
+    validated_count = status_counts.get("passed", 0) + status_counts.get("failed", 0) + status_counts.get("unchecked", 0)
+    checked_and_passed = checked_locked_token_count - missing_locked_token_count
+    return {
+        "schema_version": VALIDATION_SCHEMA_VERSION,
+        "summary": {
+            "repair_requests_schema_version": repair_requests.get("schema_version"),
+            "repair_results_schema_version": repair_results.get("schema_version"),
+            "repair_request_count": repair_requests.get("summary", {}).get("repair_request_count", 0),
+            "validated_result_count": validated_count,
+            "passed_count": status_counts.get("passed", 0),
+            "failed_count": status_counts.get("failed", 0),
+            "unchecked_count": status_counts.get("unchecked", 0),
+            "skipped_count": sum(
+                count
+                for status, count in status_counts.items()
+                if status.startswith("skipped_")
+            ),
+            "checked_locked_token_count": checked_locked_token_count,
+            "missing_locked_token_count": missing_locked_token_count,
+            "locked_token_pass_rate": round(checked_and_passed / checked_locked_token_count, 4)
+            if checked_locked_token_count
+            else 0.0,
+            "table_shape_check_count": table_shape_check_count,
+            "table_shape_passed_count": table_shape_passed_count,
+            "table_shape_pass_rate": round(table_shape_passed_count / table_shape_check_count, 4)
+            if table_shape_check_count
+            else 0.0,
+            "status_counts": dict(status_counts),
+            "action_counts": dict(action_counts),
+        },
+        "validations": validations,
+    }
+
+
+def repair_validation_to_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary", {})
+    lines = [
+        "# 局部修复验证",
+        "",
+        "| 指标 | 值 |",
+        "| --- | --- |",
+        f"| 修复请求 | {summary.get('repair_request_count', 0)} |",
+        f"| 已验证候选 | {summary.get('validated_result_count', 0)} |",
+        f"| 通过 | {summary.get('passed_count', 0)} |",
+        f"| 失败 | {summary.get('failed_count', 0)} |",
+        f"| 未配置本地检查 | {summary.get('unchecked_count', 0)} |",
+        f"| 跳过 | {summary.get('skipped_count', 0)} |",
+        f"| 锁定 token 通过率 | {summary.get('locked_token_pass_rate', 0)} |",
+        f"| 表格形状通过率 | {summary.get('table_shape_pass_rate', 0)} |",
+        "",
+    ]
+    validations = report.get("validations") or []
+    if not validations:
+        lines.append("当前没有局部修复验证记录。")
+        return "\n".join(lines).rstrip() + "\n"
+
+    lines.extend(["## 验证明细", ""])
+    for item in validations:
+        pages = item.get("pages_1based") or []
+        page_text = f"{pages[0]}-{pages[-1]}" if pages else "-"
+        lines.append(
+            f"### {item.get('request_id')} · {item.get('status')} · {item.get('chunk_id')} · 页 {page_text}"
+        )
+        lines.append(f"- 动作：`{item.get('action')}`，范围 `{item.get('scope')}`")
+        if item.get("reason"):
+            lines.append(f"- 原因：{item.get('reason')}")
+        missing = item.get("missing_locked_tokens") or []
+        if missing:
+            lines.append(f"- 缺失锁定 token：{', '.join(str(token) for token in missing[:30])}")
+        shape_errors = item.get("table_shape_errors") or []
+        if shape_errors:
+            lines.append(f"- 表格形状异常：{json.dumps(shape_errors, ensure_ascii=False)}")
+        if item.get("result_path"):
+            lines.append(f"- 结果文件：`{item.get('result_path')}`")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def write_repair_plan(qa_report: dict[str, Any], json_path: Path, markdown_path: Path) -> dict[str, Any]:
     plan = build_repair_plan(qa_report)
     json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -602,4 +835,18 @@ def write_repair_results(
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
     markdown_path.write_text(repair_results_to_markdown(report), encoding="utf-8")
+    return report
+
+
+def write_repair_validation(
+    repair_requests: dict[str, Any],
+    repair_results: dict[str, Any],
+    json_path: Path,
+    markdown_path: Path,
+) -> dict[str, Any]:
+    report = build_repair_validation(repair_requests, repair_results)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(repair_validation_to_markdown(report), encoding="utf-8")
     return report

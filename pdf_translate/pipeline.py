@@ -20,7 +20,12 @@ from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
 from pdf_translate.pipeline_merge import merge_chunks_markdown
 from pdf_translate.qa.chunk_boundary import write_chunk_boundary_qa, write_chunk_strategy_comparison
 from pdf_translate.qa.metrics import write_experiment_metrics
-from pdf_translate.qa.repair import write_repair_plan, write_repair_requests, write_repair_results
+from pdf_translate.qa.repair import (
+    write_repair_plan,
+    write_repair_requests,
+    write_repair_results,
+    write_repair_validation,
+)
 from pdf_translate.qa.structure import write_structure_qa
 from pdf_translate.qa.table_reconstruction import build_table_translation_hints, write_table_reconstruction_report
 from pdf_translate.qa.translation import write_translation_qa
@@ -326,6 +331,12 @@ def run_translate(
             execute=execute_repair_requests,
             max_requests=max_repair_requests,
         )
+        repair_validation = write_repair_validation(
+            repair_requests,
+            repair_results,
+            out_dir / "repair_validation.json",
+            out_dir / "repair_validation.md",
+        )
         write_experiment_metrics(
             structure_qa,
             vision_route,
@@ -339,6 +350,7 @@ def run_translate(
             table_reconstruction=table_reconstruction,
             repair_requests=repair_requests,
             repair_results=repair_results,
+            repair_validation=repair_validation,
         )
         write_bilingual_html(
             chunks,

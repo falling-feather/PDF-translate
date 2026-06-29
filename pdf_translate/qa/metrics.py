@@ -16,6 +16,7 @@ DEFAULT_EVIDENCE_FILES = {
     "repair_plan": "output/repair_plan.json",
     "repair_requests": "output/repair_requests.json",
     "repair_results": "output/repair_results.json",
+    "repair_validation": "output/repair_validation.json",
 }
 
 
@@ -77,6 +78,7 @@ def build_experiment_metrics(
     table_reconstruction: dict[str, Any] | None = None,
     repair_requests: dict[str, Any] | None = None,
     repair_results: dict[str, Any] | None = None,
+    repair_validation: dict[str, Any] | None = None,
     evidence_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Aggregate pipeline QA artifacts into a patent-facing experiment summary."""
@@ -89,6 +91,7 @@ def build_experiment_metrics(
     repair_summary = _summary(repair_plan)
     repair_request_summary = _summary(repair_requests)
     repair_result_summary = _summary(repair_results)
+    repair_validation_summary = _summary(repair_validation)
 
     block_counts = _counter_dict(structure_summary.get("block_counts"))
     entity_type_counts = _counter_dict(structure_summary.get("entity_type_counts"))
@@ -158,6 +161,19 @@ def build_experiment_metrics(
     repair_succeeded_count = _as_int(repair_result_summary.get("succeeded_count"))
     repair_failed_count = _as_int(repair_result_summary.get("failed_count"))
     repair_skipped_count = _as_int(repair_result_summary.get("skipped_count"))
+    repair_validation_checked_count = _as_int(repair_validation_summary.get("validated_result_count"))
+    repair_validation_passed_count = _as_int(repair_validation_summary.get("passed_count"))
+    repair_validation_failed_count = _as_int(repair_validation_summary.get("failed_count"))
+    repair_validation_unchecked_count = _as_int(repair_validation_summary.get("unchecked_count"))
+    repair_validation_skipped_count = _as_int(repair_validation_summary.get("skipped_count"))
+    repair_validation_checked_locked_token_count = _as_int(
+        repair_validation_summary.get("checked_locked_token_count")
+    )
+    repair_validation_missing_locked_token_count = _as_int(
+        repair_validation_summary.get("missing_locked_token_count")
+    )
+    repair_validation_table_shape_check_count = _as_int(repair_validation_summary.get("table_shape_check_count"))
+    repair_validation_table_shape_passed_count = _as_int(repair_validation_summary.get("table_shape_passed_count"))
     max_english_residual_ratio = _as_float(translation_summary.get("max_english_residual_ratio"))
 
     relationship_total = caption_count + footnote_count
@@ -220,6 +236,15 @@ def build_experiment_metrics(
             "repair_succeeded_count": repair_succeeded_count,
             "repair_failed_count": repair_failed_count,
             "repair_skipped_count": repair_skipped_count,
+            "repair_validation_checked_count": repair_validation_checked_count,
+            "repair_validation_passed_count": repair_validation_passed_count,
+            "repair_validation_failed_count": repair_validation_failed_count,
+            "repair_validation_unchecked_count": repair_validation_unchecked_count,
+            "repair_validation_skipped_count": repair_validation_skipped_count,
+            "repair_validation_checked_locked_token_count": repair_validation_checked_locked_token_count,
+            "repair_validation_missing_locked_token_count": repair_validation_missing_locked_token_count,
+            "repair_validation_table_shape_check_count": repair_validation_table_shape_check_count,
+            "repair_validation_table_shape_passed_count": repair_validation_table_shape_passed_count,
             "max_english_residual_ratio": max_english_residual_ratio,
         },
         "rates": {
@@ -245,6 +270,18 @@ def build_experiment_metrics(
             "repair_item_per_chunk": _rate(repair_item_count, chunk_count),
             "repair_request_ready_rate": _rate(repair_backend_request_count, repair_request_count),
             "repair_execution_success_rate": _rate(repair_succeeded_count, repair_executed_request_count),
+            "repair_validation_pass_rate": _rate(
+                repair_validation_passed_count,
+                repair_validation_passed_count + repair_validation_failed_count,
+            ),
+            "repair_locked_token_pass_rate": _rate(
+                repair_validation_checked_locked_token_count - repair_validation_missing_locked_token_count,
+                repair_validation_checked_locked_token_count,
+            ),
+            "repair_table_shape_validation_pass_rate": _rate(
+                repair_validation_table_shape_passed_count,
+                repair_validation_table_shape_check_count,
+            ),
             "ocr_candidate_page_rate": _rate(ocr_candidate_page_count, page_count),
             "routed_page_rate": _rate(routed_page_count, page_count),
             "qa_issue_per_chunk": _rate(translation_issue_count, chunk_count),
@@ -278,6 +315,7 @@ def write_experiment_metrics(
     table_reconstruction: dict[str, Any] | None = None,
     repair_requests: dict[str, Any] | None = None,
     repair_results: dict[str, Any] | None = None,
+    repair_validation: dict[str, Any] | None = None,
     evidence_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     metrics = build_experiment_metrics(
@@ -292,6 +330,7 @@ def write_experiment_metrics(
         table_reconstruction=table_reconstruction,
         repair_requests=repair_requests,
         repair_results=repair_results,
+        repair_validation=repair_validation,
         evidence_files=evidence_files,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
