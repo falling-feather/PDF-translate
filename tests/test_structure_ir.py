@@ -15,6 +15,7 @@ from pdf_translate.chunking import TextChunk
 from pdf_translate.chunkers.structure import build_structure_chunks
 from pdf_translate.config import AppConfig
 from pdf_translate.costing import estimate_cost, normalize_cost_profile
+from pdf_translate.error_codes import PdfTranslateError, error_info_from_exception
 from pdf_translate.exporters.bilingual_html import write_bilingual_html
 from pdf_translate.extractors.document_ir import (
     BlockIR,
@@ -43,6 +44,7 @@ from pdf_translate.qa.translation import build_translation_qa
 from pdf_translate.pipeline import init_workdir, run_split, run_translate
 from pdf_translate.run_metrics import build_run_metrics
 from pdf_translate.translators.base import TranslationRequest
+from pdf_translate.translators.factory import build_translator
 from pdf_translate.translators.http_retry import call_with_http_retry, capture_http_retry_events
 from pdf_translate.translators.openai_compatible import _build_user_message
 from pdf_translate.vision.ocr_tasks import build_ocr_task_manifest, write_ocr_task_manifest
@@ -57,6 +59,38 @@ from pdf_translate.vision.ocr_writeback import (
 )
 from pdf_translate.vision.routing import build_vision_route, write_vision_route
 from pdf_translate.zip_bundle import iter_bundle_files, map_bundle_arcname
+
+
+def _test_app_config(**overrides) -> AppConfig:
+    values = {
+        "openai_api_key": None,
+        "openai_base_url": "https://api.openai.com/v1",
+        "openai_model": "gpt-test",
+        "ollama_base_url": "http://127.0.0.1:11434/v1",
+        "ollama_model": "llama-test",
+        "deepl_api_key": None,
+        "deepl_api_url": "https://api-free.deepl.com/v2/translate",
+        "deepseek_api_key": None,
+        "deepseek_base_url": "https://api.deepseek.com/v1",
+        "deepseek_model": "deepseek-chat",
+        "default_translator": "deepseek",
+        "http_timeout_s": 120.0,
+        "survey_enabled": False,
+        "siliconflow_api_key": None,
+        "siliconflow_base_url": "https://api.siliconflow.com/v1",
+        "siliconflow_survey_model": "",
+        "siliconflow_vision_model": "",
+        "survey_max_text_chars": 12000,
+        "planner_enabled": False,
+        "planner_api_key": None,
+        "planner_base_url": "https://api.siliconflow.com/v1",
+        "planner_model": "",
+        "cost_profile_json": "",
+        "cost_profile_path": "",
+        "cost_default_currency": "USD",
+    }
+    values.update(overrides)
+    return AppConfig(**values)
 
 
 class StructureIRTests(unittest.TestCase):
@@ -1441,10 +1475,82 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(events[0]["attempt_index"], 1)
         self.assertEqual(events[0]["status"], "retryable_error")
         self.assertEqual(events[0]["status_code"], 503)
+        self.assertEqual(events[0]["error_code"], "HTTP_SERVER_ERROR")
+        self.assertEqual(events[0]["error_category"], "http_server")
+        self.assertTrue(events[0]["error_retryable"])
         self.assertTrue(events[0]["will_retry"])
         self.assertEqual(events[1]["attempt_index"], 2)
         self.assertEqual(events[1]["status"], "success")
+        self.assertEqual(events[1]["error_code"], "")
         self.assertFalse(events[1]["will_retry"])
+
+    def test_http_retry_exhaustion_raises_structured_rate_limit_error(self) -> None:
+        request = httpx.Request("POST", "https://example.test/chat")
+        response = httpx.Response(429, request=request)
+
+        def _op() -> str:
+            raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+        previous = os.environ.get("PDF_TRANSLATE_HTTP_RETRIES")
+        os.environ["PDF_TRANSLATE_HTTP_RETRIES"] = "1"
+        try:
+            with self.assertRaises(PdfTranslateError) as caught:
+                with capture_http_retry_events() as events:
+                    call_with_http_retry(_op, context="unit-test")
+        finally:
+            if previous is None:
+                os.environ.pop("PDF_TRANSLATE_HTTP_RETRIES", None)
+            else:
+                os.environ["PDF_TRANSLATE_HTTP_RETRIES"] = previous
+
+        self.assertEqual(caught.exception.error_info.code, "HTTP_RATE_LIMIT")
+        self.assertEqual(caught.exception.error_info.category, "rate_limit")
+        self.assertTrue(caught.exception.error_info.retryable)
+        self.assertEqual(events[0]["error_code"], "HTTP_RATE_LIMIT")
+        self.assertEqual(events[0]["error_category"], "rate_limit")
+        self.assertFalse(events[0]["will_retry"])
+
+    def test_http_retry_timeout_maps_to_structured_error(self) -> None:
+        request = httpx.Request("POST", "https://example.test/chat")
+
+        def _op() -> str:
+            raise httpx.ReadTimeout("slow upstream", request=request)
+
+        previous = os.environ.get("PDF_TRANSLATE_HTTP_RETRIES")
+        os.environ["PDF_TRANSLATE_HTTP_RETRIES"] = "1"
+        try:
+            with self.assertRaises(PdfTranslateError) as caught:
+                with capture_http_retry_events() as events:
+                    call_with_http_retry(_op, context="unit-test")
+        finally:
+            if previous is None:
+                os.environ.pop("PDF_TRANSLATE_HTTP_RETRIES", None)
+            else:
+                os.environ["PDF_TRANSLATE_HTTP_RETRIES"] = previous
+
+        self.assertEqual(caught.exception.error_info.code, "HTTP_TIMEOUT")
+        self.assertEqual(caught.exception.error_info.category, "timeout")
+        self.assertTrue(caught.exception.error_info.retryable)
+        self.assertEqual(events[0]["error_code"], "HTTP_TIMEOUT")
+        self.assertEqual(events[0]["error_category"], "timeout")
+
+    def test_build_translator_missing_api_key_raises_structured_error(self) -> None:
+        with self.assertRaises(PdfTranslateError) as caught:
+            build_translator("deepseek", _test_app_config(deepseek_api_key=None))
+
+        info = caught.exception.error_info
+        self.assertEqual(info.code, "CONFIG_MISSING_API_KEY")
+        self.assertEqual(info.category, "config")
+        self.assertFalse(info.retryable)
+        self.assertEqual(info.source, "translator:deepseek")
+
+    def test_pdf_parse_exception_maps_to_structured_error(self) -> None:
+        info = error_info_from_exception(fitz.FileDataError("bad pdf"), source="stage:document_ir")
+
+        self.assertEqual(info.code, "PDF_PARSE_ERROR")
+        self.assertEqual(info.category, "pdf_parse")
+        self.assertFalse(info.retryable)
+        self.assertEqual(info.source, "stage:document_ir")
 
     def test_run_metrics_aggregates_stage_chunk_and_token_evidence(self) -> None:
         metrics = build_run_metrics(
@@ -1476,6 +1582,9 @@ class StructureIRTests(unittest.TestCase):
                             "will_retry": True,
                             "error_type": "ReadTimeout",
                             "status_code": None,
+                            "error_code": "HTTP_TIMEOUT",
+                            "error_category": "timeout",
+                            "error_retryable": True,
                         },
                         {
                             "schema_version": "http-retry-event-v1",
@@ -1487,6 +1596,9 @@ class StructureIRTests(unittest.TestCase):
                             "will_retry": False,
                             "error_type": "",
                             "status_code": None,
+                            "error_code": "",
+                            "error_category": "",
+                            "error_retryable": False,
                         },
                     ],
                 },
@@ -1519,11 +1631,15 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["summary"]["http_retry_count"], 1)
         self.assertEqual(metrics["summary"]["http_failed_attempt_count"], 1)
         self.assertEqual(metrics["summary"]["http_retryable_error_count"], 1)
+        self.assertEqual(metrics["summary"]["error_code_counts"]["HTTP_TIMEOUT"], 1)
+        self.assertEqual(metrics["summary"]["error_category_counts"]["timeout"], 1)
         self.assertEqual(metrics["summary"]["stage_elapsed_ms"]["document_ir"], 12)
         self.assertEqual(metrics["chunks"][0]["http_attempt_count"], 2)
+        self.assertEqual(metrics["chunks"][0]["error_code_counts"]["HTTP_TIMEOUT"], 1)
         self.assertEqual(metrics["chunks"][0]["http_retry_events"][0]["error_type"], "ReadTimeout")
         self.assertEqual(metrics["breakdowns"]["translator_counts"]["echo"], 1)
         self.assertEqual(metrics["breakdowns"]["skip_reasons"]["resume_completed"], 1)
+        self.assertEqual(metrics["breakdowns"]["error_code_counts"]["HTTP_TIMEOUT"], 1)
 
     def test_cost_estimate_uses_configured_backend_profile(self) -> None:
         run_metrics = build_run_metrics(
@@ -1860,6 +1976,9 @@ class StructureIRTests(unittest.TestCase):
                     "http_failed_attempt_count": 1,
                     "http_retryable_error_count": 1,
                     "http_fatal_error_count": 0,
+                    "failed_event_count": 1,
+                    "error_code_counts": {"HTTP_TIMEOUT": 1},
+                    "error_category_counts": {"timeout": 1},
                     "skipped_chunk_count": 1,
                     "source_char_count": 800,
                     "context_char_count": 200,
@@ -1880,6 +1999,8 @@ class StructureIRTests(unittest.TestCase):
                     "stage_counts": {"document_ir": 1, "translation_qa": 1},
                     "translator_counts": {"echo": 2},
                     "skip_reasons": {"resume_completed": 1},
+                    "error_code_counts": {"HTTP_TIMEOUT": 1},
+                    "error_category_counts": {"timeout": 1},
                 },
             },
             cost_estimate={
@@ -1914,6 +2035,7 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["performance"]["http_attempt_count"], 3)
         self.assertEqual(metrics["performance"]["http_retry_count"], 1)
         self.assertEqual(metrics["performance"]["http_failed_attempt_count"], 1)
+        self.assertEqual(metrics["performance"]["failed_event_count"], 1)
         self.assertEqual(metrics["performance"]["billable_request_count"], 3)
         self.assertEqual(metrics["performance"]["source_char_count"], 800)
         self.assertEqual(metrics["performance"]["estimated_total_token_count"], 400)
@@ -1927,6 +2049,8 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["billable_request_per_chunk"], 1.5)
         self.assertEqual(metrics["rates"]["estimated_request_tokens_per_chunk"], 125.0)
         self.assertEqual(metrics["rates"]["estimated_cost_per_chunk"], 0.0153)
+        self.assertEqual(metrics["breakdowns"]["error_code_counts"]["HTTP_TIMEOUT"], 1)
+        self.assertEqual(metrics["breakdowns"]["error_category_counts"]["timeout"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_page_count"], 2)
         self.assertEqual(metrics["quality"]["repair_item_count"], 4)
         self.assertEqual(metrics["quality"]["repair_request_count"], 4)

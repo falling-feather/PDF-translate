@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from pdf_translate.deferral_markers import DEFERRAL_PROTOCOL_USER_BLOCK
+from pdf_translate.error_codes import PdfTranslateError, make_error_info
 from pdf_translate.translators.base import TranslationRequest
 from pdf_translate.translators.http_retry import call_with_http_retry
 
@@ -99,8 +100,13 @@ class OpenAICompatibleTranslator:
             try:
                 return data["choices"][0]["message"]["content"].strip()
             except (KeyError, IndexError) as e:
-                raise RuntimeError(
-                    f"Unexpected API response: {json.dumps(data, ensure_ascii=False)[:800]}"
+                raise PdfTranslateError(
+                    make_error_info(
+                        "API_RESPONSE_INVALID",
+                        detail=f"Unexpected API response: {json.dumps(data, ensure_ascii=False)[:800]}",
+                        source="translator:openai_compatible",
+                        exception=e,
+                    )
                 ) from e
 
         return call_with_http_retry(_do, context="Chat Completions")

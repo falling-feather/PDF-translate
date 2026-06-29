@@ -164,6 +164,12 @@ def build_experiment_metrics(
     stage_counts = _counter_dict((run_breakdowns or {}).get("stage_counts"))
     translator_counts = _counter_dict((run_breakdowns or {}).get("translator_counts"))
     skip_reasons = _counter_dict((run_breakdowns or {}).get("skip_reasons"))
+    run_error_code_counts = _counter_dict(run_summary.get("error_code_counts")) or _counter_dict(
+        (run_breakdowns or {}).get("error_code_counts")
+    )
+    run_error_category_counts = _counter_dict(run_summary.get("error_category_counts")) or _counter_dict(
+        (run_breakdowns or {}).get("error_category_counts")
+    )
 
     page_count = _as_int(structure_summary.get("page_count")) or _as_int(vision_summary.get("page_count"))
     table_count = _as_int(structure_summary.get("table_count")) or _as_int(
@@ -304,6 +310,7 @@ def build_experiment_metrics(
     http_failed_attempt_count = _as_int(run_summary.get("http_failed_attempt_count"))
     http_retryable_error_count = _as_int(run_summary.get("http_retryable_error_count"))
     http_fatal_error_count = _as_int(run_summary.get("http_fatal_error_count"))
+    failed_event_count = _as_int(run_summary.get("failed_event_count"))
     skipped_chunk_count = _as_int(run_summary.get("skipped_chunk_count"))
     source_char_count = _as_int(run_summary.get("source_char_count"))
     context_char_count = _as_int(run_summary.get("context_char_count"))
@@ -467,6 +474,7 @@ def build_experiment_metrics(
             "http_failed_attempt_count": http_failed_attempt_count,
             "http_retryable_error_count": http_retryable_error_count,
             "http_fatal_error_count": http_fatal_error_count,
+            "failed_event_count": failed_event_count,
             "skipped_chunk_count": skipped_chunk_count,
             "source_char_count": source_char_count,
             "context_char_count": context_char_count,
@@ -613,6 +621,8 @@ def build_experiment_metrics(
             "stage_counts": stage_counts,
             "translator_counts": translator_counts,
             "skip_reasons": skip_reasons,
+            "error_code_counts": run_error_code_counts,
+            "error_category_counts": run_error_category_counts,
         },
         "evidence_files": dict(evidence_files or DEFAULT_EVIDENCE_FILES),
     }

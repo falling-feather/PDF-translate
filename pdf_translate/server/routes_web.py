@@ -8,6 +8,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 
+from pdf_translate.error_codes import PdfTranslateError, error_info_from_exception, make_error_info
 from pdf_translate.export_filename import suggest_md_download_name, suggest_zip_bundle_name
 from pdf_translate.pipeline_cancel import cancel_flag_path
 
@@ -54,14 +55,26 @@ def _build_runtime_cfg_for_custom_api(
 
     if b == "deepseek":
         if not key:
-            raise ValueError("deepseek 需要填写 API Key")
+            raise PdfTranslateError(
+                make_error_info(
+                    "CONFIG_MISSING_API_KEY",
+                    detail="deepseek custom API requires API Key.",
+                    source="api:create_job",
+                )
+            )
         out.deepseek_api_key = key
         if base:
             out.deepseek_base_url = base
         if model:
             out.deepseek_model = model
         return out
-    raise ValueError("API翻译目前仅支持 deepseek")
+    raise PdfTranslateError(
+        make_error_info(
+            "CONFIG_INVALID_BACKEND",
+            detail="Custom API translation currently only supports deepseek.",
+            source="api:create_job",
+        )
+    )
 
 
 def register_web_routes(app_registry: JobRegistry) -> APIRouter:
@@ -239,18 +252,24 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
                     api_base_url=custom_api_base_url,
                     api_model=custom_api_model,
                 )
+            except PdfTranslateError as e:
+                raise HTTPException(400, detail=e.error_info.to_dict()) from e
             except ValueError as e:
                 raise HTTPException(400, str(e)) from e
         else:
             try:
                 be = settings_service.assert_backend_allowed(backend, cfg.default_translator)
             except ValueError as e:
-                raise HTTPException(400, str(e)) from e
+                info = error_info_from_exception(e, source="api:create_job")
+                raise HTTPException(400, detail=info.to_dict()) from e
 
         try:
             build_translator(be, runtime_cfg)
+        except PdfTranslateError as e:
+            raise HTTPException(400, detail=e.error_info.to_dict()) from e
         except ValueError as e:
-            raise HTTPException(400, str(e)) from e
+            info = error_info_from_exception(e, source="api:create_job")
+            raise HTTPException(400, detail=info.to_dict()) from e
 
         max_n: int | None = None
         if max_chunks not in (None, ""):
@@ -338,6 +357,12 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             "chunk_index": pub.chunk_index,
             "chunk_id": pub.chunk_id,
             "error": pub.error,
+            "error_code": pub.error_code,
+            "error_category": pub.error_category,
+            "error_retryable": pub.error_retryable,
+            "error_next_step": pub.error_next_step,
+            "error_source": pub.error_source,
+            "error_http_status": pub.error_http_status,
             "created_at": pub.created_at,
             "updated_at": pub.updated_at,
             "main_pages": pub.main_pages,

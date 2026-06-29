@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pdf_translate.config import AppConfig
+from pdf_translate.error_codes import error_info_from_exception, make_error_info
 from pdf_translate.pipeline import export_links, init_workdir, run_split, run_translate
 from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
 
@@ -29,6 +30,12 @@ class JobPublic:
     chunk_index: int | None
     chunk_id: str | None
     error: str | None
+    error_code: str | None
+    error_category: str | None
+    error_retryable: bool | None
+    error_next_step: str | None
+    error_source: str | None
+    error_http_status: int | None
     created_at: str
     updated_at: str
     main_pages: int | None = None
@@ -50,6 +57,12 @@ class JobRecord:
     chunk_index: int | None = None
     chunk_id: str | None = None
     error: str | None = None
+    error_code: str | None = None
+    error_category: str | None = None
+    error_retryable: bool | None = None
+    error_next_step: str | None = None
+    error_source: str | None = None
+    error_http_status: int | None = None
     created_at: str = field(default_factory=_utc_now_iso)
     updated_at: str = field(default_factory=_utc_now_iso)
     main_pages: int | None = None
@@ -75,6 +88,12 @@ class JobRecord:
             chunk_index=self.chunk_index,
             chunk_id=self.chunk_id,
             error=self.error,
+            error_code=self.error_code,
+            error_category=self.error_category,
+            error_retryable=self.error_retryable,
+            error_next_step=self.error_next_step,
+            error_source=self.error_source,
+            error_http_status=self.error_http_status,
             created_at=self.created_at,
             updated_at=self.updated_at,
             main_pages=self.main_pages,
@@ -109,6 +128,12 @@ class JobRegistry:
             "chunk_index": rec.chunk_index,
             "chunk_id": rec.chunk_id,
             "error": rec.error,
+            "error_code": rec.error_code,
+            "error_category": rec.error_category,
+            "error_retryable": rec.error_retryable,
+            "error_next_step": rec.error_next_step,
+            "error_source": rec.error_source,
+            "error_http_status": rec.error_http_status,
             "created_at": rec.created_at,
             "updated_at": rec.updated_at,
             "main_pages": rec.main_pages,
@@ -175,6 +200,12 @@ class JobRegistry:
                     chunk_index=raw.get("chunk_index"),
                     chunk_id=raw.get("chunk_id"),
                     error=raw.get("error"),
+                    error_code=raw.get("error_code"),
+                    error_category=raw.get("error_category"),
+                    error_retryable=raw.get("error_retryable"),
+                    error_next_step=raw.get("error_next_step"),
+                    error_source=raw.get("error_source"),
+                    error_http_status=raw.get("error_http_status"),
                     created_at=raw.get("created_at") or _utc_now_iso(),
                     updated_at=raw.get("updated_at") or _utc_now_iso(),
                     main_pages=raw.get("main_pages"),
@@ -287,6 +318,13 @@ class JobRegistry:
                 message="初始化工作目录…",
                 run_started_at=_utc_now_iso(),
                 duration_seconds=None,
+                error=None,
+                error_code=None,
+                error_category=None,
+                error_retryable=None,
+                error_next_step=None,
+                error_source=None,
+                error_http_status=None,
             )
             init_workdir(rec.work_dir)
 
@@ -342,6 +380,13 @@ class JobRegistry:
                 phase="done",
                 message=f"全部完成，总用时 {elapsed} 秒",
                 duration_seconds=elapsed,
+                error=None,
+                error_code=None,
+                error_category=None,
+                error_retryable=None,
+                error_next_step=None,
+                error_source=None,
+                error_http_status=None,
             )
             try:
                 from pdf_translate.server import database as srv_db
@@ -359,6 +404,11 @@ class JobRegistry:
                 pass
         except JobCancelled:
             elapsed = round(time.perf_counter() - t0, 2)
+            info = make_error_info(
+                "TASK_CANCELLED",
+                detail="Task cancelled by user request.",
+                source="server:run_pipeline",
+            )
             self.update(
                 job_id,
                 status="cancelled",
@@ -366,6 +416,12 @@ class JobRegistry:
                 message=f"已按请求终止，已保留已译部分；总用时 {elapsed} 秒",
                 duration_seconds=elapsed,
                 error=None,
+                error_code=info.code,
+                error_category=info.category,
+                error_retryable=info.retryable,
+                error_next_step=info.next_step,
+                error_source=info.source,
+                error_http_status=info.http_status,
             )
             try:
                 export_links(rec.work_dir)
@@ -388,6 +444,7 @@ class JobRegistry:
                 pass
         except Exception as e:
             elapsed = round(time.perf_counter() - t0, 2)
+            info = error_info_from_exception(e, source="server:run_pipeline")
             self.update(
                 job_id,
                 status="error",
@@ -395,6 +452,12 @@ class JobRegistry:
                 error=str(e),
                 message="失败",
                 duration_seconds=elapsed,
+                error_code=info.code,
+                error_category=info.category,
+                error_retryable=info.retryable,
+                error_next_step=info.next_step,
+                error_source=info.source,
+                error_http_status=info.http_status,
             )
             try:
                 from pdf_translate.server import database as srv_db

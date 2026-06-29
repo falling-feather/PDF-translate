@@ -10,6 +10,8 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+from pdf_translate.error_codes import error_info_from_exception
+
 RUN_LOG_EVENT_SCHEMA_VERSION = "run-log-event-v1"
 RUN_METRICS_SCHEMA_VERSION = "run-metrics-v1"
 
@@ -63,8 +65,18 @@ def _rate(numerator: int | float, denominator: int | float) -> float:
 def _http_retry_summary(
     event: dict[str, Any],
     retry_events: list[dict[str, Any]],
-) -> dict[str, int]:
+) -> dict[str, Any]:
     if retry_events:
+        error_code_counts = Counter(
+            str(item.get("error_code") or "")
+            for item in retry_events
+            if str(item.get("error_code") or "")
+        )
+        error_category_counts = Counter(
+            str(item.get("error_category") or "")
+            for item in retry_events
+            if str(item.get("error_category") or "")
+        )
         return {
             "http_attempt_count": len(retry_events),
             "http_retry_count": sum(1 for item in retry_events if bool(item.get("will_retry"))),
@@ -77,6 +89,8 @@ def _http_retry_summary(
             "http_fatal_error_count": sum(
                 1 for item in retry_events if str(item.get("status") or "") == "fatal_error"
             ),
+            "error_code_counts": dict(sorted(error_code_counts.items())),
+            "error_category_counts": dict(sorted(error_category_counts.items())),
         }
     return {
         "http_attempt_count": _as_int(event.get("http_attempt_count")),
@@ -84,6 +98,18 @@ def _http_retry_summary(
         "http_failed_attempt_count": _as_int(event.get("http_failed_attempt_count")),
         "http_retryable_error_count": _as_int(event.get("http_retryable_error_count")),
         "http_fatal_error_count": _as_int(event.get("http_fatal_error_count")),
+        "error_code_counts": {
+            str(key): _as_int(value)
+            for key, value in (event.get("error_code_counts") or {}).items()
+        }
+        if isinstance(event.get("error_code_counts"), dict)
+        else {},
+        "error_category_counts": {
+            str(key): _as_int(value)
+            for key, value in (event.get("error_category_counts") or {}).items()
+        }
+        if isinstance(event.get("error_category_counts"), dict)
+        else {},
     }
 
 
@@ -104,15 +130,26 @@ def build_run_metrics(
     stage_counts = Counter()
     translator_counts = Counter()
     skip_reasons = Counter()
+    error_code_counts = Counter()
+    error_category_counts = Counter()
+    failed_event_count = 0
     chunks: list[dict[str, Any]] = []
 
     for event in events:
         event_type = str(event.get("event_type") or "")
         phase = str(event.get("phase") or "unknown")
         elapsed = _as_int(event.get("elapsed_ms"))
+        event_error_code = str(event.get("error_code") or "")
+        event_error_category = str(event.get("error_category") or "")
+        if event_error_code:
+            error_code_counts[event_error_code] += 1
+        if event_error_category:
+            error_category_counts[event_error_category] += 1
         if event_type in {"stage", "stage_error"}:
             stage_elapsed[phase] += elapsed
             stage_counts[phase] += 1
+            if event_type == "stage_error":
+                failed_event_count += 1
         elif event_type == "chunk_translation":
             translator = str(event.get("translator") or "unknown")
             translator_counts[translator] += 1
@@ -122,6 +159,8 @@ def build_run_metrics(
                 if isinstance(item, dict)
             ]
             retry_summary = _http_retry_summary(event, retry_events)
+            error_code_counts.update(retry_summary["error_code_counts"])
+            error_category_counts.update(retry_summary["error_category_counts"])
             chunks.append(
                 {
                     "chunk_id": event.get("chunk_id"),
@@ -190,6 +229,9 @@ def build_run_metrics(
         "http_failed_attempt_count": http_failed_attempt_count,
         "http_retryable_error_count": http_retryable_error_count,
         "http_fatal_error_count": http_fatal_error_count,
+        "failed_event_count": failed_event_count,
+        "error_code_counts": dict(sorted(error_code_counts.items())),
+        "error_category_counts": dict(sorted(error_category_counts.items())),
         "request_chars_per_second": _rate(request_char_count * 1000, translation_elapsed_ms),
         "translated_chars_per_second": _rate(
             translated_char_count * 1000,
@@ -209,6 +251,8 @@ def build_run_metrics(
             "stage_counts": dict(sorted(stage_counts.items())),
             "translator_counts": dict(sorted(translator_counts.items())),
             "skip_reasons": dict(sorted(skip_reasons.items())),
+            "error_code_counts": dict(sorted(error_code_counts.items())),
+            "error_category_counts": dict(sorted(error_category_counts.items())),
         },
         "chunks": chunks,
     }
@@ -245,11 +289,16 @@ class RunMetricsRecorder:
         try:
             yield
         except Exception as exc:
+            info = error_info_from_exception(exc, source=f"stage:{phase}")
             self.record(
                 "stage_error",
                 phase,
                 elapsed_ms=elapsed_ms_since(started),
                 error_type=type(exc).__name__,
+                error_code=info.code,
+                error_category=info.category,
+                error_retryable=info.retryable,
+                error_next_step=info.next_step,
                 **payload,
             )
             raise

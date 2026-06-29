@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pdf_translate.config import AppConfig
+from pdf_translate.error_codes import PdfTranslateError, make_error_info
 from pdf_translate.translators.deepl import DeepLTranslator
 from pdf_translate.translators.echo import EchoTranslator
 from pdf_translate.translators.hybrid import HybridTranslator
@@ -9,13 +10,21 @@ from pdf_translate.translators.openai_compatible import OpenAICompatibleTranslat
 from pdf_translate.translators.base import Translator
 
 
+def _config_error(code: str, detail: str, *, source: str) -> PdfTranslateError:
+    return PdfTranslateError(make_error_info(code, detail=detail, source=source))
+
+
 def build_translator(backend: str, cfg: AppConfig) -> Translator:
     b = backend.lower().strip()
     if b in ("echo", "dry", "noop"):
         return EchoTranslator()
     if b == "openai":
         if not cfg.openai_api_key:
-            raise ValueError("OPENAI_API_KEY 未设置，见 SETUP_MANUAL.md")
+            raise _config_error(
+                "CONFIG_MISSING_API_KEY",
+                "OPENAI_API_KEY is not configured.",
+                source="translator:openai",
+            )
         return OpenAICompatibleTranslator(
             api_key=cfg.openai_api_key,
             base_url=cfg.openai_base_url,
@@ -24,9 +33,13 @@ def build_translator(backend: str, cfg: AppConfig) -> Translator:
         )
     if b == "deepseek":
         if not cfg.deepseek_api_key:
-            raise ValueError(
-                "未配置 DeepSeek：请使用管理员账号登录，在「管理后台 → API 与策略」填写 DeepSeek API Key，"
-                "或在服务器环境变量中设置 DEEPSEEK_API_KEY 后重启服务。"
+            raise _config_error(
+                "CONFIG_MISSING_API_KEY",
+                (
+                    "DEEPSEEK_API_KEY is not configured. Configure it in the admin "
+                    "settings or server environment, then restart the service."
+                ),
+                source="translator:deepseek",
             )
         return OpenAICompatibleTranslator(
             api_key=cfg.deepseek_api_key,
@@ -42,7 +55,11 @@ def build_translator(backend: str, cfg: AppConfig) -> Translator:
         )
     if b == "deepl":
         if not cfg.deepl_api_key:
-            raise ValueError("DEEPL_API_KEY 未设置，见 SETUP_MANUAL.md")
+            raise _config_error(
+                "CONFIG_MISSING_API_KEY",
+                "DEEPL_API_KEY is not configured.",
+                source="translator:deepl",
+            )
         return DeepLTranslator(
             api_key=cfg.deepl_api_key,
             api_url=cfg.deepl_api_url,
@@ -50,9 +67,17 @@ def build_translator(backend: str, cfg: AppConfig) -> Translator:
         )
     if b == "hybrid":
         if not cfg.deepl_api_key:
-            raise ValueError("hybrid 需要 DEEPL_API_KEY，见 SETUP_MANUAL.md")
+            raise _config_error(
+                "CONFIG_MISSING_API_KEY",
+                "hybrid backend requires DEEPL_API_KEY.",
+                source="translator:hybrid",
+            )
         if not cfg.openai_api_key:
-            raise ValueError("hybrid 需要 OPENAI_API_KEY 作为润色端，见 SETUP_MANUAL.md")
+            raise _config_error(
+                "CONFIG_MISSING_API_KEY",
+                "hybrid backend requires OPENAI_API_KEY for polishing.",
+                source="translator:hybrid",
+            )
         mt = DeepLTranslator(
             api_key=cfg.deepl_api_key,
             api_url=cfg.deepl_api_url,
@@ -66,4 +91,8 @@ def build_translator(backend: str, cfg: AppConfig) -> Translator:
             system_prompt=POLISH_SYSTEM_PROMPT,
         )
         return HybridTranslator(machine=mt, polisher=polish)
-    raise ValueError(f"未知后端: {backend}，可选 echo/openai/deepseek/ollama/deepl/hybrid")
+    raise _config_error(
+        "CONFIG_INVALID_BACKEND",
+        f"Unknown backend: {backend}. Choose echo/openai/deepseek/ollama/deepl/hybrid.",
+        source="translator:factory",
+    )
