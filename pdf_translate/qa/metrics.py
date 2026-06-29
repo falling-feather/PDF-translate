@@ -7,6 +7,7 @@ from typing import Any
 SCHEMA_VERSION = "experiment-metrics-v1"
 
 DEFAULT_EVIDENCE_FILES = {
+    "structure_chunks_manifest": "output/structure_chunks_manifest.json",
     "structure_qa": "output/structure_qa.json",
     "table_reconstruction": "output/table_reconstruction.json",
     "vision_route": "output/vision_route.json",
@@ -220,6 +221,13 @@ def build_experiment_metrics(
     protected_boundary_count = _as_int(chunk_boundary_summary.get("protected_boundary_count"))
     co_located_boundary_count = _as_int(chunk_boundary_summary.get("co_located_boundary_count"))
     high_risk_split_count = _as_int(chunk_boundary_summary.get("high_risk_split_count"))
+    budget_overflow_chunk_count = _as_int(chunk_boundary_summary.get("budget_overflow_chunk_count"))
+    budget_overflow_char_total = _as_int(chunk_boundary_summary.get("budget_overflow_char_total"))
+    structural_relation_protected_count = _as_int(
+        chunk_boundary_summary.get("structural_relation_protected_count")
+    )
+    budget_split_reason_counts = _counter_dict(chunk_boundary_summary.get("budget_split_reason_counts"))
+    budget_pressure_counts = _counter_dict(chunk_boundary_summary.get("budget_pressure_counts"))
     baseline_split_boundary_count = _as_int(chunk_strategy_summary.get("baseline_split_boundary_count"))
     active_split_boundary_count = _as_int(chunk_strategy_summary.get("active_split_boundary_count"))
     active_split_reduction_vs_baseline = _as_int(chunk_strategy_summary.get("active_split_reduction_vs_baseline"))
@@ -395,6 +403,9 @@ def build_experiment_metrics(
             "protected_boundary_count": protected_boundary_count,
             "co_located_boundary_count": co_located_boundary_count,
             "high_risk_split_count": high_risk_split_count,
+            "budget_overflow_chunk_count": budget_overflow_chunk_count,
+            "budget_overflow_char_total": budget_overflow_char_total,
+            "structural_relation_protected_count": structural_relation_protected_count,
             "baseline_split_boundary_count": baseline_split_boundary_count,
             "active_split_boundary_count": active_split_boundary_count,
             "active_split_reduction_vs_baseline": active_split_reduction_vs_baseline,
@@ -525,6 +536,7 @@ def build_experiment_metrics(
             "split_boundary_rate": _rate(split_boundary_count, page_boundary_fragment_count),
             "protected_boundary_rate": _rate(protected_boundary_count, page_boundary_fragment_count),
             "co_located_boundary_rate": _rate(co_located_boundary_count, page_boundary_fragment_count),
+            "budget_overflow_chunk_rate": _rate(budget_overflow_chunk_count, chunk_count),
             "active_split_reduction_rate_vs_baseline": active_split_reduction_rate_vs_baseline,
             "entity_missing_rate": _rate(missing_entity_token_count, effective_entity_candidate_count),
             "repair_item_per_chunk": _rate(repair_item_count, chunk_count),
@@ -623,6 +635,8 @@ def build_experiment_metrics(
             "skip_reasons": skip_reasons,
             "error_code_counts": run_error_code_counts,
             "error_category_counts": run_error_category_counts,
+            "budget_split_reason_counts": budget_split_reason_counts,
+            "budget_pressure_counts": budget_pressure_counts,
         },
         "evidence_files": dict(evidence_files or DEFAULT_EVIDENCE_FILES),
     }

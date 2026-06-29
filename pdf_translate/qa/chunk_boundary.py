@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,16 @@ def build_chunk_boundary_qa(
         {
             "chunk_id": chunk.chunk_id,
             "pages": _chunk_pages_1based(chunk),
+            "approx_chars": len(chunk.text),
+            "approx_tokens": int(getattr(chunk, "approx_tokens", 0) or 0),
+            "split_reason": str(getattr(chunk, "split_reason", "") or ""),
+            "budget_pressure": str(getattr(chunk, "budget_pressure", "") or ""),
+            "budget_overflow_chars": int(getattr(chunk, "budget_overflow_chars", 0) or 0),
+            "structural_relation_ids": [
+                str(relation_id)
+                for relation_id in getattr(chunk, "structural_relation_ids", [])
+                if str(relation_id)
+            ],
             "boundary_fragment_ids": {
                 str(boundary_id)
                 for boundary_id in getattr(chunk, "boundary_fragment_ids", [])
@@ -49,6 +60,15 @@ def build_chunk_boundary_qa(
         }
         for chunk in chunks
     ]
+    budget_split_reason_counts = Counter(
+        row["split_reason"] for row in chunk_rows if row["split_reason"]
+    )
+    budget_pressure_counts = Counter(
+        row["budget_pressure"] for row in chunk_rows if row["budget_pressure"]
+    )
+    budget_overflow_chunk_count = sum(1 for row in chunk_rows if row["budget_overflow_chars"] > 0)
+    budget_overflow_char_total = sum(row["budget_overflow_chars"] for row in chunk_rows)
+    structural_relation_protected_count = sum(len(row["structural_relation_ids"]) for row in chunk_rows)
 
     boundaries: list[dict[str, Any]] = []
     split_count = 0
@@ -137,7 +157,26 @@ def build_chunk_boundary_qa(
             "split_boundary_rate": round(split_count / boundary_count, 4) if boundary_count else 0.0,
             "protected_boundary_rate": round(protected_count / boundary_count, 4) if boundary_count else 0.0,
             "high_risk_split_rate": round(high_risk_split_count / high_risk_count, 4) if high_risk_count else 0.0,
+            "budget_split_reason_counts": dict(sorted(budget_split_reason_counts.items())),
+            "budget_pressure_counts": dict(sorted(budget_pressure_counts.items())),
+            "budget_overflow_chunk_count": budget_overflow_chunk_count,
+            "budget_overflow_char_total": budget_overflow_char_total,
+            "structural_relation_protected_count": structural_relation_protected_count,
         },
+        "chunks": [
+            {
+                "chunk_id": row["chunk_id"],
+                "pages_1based": sorted(row["pages"]),
+                "approx_chars": row["approx_chars"],
+                "approx_tokens": row["approx_tokens"],
+                "split_reason": row["split_reason"],
+                "budget_pressure": row["budget_pressure"],
+                "budget_overflow_chars": row["budget_overflow_chars"],
+                "structural_relation_ids": row["structural_relation_ids"],
+                "boundary_fragment_ids": sorted(row["boundary_fragment_ids"]),
+            }
+            for row in chunk_rows
+        ],
         "boundaries": boundaries,
     }
 
@@ -216,6 +255,10 @@ def build_chunk_strategy_comparison(
                 "protected_boundary_count": int(summary.get("protected_boundary_count") or 0),
                 "co_located_boundary_count": int(summary.get("co_located_boundary_count") or 0),
                 "high_risk_split_count": int(summary.get("high_risk_split_count") or 0),
+                "budget_overflow_chunk_count": int(summary.get("budget_overflow_chunk_count") or 0),
+                "structural_relation_protected_count": int(
+                    summary.get("structural_relation_protected_count") or 0
+                ),
                 "split_boundary_rate": float(summary.get("split_boundary_rate") or 0.0),
                 "protected_boundary_rate": float(summary.get("protected_boundary_rate") or 0.0),
                 "split_reduction_vs_baseline": split_delta,

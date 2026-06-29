@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pdf_translate.chunking import TextChunk
 from pdf_translate.extractors.document_ir import BlockIR, DocumentIR
+from pdf_translate.run_metrics import estimate_token_count
 from pdf_translate.structure_boundaries import detect_page_boundary_fragments
 
 
@@ -18,6 +19,13 @@ class StructureChunk(TextChunk):
     block_types: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     boundary_fragment_ids: list[str] = field(default_factory=list)
+    structural_relation_ids: list[str] = field(default_factory=list)
+    approx_tokens: int = 0
+    budget_target_chars: int = 0
+    budget_max_chars: int = 0
+    split_reason: str = "unknown"
+    budget_overflow_chars: int = 0
+    budget_pressure: str = "unknown"
 
     def to_manifest_entry(self) -> dict:
         return {
@@ -28,8 +36,17 @@ class StructureChunk(TextChunk):
             "link_count": self.link_count,
             "image_count": self.image_count,
             "approx_chars": len(self.text),
+            "approx_tokens": self.approx_tokens,
             "warnings": self.warnings,
             "boundary_fragment_ids": self.boundary_fragment_ids,
+            "structural_relation_ids": self.structural_relation_ids,
+            "budget": {
+                "target_chars": self.budget_target_chars,
+                "max_chars": self.budget_max_chars,
+                "split_reason": self.split_reason,
+                "overflow_chars": self.budget_overflow_chars,
+                "pressure": self.budget_pressure,
+            },
         }
 
 
@@ -87,10 +104,15 @@ def _make_chunk(
     image_count: int,
     warnings: list[str],
     boundary_fragment_ids: list[str],
+    structural_relation_ids: list[str],
+    target_chars: int,
+    max_chars: int,
+    split_reason: str,
 ) -> StructureChunk:
     pages = sorted({b.page_no - 1 for b in blocks})
     type_counts = Counter(b.type for b in blocks)
     text = "\n\n".join(_format_block(b) for b in blocks)
+    approx_chars = len(text)
     return StructureChunk(
         chunk_id=f"c{chunk_index:04d}",
         pages_0based=pages,
@@ -101,6 +123,13 @@ def _make_chunk(
         block_types=dict(type_counts),
         warnings=warnings,
         boundary_fragment_ids=boundary_fragment_ids,
+        structural_relation_ids=structural_relation_ids,
+        approx_tokens=estimate_token_count(approx_chars),
+        budget_target_chars=target_chars,
+        budget_max_chars=max_chars,
+        split_reason=split_reason,
+        budget_overflow_chars=max(0, approx_chars - max_chars),
+        budget_pressure=_budget_pressure(approx_chars, target_chars, max_chars),
     )
 
 
@@ -126,6 +155,40 @@ def _protected_boundary_fragment(
     return boundary_fragments.get((previous_page, next_block.page_no))
 
 
+def _relation_label(child: BlockIR) -> str:
+    raw = child.meta.get("parent_relation") if isinstance(child.meta, dict) else ""
+    return str(raw or "structural_relation")
+
+
+def _structural_relation_id(previous: BlockIR, current: BlockIR) -> str:
+    if previous.parent_id == current.block_id:
+        return f"{previous.block_id}->{current.block_id}:{_relation_label(previous)}"
+    if current.parent_id == previous.block_id:
+        return f"{previous.block_id}->{current.block_id}:{_relation_label(current)}"
+    if previous.parent_id and previous.parent_id == current.parent_id:
+        return f"{previous.parent_id}->{previous.block_id}+{current.block_id}:shared_parent"
+    return ""
+
+
+def _opens_structural_relation(
+    block: BlockIR,
+    parent_ids: set[str],
+    child_parent_ids: set[str],
+    current_ids: set[str],
+) -> bool:
+    opens_as_child = bool(block.parent_id and block.parent_id in parent_ids and block.parent_id not in current_ids)
+    opens_as_parent = block.block_id in child_parent_ids
+    return opens_as_child or opens_as_parent
+
+
+def _budget_pressure(approx_chars: int, target_chars: int, max_chars: int) -> str:
+    if approx_chars > max_chars:
+        return "over_max"
+    if approx_chars > target_chars:
+        return "over_target"
+    return "within_target"
+
+
 def build_structure_chunks(
     doc_ir: DocumentIR,
     *,
@@ -148,11 +211,25 @@ def build_structure_chunks(
     current_warnings: list[str] = []
     current_page_nos: set[int] = set()
     current_boundary_fragment_ids: list[str] = []
+    current_structural_relation_ids: list[str] = []
     boundary_fragments = _boundary_fragment_map(doc_ir)
     protected_page_limit = max_pages_per_chunk + 1
+    translatable_blocks = [
+        block
+        for page in doc_ir.pages
+        for block in page.blocks
+        if _block_for_translation(block)
+    ]
+    parent_ids = {block.block_id for block in translatable_blocks}
+    child_parent_ids = {
+        str(block.parent_id)
+        for block in translatable_blocks
+        if block.parent_id and str(block.parent_id) in parent_ids
+    }
 
-    def flush() -> None:
-        nonlocal current, current_links, current_images, current_warnings, current_page_nos, current_boundary_fragment_ids
+    def flush(split_reason: str = "end_of_document") -> None:
+        nonlocal current, current_links, current_images, current_warnings, current_page_nos
+        nonlocal current_boundary_fragment_ids, current_structural_relation_ids
         if not current:
             return
         chunks.append(
@@ -163,6 +240,10 @@ def build_structure_chunks(
                 current_images,
                 sorted(set(current_warnings)),
                 sorted(set(current_boundary_fragment_ids)),
+                sorted(set(current_structural_relation_ids)),
+                target_chars,
+                max_chars,
+                split_reason,
             )
         )
         current = []
@@ -171,6 +252,7 @@ def build_structure_chunks(
         current_warnings = []
         current_page_nos = set()
         current_boundary_fragment_ids = []
+        current_structural_relation_ids = []
 
     for page in doc_ir.pages:
         page_blocks = [b for b in page.blocks if _block_for_translation(b)]
@@ -179,21 +261,43 @@ def build_structure_chunks(
             pages_if_added = {b.page_no for b in current}
             pages_if_added.add(block.page_no)
             protected_fragment = _protected_boundary_fragment(current, block, boundary_fragments)
+            current_ids = {b.block_id for b in current}
+            structural_relation_id = _structural_relation_id(current[-1], block) if current else ""
+            relation_opener = _opens_structural_relation(block, parent_ids, child_parent_ids, current_ids)
             page_limit_exceeded = len(pages_if_added) > max_pages_per_chunk
             protected_page_limit_exceeded = len(pages_if_added) > protected_page_limit
+            max_chars_exceeded = candidate_len > max_chars
+            target_chars_exceeded = candidate_len > target_chars
+            split_reason = ""
+            if relation_opener and not structural_relation_id and target_chars_exceeded:
+                split_reason = "before_structural_relation"
+            elif max_chars_exceeded and not structural_relation_id:
+                split_reason = "max_chars"
+            elif target_chars_exceeded and len(pages_if_added) > 1 and not protected_fragment and not structural_relation_id:
+                split_reason = "target_chars"
+            elif page_limit_exceeded and not structural_relation_id and (not protected_fragment or protected_page_limit_exceeded):
+                split_reason = "page_limit"
+            elif structural_relation_id and protected_page_limit_exceeded:
+                split_reason = "protected_relation_page_limit"
             should_flush = bool(current) and (
-                candidate_len > max_chars
-                or (candidate_len > target_chars and len(pages_if_added) > 1 and not protected_fragment)
-                or (page_limit_exceeded and (not protected_fragment or protected_page_limit_exceeded))
+                bool(split_reason)
             )
             if should_flush:
-                flush()
+                flush(split_reason)
                 protected_fragment = None
+                structural_relation_id = ""
             elif protected_fragment:
                 boundary_id = str(protected_fragment.get("boundary_id") or "")
                 if boundary_id:
                     current_boundary_fragment_ids.append(boundary_id)
                     current_warnings.append(f"protected_page_boundary:{boundary_id}")
+            if structural_relation_id:
+                current_structural_relation_ids.append(structural_relation_id)
+                current_warnings.append(f"protected_structural_relation:{structural_relation_id}")
+                if max_chars_exceeded:
+                    current_warnings.append(f"budget_overflow_for_structural_relation:{structural_relation_id}")
+                elif target_chars_exceeded:
+                    current_warnings.append(f"budget_pressure_for_structural_relation:{structural_relation_id}")
             current.append(block)
             if page.page_no not in current_page_nos:
                 current_page_nos.add(page.page_no)

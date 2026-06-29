@@ -371,6 +371,15 @@ def run_translate(
                 "block_types": getattr(c, "block_types", {}),
                 "warnings": getattr(c, "warnings", []),
                 "boundary_fragment_ids": getattr(c, "boundary_fragment_ids", []),
+                "structural_relation_ids": getattr(c, "structural_relation_ids", []),
+                "approx_tokens": getattr(c, "approx_tokens", 0),
+                "budget": {
+                    "target_chars": getattr(c, "budget_target_chars", 0),
+                    "max_chars": getattr(c, "budget_max_chars", 0),
+                    "split_reason": getattr(c, "split_reason", ""),
+                    "overflow_chars": getattr(c, "budget_overflow_chars", 0),
+                    "pressure": getattr(c, "budget_pressure", ""),
+                },
             }
             for c in chunks
         ]

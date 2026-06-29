@@ -269,6 +269,110 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(qa["tables"][0]["numeric_tokens"], ["91", "88"])
         self.assertIn("page_boundary_fragment_count", qa["summary"])
 
+    def test_structure_chunks_record_budget_metadata_and_split_reasons(self) -> None:
+        first_text = ("Alpha method " * 85).strip() + "."
+        second_text = "Second page starts independently."
+        doc_ir = DocumentIR(
+            doc_id="budget-sample",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text=first_text,
+                    blocks=[
+                        BlockIR("p1-b0000", 1, "paragraph", first_text, (40, 100, 520, 180), 0),
+                    ],
+                ),
+                PageIR(
+                    page_no=2,
+                    width=600,
+                    height=800,
+                    text=second_text,
+                    blocks=[
+                        BlockIR("p2-b0000", 2, "paragraph", second_text, (40, 100, 520, 180), 0),
+                    ],
+                ),
+            ],
+        )
+        chunks = build_structure_chunks(
+            doc_ir,
+            target_chars=1000,
+            max_chars=2000,
+            max_pages_per_chunk=3,
+        )
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(chunks[0].split_reason, "target_chars")
+        self.assertEqual(chunks[0].budget_target_chars, 1000)
+        self.assertEqual(chunks[0].budget_max_chars, 2000)
+        self.assertGreater(chunks[0].approx_tokens, 0)
+        manifest = chunks[0].to_manifest_entry()
+        self.assertEqual(manifest["budget"]["split_reason"], "target_chars")
+        self.assertEqual(manifest["budget"]["target_chars"], 1000)
+        self.assertEqual(manifest["approx_tokens"], chunks[0].approx_tokens)
+
+        boundary_qa = build_chunk_boundary_qa(
+            chunks,
+            build_structure_qa(doc_ir),
+            pipeline_variant="structure",
+        )
+        self.assertEqual(boundary_qa["summary"]["budget_split_reason_counts"]["target_chars"], 1)
+        self.assertIn("chunks", boundary_qa)
+        self.assertEqual(boundary_qa["chunks"][0]["split_reason"], "target_chars")
+
+    def test_structure_chunks_protect_structural_relation_under_budget_pressure(self) -> None:
+        table_text = ("Metric Acc F1\n" + ("BERT 91 88\n" * 105)).strip()
+        caption_text = "Table 1 explains " + ("domain shift " * 32)
+        relation_id = "p1-b0000->p1-b0001:caption_for_table"
+        doc_ir = DocumentIR(
+            doc_id="relation-budget-sample",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text=f"{table_text}\n{caption_text}",
+                    blocks=[
+                        BlockIR("p1-b0000", 1, "table", table_text, (40, 100, 520, 360), 0),
+                        BlockIR(
+                            "p1-b0001",
+                            1,
+                            "caption",
+                            caption_text,
+                            (40, 370, 520, 420),
+                            1,
+                            parent_id="p1-b0000",
+                            meta={"parent_relation": "caption_for_table"},
+                        ),
+                    ],
+                ),
+            ],
+        )
+        chunks = build_structure_chunks(
+            doc_ir,
+            target_chars=1000,
+            max_chars=1200,
+            max_pages_per_chunk=1,
+        )
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].block_ids, ["p1-b0000", "p1-b0001"])
+        self.assertEqual(chunks[0].structural_relation_ids, [relation_id])
+        self.assertGreater(chunks[0].budget_overflow_chars, 0)
+        self.assertEqual(chunks[0].budget_pressure, "over_max")
+        self.assertIn(f"protected_structural_relation:{relation_id}", chunks[0].warnings)
+        self.assertIn(f"budget_overflow_for_structural_relation:{relation_id}", chunks[0].warnings)
+
+        boundary_qa = build_chunk_boundary_qa(
+            chunks,
+            build_structure_qa(doc_ir),
+            pipeline_variant="structure",
+        )
+        self.assertEqual(boundary_qa["summary"]["structural_relation_protected_count"], 1)
+        self.assertEqual(boundary_qa["summary"]["budget_overflow_chunk_count"], 1)
+        self.assertEqual(boundary_qa["summary"]["budget_pressure_counts"]["over_max"], 1)
+
     def test_structure_qa_reports_entity_candidates(self) -> None:
         doc_ir = DocumentIR(
             doc_id="entities",
@@ -1795,6 +1899,11 @@ class StructureIRTests(unittest.TestCase):
                     "protected_boundary_count": 1,
                     "co_located_boundary_count": 1,
                     "high_risk_split_count": 1,
+                    "budget_overflow_chunk_count": 1,
+                    "budget_overflow_char_total": 160,
+                    "structural_relation_protected_count": 2,
+                    "budget_split_reason_counts": {"target_chars": 1, "end_of_document": 1},
+                    "budget_pressure_counts": {"over_max": 1, "within_target": 1},
                 },
             },
             chunk_strategy_comparison={
@@ -2077,6 +2186,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["missing_table_locked_token_count"], 3)
         self.assertEqual(metrics["quality"]["split_boundary_count"], 1)
         self.assertEqual(metrics["quality"]["protected_boundary_count"], 1)
+        self.assertEqual(metrics["quality"]["budget_overflow_chunk_count"], 1)
+        self.assertEqual(metrics["quality"]["budget_overflow_char_total"], 160)
+        self.assertEqual(metrics["quality"]["structural_relation_protected_count"], 2)
         self.assertEqual(metrics["quality"]["baseline_split_boundary_count"], 2)
         self.assertEqual(metrics["quality"]["active_split_reduction_vs_baseline"], 1)
         self.assertEqual(metrics["quality"]["reconstructable_table_count"], 1)
@@ -2103,7 +2215,10 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["table_footnote_binding_rate"], 0.5)
         self.assertEqual(metrics["rates"]["split_boundary_rate"], 0.5)
         self.assertEqual(metrics["rates"]["protected_boundary_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["budget_overflow_chunk_rate"], 0.5)
         self.assertEqual(metrics["rates"]["active_split_reduction_rate_vs_baseline"], 0.5)
+        self.assertEqual(metrics["breakdowns"]["budget_split_reason_counts"]["target_chars"], 1)
+        self.assertEqual(metrics["breakdowns"]["budget_pressure_counts"]["over_max"], 1)
         self.assertEqual(metrics["rates"]["entity_missing_rate"], 0.25)
         self.assertEqual(metrics["rates"]["repair_item_per_chunk"], 2.0)
         self.assertEqual(metrics["rates"]["repair_request_ready_rate"], 0.75)
@@ -2551,6 +2666,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(out.is_file())
             ir_path = work_dir / "output" / "document_ir.json"
             manifest_path = work_dir / "output" / "structure_chunks_manifest.json"
+            active_manifest_path = work_dir / "output" / "chunks_manifest.json"
             qa_path = work_dir / "output" / "structure_qa.json"
             table_reconstruction_path = work_dir / "output" / "table_reconstruction.json"
             chunk_boundary_qa_path = work_dir / "output" / "chunk_boundary_qa.json"
@@ -2587,6 +2703,7 @@ class StructureIRTests(unittest.TestCase):
             bilingual_path = work_dir / "output" / "bilingual.html"
             self.assertTrue(ir_path.is_file())
             self.assertTrue(manifest_path.is_file())
+            self.assertTrue(active_manifest_path.is_file())
             self.assertTrue(qa_path.is_file())
             self.assertTrue(table_reconstruction_path.is_file())
             self.assertTrue(chunk_boundary_qa_path.is_file())
@@ -2623,6 +2740,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(bilingual_path.is_file())
             ir = json.loads(ir_path.read_text(encoding="utf-8"))
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            active_manifest = json.loads(active_manifest_path.read_text(encoding="utf-8"))
             qa = json.loads(qa_path.read_text(encoding="utf-8"))
             table_reconstruction = json.loads(table_reconstruction_path.read_text(encoding="utf-8"))
             chunk_boundary_qa = json.loads(chunk_boundary_qa_path.read_text(encoding="utf-8"))
@@ -2663,6 +2781,12 @@ class StructureIRTests(unittest.TestCase):
             self.assertGreaterEqual(len(manifest), 1)
             self.assertIn("block_ids", manifest[0])
             self.assertIn("boundary_fragment_ids", manifest[0])
+            self.assertIn("structural_relation_ids", manifest[0])
+            self.assertIn("approx_tokens", manifest[0])
+            self.assertIn("budget", manifest[0])
+            self.assertGreaterEqual(len(active_manifest), 1)
+            self.assertIn("budget", active_manifest[0])
+            self.assertIn("structural_relation_ids", active_manifest[0])
             self.assertEqual(qa["schema_version"], "structure-qa-v1")
             self.assertIn("table_count", qa["summary"])
             self.assertIn("caption_orphan_count", qa["summary"])
@@ -2684,6 +2808,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(chunk_boundary_qa["schema_version"], "chunk-boundary-qa-v1")
             self.assertEqual(chunk_boundary_qa["pipeline_variant"], "structure")
             self.assertIn("split_boundary_count", chunk_boundary_qa["summary"])
+            self.assertIn("budget_pressure_counts", chunk_boundary_qa["summary"])
+            self.assertIn("chunks", chunk_boundary_qa)
             self.assertEqual(chunk_strategy_comparison["schema_version"], "chunk-strategy-comparison-v1")
             self.assertEqual(chunk_strategy_comparison["active_strategy"], "structure")
             self.assertIn("active_split_reduction_vs_baseline", chunk_strategy_comparison["summary"])
@@ -2765,6 +2891,11 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(metrics["evidence_files"]["document_ir_promoted"], "output/document_ir_promoted.json")
             self.assertIn("entity_missing_rate", metrics["rates"])
             self.assertIn("split_boundary_rate", metrics["rates"])
+            self.assertIn("budget_overflow_chunk_rate", metrics["rates"])
+            self.assertEqual(
+                metrics["evidence_files"]["structure_chunks_manifest"],
+                "output/structure_chunks_manifest.json",
+            )
             self.assertEqual(metrics["evidence_files"]["chunk_boundary_qa"], "output/chunk_boundary_qa.json")
             self.assertEqual(
                 metrics["evidence_files"]["table_reconstruction"],
