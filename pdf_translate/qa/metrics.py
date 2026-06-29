@@ -111,6 +111,8 @@ def build_experiment_metrics(
     vision_summary = _summary(vision_route)
     ocr_task_summary = _summary(ocr_tasks)
     ocr_result_summary = _summary(ocr_results)
+    ocr_execution = ocr_results.get("execution") if isinstance(ocr_results, dict) else None
+    ocr_execution_summary = _summary(ocr_execution if isinstance(ocr_execution, dict) else None)
     ocr_writeback_summary = _summary(ocr_writeback)
     chunk_boundary_summary = _summary(chunk_boundary_qa)
     chunk_strategy_summary = _summary(chunk_strategy_comparison)
@@ -135,6 +137,7 @@ def build_experiment_metrics(
     ocr_task_block_type_counts = _counter_dict(ocr_task_summary.get("block_type_counts"))
     ocr_result_payload_status_counts = _counter_dict(ocr_result_summary.get("status_counts"))
     ocr_result_payload_engine_counts = _counter_dict(ocr_result_summary.get("engine_counts"))
+    ocr_execution_status_counts = _counter_dict(ocr_execution_summary.get("status_counts"))
     ocr_writeback_status_counts = _counter_dict(ocr_writeback_summary.get("result_status_counts"))
     ocr_writeback_engine_counts = _counter_dict(ocr_writeback_summary.get("accepted_engine_counts"))
     ocr_writeback_rejection_counts = _counter_dict(ocr_writeback_summary.get("rejection_reason_counts"))
@@ -204,6 +207,11 @@ def build_experiment_metrics(
     ocr_vlm_fallback_task_count = _as_int(ocr_task_summary.get("vlm_fallback_task_count"))
     ocr_result_payload_count = _as_int(ocr_result_summary.get("result_count"))
     ocr_invalid_result_count = _as_int(ocr_result_summary.get("invalid_result_count"))
+    ocr_executor_attempted_task_count = _as_int(ocr_execution_summary.get("attempted_task_count"))
+    ocr_executor_succeeded_task_count = _as_int(ocr_execution_summary.get("succeeded_task_count"))
+    ocr_executor_failed_task_count = _as_int(ocr_execution_summary.get("failed_task_count"))
+    ocr_executor_skipped_task_count = _as_int(ocr_execution_summary.get("skipped_task_count"))
+    ocr_executor_available = _as_bool(ocr_execution_summary.get("engine_available"))
     ocr_result_count = _as_int(ocr_writeback_summary.get("result_count"))
     ocr_accepted_result_count = _as_int(ocr_writeback_summary.get("accepted_result_count"))
     ocr_rejected_result_count = _as_int(ocr_writeback_summary.get("rejected_result_count"))
@@ -348,6 +356,11 @@ def build_experiment_metrics(
             "ocr_vlm_fallback_task_count": ocr_vlm_fallback_task_count,
             "ocr_result_payload_count": ocr_result_payload_count,
             "ocr_invalid_result_count": ocr_invalid_result_count,
+            "ocr_executor_attempted_task_count": ocr_executor_attempted_task_count,
+            "ocr_executor_succeeded_task_count": ocr_executor_succeeded_task_count,
+            "ocr_executor_failed_task_count": ocr_executor_failed_task_count,
+            "ocr_executor_skipped_task_count": ocr_executor_skipped_task_count,
+            "ocr_executor_available": ocr_executor_available,
             "ocr_result_count": ocr_result_count,
             "ocr_accepted_result_count": ocr_accepted_result_count,
             "ocr_rejected_result_count": ocr_rejected_result_count,
@@ -477,6 +490,10 @@ def build_experiment_metrics(
                 ocr_result_payload_count,
                 ocr_result_payload_count + ocr_invalid_result_count,
             ),
+            "ocr_executor_success_rate": _rate(
+                ocr_executor_succeeded_task_count,
+                ocr_executor_attempted_task_count,
+            ),
             "ocr_task_result_coverage_rate": _rate(ocr_result_count, ocr_task_count),
             "ocr_result_acceptance_rate": _rate(ocr_accepted_result_count, ocr_result_count),
             "ocr_writeback_apply_rate": _rate(
@@ -509,6 +526,7 @@ def build_experiment_metrics(
             "ocr_task_block_type_counts": ocr_task_block_type_counts,
             "ocr_result_payload_status_counts": ocr_result_payload_status_counts,
             "ocr_result_payload_engine_counts": ocr_result_payload_engine_counts,
+            "ocr_execution_status_counts": ocr_execution_status_counts,
             "ocr_writeback_status_counts": ocr_writeback_status_counts,
             "ocr_writeback_engine_counts": ocr_writeback_engine_counts,
             "ocr_writeback_rejection_counts": ocr_writeback_rejection_counts,

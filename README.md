@@ -168,12 +168,12 @@ pdf-translate-web
 ```bash
 pdf-translate init <工作目录>
 pdf-translate split <输入.pdf> <工作目录> [--tail-fallback]
-pdf-translate translate <工作目录> [-b openai] [--pages 3] [--overlap 1] [--chunk-strategy page|structure] [--ocr-results results.json] [--max-chunks N]
+pdf-translate translate <工作目录> [-b openai] [--pages 3] [--overlap 1] [--chunk-strategy page|structure] [--ocr-results results.json] [--execute-ocr] [--max-chunks N]
 pdf-translate links <工作目录>
 pdf-translate run <输入.pdf> <工作目录>   # init + split + translate 一键
 ```
 
-CLI 的 `translate` / `run` 默认使用 **串联** 与当前 `pipeline` 默认参数；`--chunk-strategy structure` 为实验性结构分段路径，会基于 `DocumentIR` 结构块生成翻译块；`--ocr-results` 可传入外部或本地 OCR 执行器生成的 `ocr-results-v1` JSON，并规范化写入 `output/ocr_results.json` 后再进入 OCR 回写门禁。**并联、Web 专属选项**以 Web 表单为准。详见 `pdf-translate translate --help`。
+CLI 的 `translate` / `run` 默认使用 **串联** 与当前 `pipeline` 默认参数；`--chunk-strategy structure` 为实验性结构分段路径，会基于 `DocumentIR` 结构块生成翻译块；`--ocr-results` 可传入外部或本地 OCR 执行器生成的 `ocr-results-v1` JSON；`--execute-ocr` 会在未提供结果文件时尝试执行本地 OCR 任务，并把执行摘要规范化写入 `output/ocr_results.json` 后再进入 OCR 回写门禁。**并联、Web 专属选项**以 Web 表单为准。详见 `pdf-translate translate --help`。
 
 ---
 

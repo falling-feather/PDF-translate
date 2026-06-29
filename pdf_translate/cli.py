@@ -77,6 +77,15 @@ def cmd_translate(
         dir_okay=False,
         help="OCR results JSON (ocr-results-v1) for output/document_ir_ocr.json.",
     ),
+    execute_ocr: bool = typer.Option(
+        False,
+        "--execute-ocr",
+        help="Run local OCR tasks when --ocr-results is not provided.",
+    ),
+    ocr_engine: str = typer.Option("tesseract_cli", "--ocr-engine", help="Local OCR engine id."),
+    ocr_language: str = typer.Option("eng", "--ocr-language", help="OCR language code passed to the engine."),
+    ocr_timeout_seconds: int = typer.Option(30, "--ocr-timeout", min=1, help="Seconds per OCR task."),
+    ocr_command: str | None = typer.Option(None, "--ocr-command", help="Optional OCR command path."),
 ) -> None:
     cfg = AppConfig.from_env()
     out = pipeline.run_translate(
@@ -91,6 +100,11 @@ def cmd_translate(
         execute_repair_requests=execute_repairs,
         max_repair_requests=max_repair_requests,
         ocr_results_path=ocr_results,
+        execute_ocr=execute_ocr,
+        ocr_engine=ocr_engine,
+        ocr_language=ocr_language,
+        ocr_timeout_seconds=ocr_timeout_seconds,
+        ocr_command=ocr_command,
     )
     typer.echo(f"已写入合并稿: {out}")
 
@@ -135,6 +149,15 @@ def cmd_run(
         dir_okay=False,
         help="OCR results JSON (ocr-results-v1) for output/document_ir_ocr.json.",
     ),
+    execute_ocr: bool = typer.Option(
+        False,
+        "--execute-ocr",
+        help="Run local OCR tasks when --ocr-results is not provided.",
+    ),
+    ocr_engine: str = typer.Option("tesseract_cli", "--ocr-engine", help="Local OCR engine id."),
+    ocr_language: str = typer.Option("eng", "--ocr-language", help="OCR language code passed to the engine."),
+    ocr_timeout_seconds: int = typer.Option(30, "--ocr-timeout", min=1, help="Seconds per OCR task."),
+    ocr_command: str | None = typer.Option(None, "--ocr-command", help="Optional OCR command path."),
 ) -> None:
     """init → split → translate 一键执行。"""
     pipeline.init_workdir(work_dir)
@@ -152,6 +175,11 @@ def cmd_run(
         execute_repair_requests=execute_repairs,
         max_repair_requests=max_repair_requests,
         ocr_results_path=ocr_results,
+        execute_ocr=execute_ocr,
+        ocr_engine=ocr_engine,
+        ocr_language=ocr_language,
+        ocr_timeout_seconds=ocr_timeout_seconds,
+        ocr_command=ocr_command,
     )
     typer.echo(f"完成: {out}")
 

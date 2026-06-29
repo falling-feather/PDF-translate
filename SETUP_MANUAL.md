@@ -190,6 +190,9 @@ pdf-translate translate ./my-paper --backend echo
 # 可选：回灌外部/本地 OCR 执行器生成的 ocr-results-v1 JSON
 pdf-translate translate ./my-paper --backend echo --ocr-results ./ocr-results.json
 
+# 可选：没有结果文件时尝试执行本地 OCR 任务（默认调用 tesseract，可指定命令路径）
+pdf-translate translate ./my-paper --backend echo --execute-ocr --ocr-command tesseract
+
 # 4) 导出正文中各页超链接索引 CSV（便于后续 HTML/对照）
 pdf-translate links ./my-paper
 ```

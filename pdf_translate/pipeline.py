@@ -45,6 +45,7 @@ from pdf_translate.translators.base import TranslationRequest
 from pdf_translate.translators.factory import build_translator
 from pdf_translate.translators.http_retry import capture_http_retry_events
 from pdf_translate.translators.openai_compatible import SYSTEM_PROMPT_VERSION, prompt_fingerprint
+from pdf_translate.vision.ocr_executor import execute_ocr_tasks
 from pdf_translate.vision.ocr_tasks import write_ocr_task_manifest
 from pdf_translate.vision.ocr_writeback import (
     load_ocr_results,
@@ -115,9 +116,11 @@ def _translator_supports_deferral(translator: object) -> bool:
     return True
 
 
-def _ocr_results_source(out_dir: Path, explicit_path: Path | None) -> Path | None:
+def _ocr_results_source(out_dir: Path, explicit_path: Path | None, *, reuse_default: bool = True) -> Path | None:
     if explicit_path is not None:
         return explicit_path
+    if not reuse_default:
+        return None
     default_path = out_dir / "ocr_results.json"
     return default_path if default_path.is_file() else None
 
@@ -235,6 +238,11 @@ def run_translate(
     execute_repair_requests: bool = False,
     max_repair_requests: int | None = None,
     ocr_results_path: Path | None = None,
+    execute_ocr: bool = False,
+    ocr_engine: str = "tesseract_cli",
+    ocr_language: str = "eng",
+    ocr_timeout_seconds: int = 30,
+    ocr_command: str | None = None,
 ) -> Path:
     """survey_override：None 使用 cfg.survey_enabled；True/False 强制开关译前巡视（精品翻译传 True）。"""
     cfg = replace(cfg, survey_enabled=survey_override) if survey_override is not None else cfg
@@ -281,8 +289,20 @@ def run_translate(
     with run_metrics.stage("ocr_tasks"):
         ocr_tasks = write_ocr_task_manifest(doc_ir, vision_route, out_dir / "ocr_tasks.json")
     with run_metrics.stage("ocr_results"):
-        resolved_ocr_results_path = _ocr_results_source(out_dir, ocr_results_path)
-        raw_ocr_results = load_ocr_results(resolved_ocr_results_path) if resolved_ocr_results_path else None
+        resolved_ocr_results_path = _ocr_results_source(out_dir, ocr_results_path, reuse_default=not execute_ocr)
+        if resolved_ocr_results_path:
+            raw_ocr_results = load_ocr_results(resolved_ocr_results_path)
+        elif execute_ocr:
+            raw_ocr_results = execute_ocr_tasks(
+                ocr_tasks,
+                work_dir,
+                engine=ocr_engine,
+                language=ocr_language,
+                timeout_seconds=ocr_timeout_seconds,
+                command=ocr_command,
+            )
+        else:
+            raw_ocr_results = None
         ocr_results = write_ocr_results_payload(
             ocr_tasks,
             out_dir / "ocr_results.json",

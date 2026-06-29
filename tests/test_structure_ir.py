@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -43,6 +44,7 @@ from pdf_translate.translators.base import TranslationRequest
 from pdf_translate.translators.http_retry import call_with_http_retry, capture_http_retry_events
 from pdf_translate.translators.openai_compatible import _build_user_message
 from pdf_translate.vision.ocr_tasks import build_ocr_task_manifest, write_ocr_task_manifest
+from pdf_translate.vision.ocr_executor import execute_ocr_tasks
 from pdf_translate.vision.ocr_writeback import (
     build_ocr_results_payload,
     build_ocr_writeback,
@@ -987,6 +989,79 @@ class StructureIRTests(unittest.TestCase):
             if parent.is_dir() and not any(parent.iterdir()):
                 shutil.rmtree(parent)
 
+    def test_local_ocr_executor_runs_ready_tasks_into_results_payload(self) -> None:
+        root = Path.cwd() / "test-output" / "ocr-executor"
+        if root.exists():
+            shutil.rmtree(root)
+        try:
+            crop_path = root / "output" / "vision_crops" / "page-0001" / "p1-b0000-image.png"
+            crop_path.parent.mkdir(parents=True)
+            crop_path.write_bytes(b"fake image")
+            manifest = {
+                "schema_version": "ocr-task-manifest-v1",
+                "doc_id": "ocr-executor-sample",
+                "tasks": [
+                    {
+                        "task_id": "ocr-p0001-r000",
+                        "page_no": 1,
+                        "scope": "region",
+                        "status": "pending_engine",
+                        "recommended_engine": "local_ocr",
+                        "input_path": "vision_crops/page-0001/p1-b0000-image.png",
+                        "block_id": "p1-b0000",
+                        "bbox": [40, 80, 560, 520],
+                    },
+                    {
+                        "task_id": "ocr-p0002-page-001",
+                        "page_no": 2,
+                        "scope": "page",
+                        "status": "blocked_missing_visual_evidence",
+                        "recommended_engine": "local_ocr",
+                        "input_path": "",
+                        "block_id": "",
+                        "bbox": [],
+                    },
+                ],
+            }
+            seen: list[tuple[list[str], int]] = []
+
+            def fake_runner(command: list[str], timeout_seconds: int) -> subprocess.CompletedProcess[str]:
+                seen.append((command, timeout_seconds))
+                return subprocess.CompletedProcess(command, 0, stdout="Recognized figure text\n", stderr="")
+
+            payload = execute_ocr_tasks(
+                manifest,
+                root,
+                command="fake-tesseract",
+                command_runner=fake_runner,
+                language="eng",
+                timeout_seconds=7,
+            )
+
+            self.assertEqual(payload["schema_version"], "ocr-results-v1")
+            self.assertEqual(payload["source"], "local_ocr_executor")
+            self.assertEqual(payload["execution"]["schema_version"], "ocr-execution-v1")
+            self.assertEqual(payload["execution"]["summary"]["task_count"], 2)
+            self.assertEqual(payload["execution"]["summary"]["attempted_task_count"], 1)
+            self.assertEqual(payload["execution"]["summary"]["succeeded_task_count"], 1)
+            self.assertEqual(payload["execution"]["summary"]["skipped_task_count"], 1)
+            self.assertTrue(payload["execution"]["summary"]["engine_available"])
+            self.assertEqual(payload["results"][0]["status"], "succeeded")
+            self.assertEqual(payload["results"][0]["text"], "Recognized figure text")
+            self.assertEqual(payload["results"][0]["confidence"], 0.6)
+            self.assertIn("confidence_estimated", payload["results"][0]["warnings"])
+            self.assertEqual(payload["results"][1]["status"], "skipped")
+            self.assertEqual(seen[0][0][0], "fake-tesseract")
+            self.assertEqual(Path(seen[0][0][1]), crop_path)
+            self.assertEqual(seen[0][0][-1], "6")
+            self.assertEqual(seen[0][1], 7)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
     def test_ocr_writeback_appends_candidates_to_augmented_ir(self) -> None:
         doc_ir = DocumentIR(
             doc_id="ocr-writeback-sample",
@@ -1467,6 +1542,17 @@ class StructureIRTests(unittest.TestCase):
                     "status_counts": {"succeeded": 3},
                     "engine_counts": {"local_ocr": 1, "local_table_ocr": 1, "vlm_fallback": 1},
                 },
+                "execution": {
+                    "schema_version": "ocr-execution-v1",
+                    "summary": {
+                        "attempted_task_count": 3,
+                        "succeeded_task_count": 2,
+                        "failed_task_count": 1,
+                        "skipped_task_count": 1,
+                        "engine_available": True,
+                        "status_counts": {"succeeded": 2, "failed": 1, "skipped": 1},
+                    },
+                },
             },
             ocr_writeback={
                 "schema_version": "ocr-writeback-v1",
@@ -1675,6 +1761,11 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_vlm_fallback_task_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_result_payload_count"], 3)
         self.assertEqual(metrics["quality"]["ocr_invalid_result_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_executor_attempted_task_count"], 3)
+        self.assertEqual(metrics["quality"]["ocr_executor_succeeded_task_count"], 2)
+        self.assertEqual(metrics["quality"]["ocr_executor_failed_task_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_executor_skipped_task_count"], 1)
+        self.assertTrue(metrics["quality"]["ocr_executor_available"])
         self.assertEqual(metrics["quality"]["ocr_result_count"], 3)
         self.assertEqual(metrics["quality"]["ocr_accepted_result_count"], 2)
         self.assertEqual(metrics["quality"]["ocr_rejected_result_count"], 1)
@@ -1688,12 +1779,14 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["ocr_region_task_rate"], 0.75)
         self.assertEqual(metrics["rates"]["ocr_ready_task_rate"], 0.75)
         self.assertEqual(metrics["rates"]["ocr_result_payload_valid_rate"], 0.75)
+        self.assertEqual(metrics["rates"]["ocr_executor_success_rate"], 0.6667)
         self.assertEqual(metrics["rates"]["ocr_task_result_coverage_rate"], 0.75)
         self.assertEqual(metrics["rates"]["ocr_result_acceptance_rate"], 0.6667)
         self.assertEqual(metrics["rates"]["ocr_writeback_apply_rate"], 0.5)
         self.assertEqual(metrics["breakdowns"]["vision_action_counts"]["local_ocr"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_task_engine_counts"]["local_table_ocr"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_result_payload_engine_counts"]["vlm_fallback"], 1)
+        self.assertEqual(metrics["breakdowns"]["ocr_execution_status_counts"]["failed"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_writeback_engine_counts"]["local_table_ocr"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_writeback_rejection_counts"]["low_confidence"], 1)
         self.assertEqual(metrics["breakdowns"]["stage_elapsed_ms"]["document_ir"], 50)
