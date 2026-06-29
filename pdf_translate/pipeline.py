@@ -43,6 +43,7 @@ from pdf_translate.survey import run_chunk_survey, survey_result_to_jsonable
 from pdf_translate.text_sanitize import collapse_toc_dot_leaders
 from pdf_translate.translators.base import TranslationRequest
 from pdf_translate.translators.factory import build_translator
+from pdf_translate.translators.http_retry import capture_http_retry_events
 from pdf_translate.translators.openai_compatible import SYSTEM_PROMPT_VERSION, prompt_fingerprint
 from pdf_translate.vision.routing import write_vision_route
 
@@ -182,7 +183,8 @@ def _parallel_translate_one(
         structure_hints=structure_hints,
     )
     translate_started = perf_counter()
-    zh = translator.translate(req)
+    with capture_http_retry_events() as http_retry_events:
+        zh = translator.translate(req)
     translate_elapsed_ms = elapsed_ms_since(translate_started)
     tname = getattr(translator, "name", type(translator).__name__)
     context_char_count = len(gloss) + len(style_text) + len(structure_hints)
@@ -198,6 +200,7 @@ def _parallel_translate_one(
             "translated_char_count": len(zh),
             "raw_translated_char_count": len(zh),
             "deferred_char_count": 0,
+            "http_retry_events": list(http_retry_events),
         },
     )
 
@@ -529,6 +532,7 @@ def run_translate(
                     translated_char_count=translation_metrics["translated_char_count"],
                     raw_translated_char_count=translation_metrics["raw_translated_char_count"],
                     deferred_char_count=translation_metrics["deferred_char_count"],
+                    http_retry_events=translation_metrics.get("http_retry_events"),
                     chunk_index=chunk_index,
                     chunk_total=len(chunks),
                     prompt_version=SYSTEM_PROMPT_VERSION,
@@ -637,7 +641,8 @@ def run_translate(
                 }
             )
         translate_started = perf_counter()
-        raw_zh = translator.translate(req)
+        with capture_http_retry_events() as http_retry_events:
+            raw_zh = translator.translate(req)
         translate_elapsed_ms = elapsed_ms_since(translate_started)
         published, deferred_en = parse_model_output_with_deferral(
             raw_zh,
@@ -675,6 +680,7 @@ def run_translate(
             translated_char_count=len(published),
             raw_translated_char_count=len(raw_zh),
             deferred_char_count=len(deferred_en),
+            http_retry_events=list(http_retry_events),
             chunk_index=idx + 1,
             chunk_total=len(chunks),
             prompt_version=SYSTEM_PROMPT_VERSION,

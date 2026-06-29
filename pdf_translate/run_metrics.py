@@ -60,6 +60,33 @@ def _rate(numerator: int | float, denominator: int | float) -> float:
     return round(float(numerator) / float(denominator), 4)
 
 
+def _http_retry_summary(
+    event: dict[str, Any],
+    retry_events: list[dict[str, Any]],
+) -> dict[str, int]:
+    if retry_events:
+        return {
+            "http_attempt_count": len(retry_events),
+            "http_retry_count": sum(1 for item in retry_events if bool(item.get("will_retry"))),
+            "http_failed_attempt_count": sum(
+                1 for item in retry_events if str(item.get("status") or "") != "success"
+            ),
+            "http_retryable_error_count": sum(
+                1 for item in retry_events if str(item.get("status") or "") == "retryable_error"
+            ),
+            "http_fatal_error_count": sum(
+                1 for item in retry_events if str(item.get("status") or "") == "fatal_error"
+            ),
+        }
+    return {
+        "http_attempt_count": _as_int(event.get("http_attempt_count")),
+        "http_retry_count": _as_int(event.get("http_retry_count")),
+        "http_failed_attempt_count": _as_int(event.get("http_failed_attempt_count")),
+        "http_retryable_error_count": _as_int(event.get("http_retryable_error_count")),
+        "http_fatal_error_count": _as_int(event.get("http_fatal_error_count")),
+    }
+
+
 def build_run_metrics(
     events: list[dict[str, Any]],
     *,
@@ -89,6 +116,12 @@ def build_run_metrics(
         elif event_type == "chunk_translation":
             translator = str(event.get("translator") or "unknown")
             translator_counts[translator] += 1
+            retry_events = [
+                item
+                for item in (event.get("http_retry_events") or [])
+                if isinstance(item, dict)
+            ]
+            retry_summary = _http_retry_summary(event, retry_events)
             chunks.append(
                 {
                     "chunk_id": event.get("chunk_id"),
@@ -106,6 +139,8 @@ def build_run_metrics(
                     "estimated_translated_token_count": _as_int(
                         event.get("estimated_translated_token_count")
                     ),
+                    **retry_summary,
+                    "http_retry_events": retry_events,
                 }
             )
         elif event_type == "chunk_skipped":
@@ -120,6 +155,11 @@ def build_run_metrics(
     estimated_translated_token_count = sum(
         chunk["estimated_translated_token_count"] for chunk in chunks
     )
+    http_attempt_count = sum(chunk["http_attempt_count"] for chunk in chunks)
+    http_retry_count = sum(chunk["http_retry_count"] for chunk in chunks)
+    http_failed_attempt_count = sum(chunk["http_failed_attempt_count"] for chunk in chunks)
+    http_retryable_error_count = sum(chunk["http_retryable_error_count"] for chunk in chunks)
+    http_fatal_error_count = sum(chunk["http_fatal_error_count"] for chunk in chunks)
     translation_request_count = len(chunks)
     max_chunk_elapsed_ms = max((chunk["elapsed_ms"] for chunk in chunks), default=0)
 
@@ -145,6 +185,11 @@ def build_run_metrics(
         "estimated_translated_token_count": estimated_translated_token_count,
         "estimated_total_token_count": estimated_request_token_count
         + estimated_translated_token_count,
+        "http_attempt_count": http_attempt_count,
+        "http_retry_count": http_retry_count,
+        "http_failed_attempt_count": http_failed_attempt_count,
+        "http_retryable_error_count": http_retryable_error_count,
+        "http_fatal_error_count": http_fatal_error_count,
         "request_chars_per_second": _rate(request_char_count * 1000, translation_elapsed_ms),
         "translated_chars_per_second": _rate(
             translated_char_count * 1000,
@@ -226,10 +271,13 @@ class RunMetricsRecorder:
         chunk_total: int | None = None,
         raw_translated_char_count: int | None = None,
         deferred_char_count: int = 0,
+        http_retry_events: list[dict[str, Any]] | None = None,
         prompt_version: str | None = None,
         prompt_fingerprint: str | None = None,
         mode: str | None = None,
     ) -> dict[str, Any]:
+        retry_events = [item for item in (http_retry_events or []) if isinstance(item, dict)]
+        retry_summary = _http_retry_summary({}, retry_events)
         return self.record(
             "chunk_translation",
             "translation",
@@ -252,6 +300,8 @@ class RunMetricsRecorder:
             estimated_context_token_count=estimate_token_count(context_char_count),
             estimated_request_token_count=estimate_token_count(request_char_count),
             estimated_translated_token_count=estimate_token_count(translated_char_count),
+            **retry_summary,
+            http_retry_events=retry_events,
             prompt_version=prompt_version,
             prompt_fingerprint=prompt_fingerprint,
         )

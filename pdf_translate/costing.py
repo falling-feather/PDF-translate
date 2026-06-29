@@ -218,8 +218,20 @@ def estimate_cost(
     request_chars = _as_int(summary.get("request_char_count"))
     response_chars = _as_int(summary.get("translated_char_count"))
     request_count = _as_int(summary.get("translation_request_count"))
+    http_attempt_count = _as_int(summary.get("http_attempt_count"))
+    http_retry_count = _as_int(summary.get("http_retry_count"))
+    http_failed_attempt_count = _as_int(summary.get("http_failed_attempt_count"))
+    http_retryable_error_count = _as_int(summary.get("http_retryable_error_count"))
+    billable_request_count = http_attempt_count if http_attempt_count > 0 else request_count
+    billable_request_count_source = (
+        "http_attempt_count" if http_attempt_count > 0 else "translation_request_count_fallback"
+    )
     currency = str((entry or {}).get("currency") or profile.get("currency") or "USD").upper()
     warnings = list(profile.get("warnings") or [])
+    if http_retry_count > 0:
+        warnings.append(
+            "已捕获 HTTP 重试；per_request 按 HTTP 尝试次数估算，失败尝试的 token/字符计费仍按成功译文用量近似。"
+        )
 
     if entry is None:
         warnings.append("未命中后端成本画像，成本仅保留 token/字符用量，不估算金额。")
@@ -237,6 +249,12 @@ def estimate_cost(
                 "request_char_count": request_chars,
                 "response_char_count": response_chars,
                 "translation_request_count": request_count,
+                "http_attempt_count": http_attempt_count,
+                "http_retry_count": http_retry_count,
+                "http_failed_attempt_count": http_failed_attempt_count,
+                "http_retryable_error_count": http_retryable_error_count,
+                "billable_request_count": billable_request_count,
+                "billable_request_count_source": billable_request_count_source,
             },
             "unit_prices": {},
             "summary": {
@@ -254,7 +272,14 @@ def estimate_cost(
     output_token_cost = response_tokens / 1_000_000 * _as_float(entry.get("output_per_1m_tokens"))
     input_char_cost = request_chars / 1_000_000 * _as_float(entry.get("input_per_1m_chars"))
     output_char_cost = response_chars / 1_000_000 * _as_float(entry.get("output_per_1m_chars"))
-    request_cost = request_count * _as_float(entry.get("per_request"))
+    per_request = _as_float(entry.get("per_request"))
+    if (
+        billable_request_count_source == "translation_request_count_fallback"
+        and request_count > 0
+        and per_request > 0
+    ):
+        warnings.append("未捕获 HTTP 尝试次数，per_request 已退回按成功翻译请求次数估算。")
+    request_cost = billable_request_count * per_request
     total = input_token_cost + output_token_cost + input_char_cost + output_char_cost + request_cost
     return {
         "schema_version": COST_ESTIMATE_SCHEMA_VERSION,
@@ -270,13 +295,19 @@ def estimate_cost(
             "request_char_count": request_chars,
             "response_char_count": response_chars,
             "translation_request_count": request_count,
+            "http_attempt_count": http_attempt_count,
+            "http_retry_count": http_retry_count,
+            "http_failed_attempt_count": http_failed_attempt_count,
+            "http_retryable_error_count": http_retryable_error_count,
+            "billable_request_count": billable_request_count,
+            "billable_request_count_source": billable_request_count_source,
         },
         "unit_prices": {
             "input_per_1m_tokens": _as_float(entry.get("input_per_1m_tokens")),
             "output_per_1m_tokens": _as_float(entry.get("output_per_1m_tokens")),
             "input_per_1m_chars": _as_float(entry.get("input_per_1m_chars")),
             "output_per_1m_chars": _as_float(entry.get("output_per_1m_chars")),
-            "per_request": _as_float(entry.get("per_request")),
+            "per_request": per_request,
         },
         "summary": {
             "input_token_cost": _round_money(input_token_cost),

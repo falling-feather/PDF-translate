@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import fitz
+import httpx
 
 from pdf_translate.chunking import TextChunk
 from pdf_translate.chunkers.structure import build_structure_chunks
@@ -37,6 +40,7 @@ from pdf_translate.qa.translation import build_translation_qa
 from pdf_translate.pipeline import init_workdir, run_split, run_translate
 from pdf_translate.run_metrics import build_run_metrics
 from pdf_translate.translators.base import TranslationRequest
+from pdf_translate.translators.http_retry import call_with_http_retry, capture_http_retry_events
 from pdf_translate.translators.openai_compatible import _build_user_message
 from pdf_translate.vision.routing import build_vision_route
 from pdf_translate.zip_bundle import iter_bundle_files, map_bundle_arcname
@@ -826,6 +830,42 @@ class StructureIRTests(unittest.TestCase):
         self.assertIn("very_low_text", route["pages"][0]["reasons"])
         self.assertEqual(route["pages"][0]["metrics"]["image_count"], 1)
 
+    def test_http_retry_capture_records_retry_attempts(self) -> None:
+        request = httpx.Request("POST", "https://example.test/chat")
+        response = httpx.Response(503, request=request)
+        calls = {"count": 0}
+
+        def _op() -> str:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise httpx.HTTPStatusError("service unavailable", request=request, response=response)
+            return "ok"
+
+        previous = os.environ.get("PDF_TRANSLATE_HTTP_RETRIES")
+        os.environ["PDF_TRANSLATE_HTTP_RETRIES"] = "2"
+        try:
+            with patch("pdf_translate.translators.http_retry._sleep_backoff", lambda attempt: None):
+                with capture_http_retry_events() as events:
+                    result = call_with_http_retry(_op, context="unit-test")
+        finally:
+            if previous is None:
+                os.environ.pop("PDF_TRANSLATE_HTTP_RETRIES", None)
+            else:
+                os.environ["PDF_TRANSLATE_HTTP_RETRIES"] = previous
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["schema_version"], "http-retry-event-v1")
+        self.assertEqual(events[0]["context"], "unit-test")
+        self.assertEqual(events[0]["attempt_index"], 1)
+        self.assertEqual(events[0]["status"], "retryable_error")
+        self.assertEqual(events[0]["status_code"], 503)
+        self.assertTrue(events[0]["will_retry"])
+        self.assertEqual(events[1]["attempt_index"], 2)
+        self.assertEqual(events[1]["status"], "success")
+        self.assertFalse(events[1]["will_retry"])
+
     def test_run_metrics_aggregates_stage_chunk_and_token_evidence(self) -> None:
         metrics = build_run_metrics(
             [
@@ -845,6 +885,30 @@ class StructureIRTests(unittest.TestCase):
                     "translated_char_count": 64,
                     "estimated_request_token_count": 30,
                     "estimated_translated_token_count": 16,
+                    "http_retry_events": [
+                        {
+                            "schema_version": "http-retry-event-v1",
+                            "context": "unit-test",
+                            "attempt_index": 1,
+                            "max_attempts": 2,
+                            "status": "retryable_error",
+                            "elapsed_ms": 3,
+                            "will_retry": True,
+                            "error_type": "ReadTimeout",
+                            "status_code": None,
+                        },
+                        {
+                            "schema_version": "http-retry-event-v1",
+                            "context": "unit-test",
+                            "attempt_index": 2,
+                            "max_attempts": 2,
+                            "status": "success",
+                            "elapsed_ms": 37,
+                            "will_retry": False,
+                            "error_type": "",
+                            "status_code": None,
+                        },
+                    ],
                 },
                 {
                     "event_type": "chunk_skipped",
@@ -871,7 +935,13 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["summary"]["source_char_count"], 80)
         self.assertEqual(metrics["summary"]["estimated_source_token_count"], 20)
         self.assertEqual(metrics["summary"]["estimated_total_token_count"], 46)
+        self.assertEqual(metrics["summary"]["http_attempt_count"], 2)
+        self.assertEqual(metrics["summary"]["http_retry_count"], 1)
+        self.assertEqual(metrics["summary"]["http_failed_attempt_count"], 1)
+        self.assertEqual(metrics["summary"]["http_retryable_error_count"], 1)
         self.assertEqual(metrics["summary"]["stage_elapsed_ms"]["document_ir"], 12)
+        self.assertEqual(metrics["chunks"][0]["http_attempt_count"], 2)
+        self.assertEqual(metrics["chunks"][0]["http_retry_events"][0]["error_type"], "ReadTimeout")
         self.assertEqual(metrics["breakdowns"]["translator_counts"]["echo"], 1)
         self.assertEqual(metrics["breakdowns"]["skip_reasons"]["resume_completed"], 1)
 
@@ -890,6 +960,30 @@ class StructureIRTests(unittest.TestCase):
                     "translated_char_count": 600,
                     "estimated_request_token_count": 250,
                     "estimated_translated_token_count": 150,
+                    "http_retry_events": [
+                        {
+                            "schema_version": "http-retry-event-v1",
+                            "context": "deepseek",
+                            "attempt_index": 1,
+                            "max_attempts": 2,
+                            "status": "retryable_error",
+                            "elapsed_ms": 4,
+                            "will_retry": True,
+                            "error_type": "HTTPStatusError",
+                            "status_code": 503,
+                        },
+                        {
+                            "schema_version": "http-retry-event-v1",
+                            "context": "deepseek",
+                            "attempt_index": 2,
+                            "max_attempts": 2,
+                            "status": "success",
+                            "elapsed_ms": 36,
+                            "will_retry": False,
+                            "error_type": "",
+                            "status_code": None,
+                        },
+                    ],
                 }
             ],
             doc_id="cost-run",
@@ -918,10 +1012,16 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(estimate["profile_key"], "deepseek")
         self.assertEqual(estimate["currency"], "USD")
         self.assertEqual(estimate["usage"]["estimated_request_token_count"], 250)
+        self.assertEqual(estimate["usage"]["translation_request_count"], 1)
+        self.assertEqual(estimate["usage"]["http_attempt_count"], 2)
+        self.assertEqual(estimate["usage"]["http_retry_count"], 1)
+        self.assertEqual(estimate["usage"]["billable_request_count"], 2)
+        self.assertEqual(estimate["usage"]["billable_request_count_source"], "http_attempt_count")
         self.assertEqual(estimate["summary"]["input_token_cost"], 0.00025)
         self.assertEqual(estimate["summary"]["output_token_cost"], 0.0003)
-        self.assertEqual(estimate["summary"]["request_cost"], 0.01)
-        self.assertEqual(estimate["summary"]["estimated_total_cost"], 0.01055)
+        self.assertEqual(estimate["summary"]["request_cost"], 0.02)
+        self.assertEqual(estimate["summary"]["estimated_total_cost"], 0.02055)
+        self.assertEqual(len(estimate["warnings"]), 1)
 
     def test_experiment_metrics_aggregates_quality_evidence(self) -> None:
         metrics = build_experiment_metrics(
@@ -1081,6 +1181,11 @@ class StructureIRTests(unittest.TestCase):
                     "total_elapsed_ms": 1000,
                     "translation_elapsed_ms": 400,
                     "translation_request_count": 2,
+                    "http_attempt_count": 3,
+                    "http_retry_count": 1,
+                    "http_failed_attempt_count": 1,
+                    "http_retryable_error_count": 1,
+                    "http_fatal_error_count": 0,
                     "skipped_chunk_count": 1,
                     "source_char_count": 800,
                     "context_char_count": 200,
@@ -1108,13 +1213,20 @@ class StructureIRTests(unittest.TestCase):
                 "configured": True,
                 "currency": "USD",
                 "profile_key": "deepseek",
+                "usage": {
+                    "translation_request_count": 2,
+                    "http_attempt_count": 3,
+                    "http_retry_count": 1,
+                    "billable_request_count": 3,
+                    "billable_request_count_source": "http_attempt_count",
+                },
                 "summary": {
                     "input_token_cost": 0.00025,
                     "output_token_cost": 0.0003,
                     "input_char_cost": 0,
                     "output_char_cost": 0,
-                    "request_cost": 0.01,
-                    "estimated_total_cost": 0.01055,
+                    "request_cost": 0.03,
+                    "estimated_total_cost": 0.03055,
                 },
                 "warnings": [],
             },
@@ -1125,15 +1237,22 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["pipeline_variant"], "structure")
         self.assertEqual(metrics["performance"]["total_elapsed_ms"], 1000)
         self.assertEqual(metrics["performance"]["translation_request_count"], 2)
+        self.assertEqual(metrics["performance"]["http_attempt_count"], 3)
+        self.assertEqual(metrics["performance"]["http_retry_count"], 1)
+        self.assertEqual(metrics["performance"]["http_failed_attempt_count"], 1)
+        self.assertEqual(metrics["performance"]["billable_request_count"], 3)
         self.assertEqual(metrics["performance"]["source_char_count"], 800)
         self.assertEqual(metrics["performance"]["estimated_total_token_count"], 400)
         self.assertTrue(metrics["performance"]["cost_profile_configured"])
         self.assertEqual(metrics["performance"]["cost_profile_key"], "deepseek")
         self.assertEqual(metrics["performance"]["cost_currency"], "USD")
-        self.assertEqual(metrics["performance"]["estimated_total_cost"], 0.01055)
+        self.assertEqual(metrics["performance"]["estimated_total_cost"], 0.03055)
         self.assertEqual(metrics["rates"]["translation_request_per_chunk"], 1.0)
+        self.assertEqual(metrics["rates"]["http_attempt_per_translation_request"], 1.5)
+        self.assertEqual(metrics["rates"]["http_retry_rate"], 0.3333)
+        self.assertEqual(metrics["rates"]["billable_request_per_chunk"], 1.5)
         self.assertEqual(metrics["rates"]["estimated_request_tokens_per_chunk"], 125.0)
-        self.assertEqual(metrics["rates"]["estimated_cost_per_chunk"], 0.0053)
+        self.assertEqual(metrics["rates"]["estimated_cost_per_chunk"], 0.0153)
         self.assertEqual(metrics["quality"]["ocr_candidate_page_count"], 2)
         self.assertEqual(metrics["quality"]["repair_item_count"], 4)
         self.assertEqual(metrics["quality"]["repair_request_count"], 4)
@@ -1664,17 +1783,21 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(run_metrics["schema_version"], "run-metrics-v1")
             self.assertEqual(run_metrics["pipeline_variant"], "structure")
             self.assertGreaterEqual(run_metrics["summary"]["translation_request_count"], 1)
+            self.assertEqual(run_metrics["summary"]["http_attempt_count"], 0)
+            self.assertEqual(run_metrics["summary"]["http_retry_count"], 0)
             self.assertGreater(run_metrics["summary"]["request_char_count"], 0)
             self.assertIn("document_ir", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertTrue(any(event["event_type"] == "chunk_translation" for event in run_log_lines))
             self.assertEqual(cost_estimate["schema_version"], "cost-estimate-v1")
             self.assertTrue(cost_estimate["configured"])
             self.assertEqual(cost_estimate["profile_key"], "echo")
+            self.assertIn("billable_request_count", cost_estimate["usage"])
             self.assertEqual(cost_estimate["summary"]["estimated_total_cost"], 0)
             self.assertEqual(metrics["schema_version"], "experiment-metrics-v1")
             self.assertEqual(metrics["pipeline_variant"], "structure")
             self.assertEqual(metrics["quality"]["table_count"], qa["summary"]["table_count"])
             self.assertGreaterEqual(metrics["performance"]["translation_request_count"], 1)
+            self.assertEqual(metrics["performance"]["http_attempt_count"], 0)
             self.assertGreater(metrics["performance"]["estimated_total_token_count"], 0)
             self.assertEqual(metrics["performance"]["estimated_total_cost"], 0)
             self.assertIn("reconstructable_table_count", metrics["quality"])

@@ -216,6 +216,11 @@ def build_experiment_metrics(
     total_elapsed_ms = _as_int(run_summary.get("total_elapsed_ms"))
     translation_elapsed_ms = _as_int(run_summary.get("translation_elapsed_ms"))
     translation_request_count = _as_int(run_summary.get("translation_request_count"))
+    http_attempt_count = _as_int(run_summary.get("http_attempt_count"))
+    http_retry_count = _as_int(run_summary.get("http_retry_count"))
+    http_failed_attempt_count = _as_int(run_summary.get("http_failed_attempt_count"))
+    http_retryable_error_count = _as_int(run_summary.get("http_retryable_error_count"))
+    http_fatal_error_count = _as_int(run_summary.get("http_fatal_error_count"))
     skipped_chunk_count = _as_int(run_summary.get("skipped_chunk_count"))
     source_char_count = _as_int(run_summary.get("source_char_count"))
     context_char_count = _as_int(run_summary.get("context_char_count"))
@@ -236,6 +241,10 @@ def build_experiment_metrics(
     input_char_cost = _as_float(cost_summary.get("input_char_cost"))
     output_char_cost = _as_float(cost_summary.get("output_char_cost"))
     request_cost = _as_float(cost_summary.get("request_cost"))
+    cost_usage = cost_estimate.get("usage") if isinstance(cost_estimate, dict) else {}
+    if not isinstance(cost_usage, dict):
+        cost_usage = {}
+    billable_request_count = _as_int(cost_usage.get("billable_request_count"))
     cost_configured = _as_bool((cost_estimate or {}).get("configured")) if isinstance(cost_estimate, dict) else False
     cost_currency = str((cost_estimate or {}).get("currency") or "")
     cost_profile_key = str((cost_estimate or {}).get("profile_key") or "")
@@ -327,6 +336,11 @@ def build_experiment_metrics(
             "total_elapsed_ms": total_elapsed_ms,
             "translation_elapsed_ms": translation_elapsed_ms,
             "translation_request_count": translation_request_count,
+            "http_attempt_count": http_attempt_count,
+            "http_retry_count": http_retry_count,
+            "http_failed_attempt_count": http_failed_attempt_count,
+            "http_retryable_error_count": http_retryable_error_count,
+            "http_fatal_error_count": http_fatal_error_count,
             "skipped_chunk_count": skipped_chunk_count,
             "source_char_count": source_char_count,
             "context_char_count": context_char_count,
@@ -349,6 +363,7 @@ def build_experiment_metrics(
             "input_char_cost": input_char_cost,
             "output_char_cost": output_char_cost,
             "request_cost": request_cost,
+            "billable_request_count": billable_request_count,
             "estimated_total_cost": estimated_total_cost,
             "cost_warning_count": cost_warning_count,
         },
@@ -396,6 +411,12 @@ def build_experiment_metrics(
             "routed_page_rate": _rate(routed_page_count, page_count),
             "qa_issue_per_chunk": _rate(translation_issue_count, chunk_count),
             "translation_request_per_chunk": _rate(translation_request_count, chunk_count),
+            "http_attempt_per_translation_request": _rate(
+                http_attempt_count,
+                translation_request_count,
+            ),
+            "http_retry_rate": _rate(http_retry_count, http_attempt_count),
+            "billable_request_per_chunk": _rate(billable_request_count, chunk_count),
             "estimated_request_tokens_per_chunk": _rate(
                 estimated_request_token_count,
                 translation_request_count,
