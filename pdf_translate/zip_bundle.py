@@ -11,6 +11,7 @@ def map_bundle_arcname(rel_posix: str) -> str:
 
     output_map = {
         "output/translated_full.md": "译文/完整译文.md",
+        "output/repaired_full.md": "译文/局部修复合并译文.md",
         "output/bilingual.html": "译文/双语对照.html",
         "output/chunks_manifest.json": "设置/分段清单.json",
         "output/document_ir.json": "设置/文档结构IR.json",
@@ -30,6 +31,10 @@ def map_bundle_arcname(rel_posix: str) -> str:
         "output/repair_results.md": "质量/局部修复结果.md",
         "output/repair_validation.json": "质量/局部修复验证.json",
         "output/repair_validation.md": "质量/局部修复验证.md",
+        "output/repair_merge.json": "质量/局部修复合并.json",
+        "output/repair_merge.md": "质量/局部修复合并.md",
+        "output/repair_merge_qa.json": "质量/局部修复后QA.json",
+        "output/repair_merge_qa.md": "质量/局部修复后QA.md",
         "output/experiment_metrics.json": "质量/实验指标.json",
         "output/links_index.csv": "关键词/链接索引.csv",
         "output/state.json": "设置/翻译状态.json",
@@ -40,6 +45,9 @@ def map_bundle_arcname(rel_posix: str) -> str:
     if rel.startswith("output/repairs/"):
         name = rel.split("/")[-1]
         return f"质量/局部修复片段/{name}"
+    if rel.startswith("output/repaired_chunks/"):
+        name = rel.split("/")[-1]
+        return f"译文/局部修复分块/{name}"
 
     split_map = {
         "split/manifest.json": "设置/拆分清单.json",
@@ -72,6 +80,7 @@ def iter_bundle_files(root: Path) -> list[Path]:
     root = root.resolve()
     candidates = [
         root / "output" / "translated_full.md",
+        root / "output" / "repaired_full.md",
         root / "output" / "bilingual.html",
         root / "output" / "chunks_manifest.json",
         root / "output" / "document_ir.json",
@@ -91,6 +100,10 @@ def iter_bundle_files(root: Path) -> list[Path]:
         root / "output" / "repair_results.md",
         root / "output" / "repair_validation.json",
         root / "output" / "repair_validation.md",
+        root / "output" / "repair_merge.json",
+        root / "output" / "repair_merge.md",
+        root / "output" / "repair_merge_qa.json",
+        root / "output" / "repair_merge_qa.md",
         root / "output" / "experiment_metrics.json",
         root / "output" / "links_index.csv",
         root / "output" / "state.json",
@@ -111,6 +124,11 @@ def iter_bundle_files(root: Path) -> list[Path]:
     repairs = root / "output" / "repairs"
     if repairs.is_dir():
         for p in repairs.rglob("*"):
+            if p.is_file():
+                out.append(p)
+    repaired_chunks = root / "output" / "repaired_chunks"
+    if repaired_chunks.is_dir():
+        for p in repaired_chunks.rglob("*"):
             if p.is_file():
                 out.append(p)
     return out

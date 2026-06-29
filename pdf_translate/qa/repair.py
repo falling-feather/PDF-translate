@@ -7,12 +7,14 @@ from typing import Any
 
 from pdf_translate.chunking import TextChunk
 from pdf_translate.deferral_markers import strip_yaml_front_matter
+from pdf_translate.pipeline_merge import merge_chunks_markdown
 from pdf_translate.translators.base import TranslationRequest, Translator
 
 SCHEMA_VERSION = "repair-plan-v1"
 REQUEST_SCHEMA_VERSION = "repair-requests-v1"
 RESULT_SCHEMA_VERSION = "repair-results-v1"
 VALIDATION_SCHEMA_VERSION = "repair-validation-v1"
+MERGE_SCHEMA_VERSION = "repair-merge-v1"
 
 _ISSUE_RULES = {
     "missing_translation": {
@@ -196,6 +198,71 @@ def _repair_result_text(result: dict[str, Any]) -> str:
         except OSError:
             pass
     return str(result.get("result_excerpt") or "")
+
+
+def _split_yaml_front_matter(raw: str) -> tuple[str, str]:
+    if raw.startswith("---\n"):
+        end = raw.find("\n---\n", 4)
+        if end != -1:
+            marker_end = end + len("\n---\n")
+            return raw[:marker_end], raw[marker_end:].lstrip("\n")
+    return "", raw
+
+
+def _markdown_table_ranges(text: str) -> list[tuple[int, int]]:
+    lines = text.splitlines()
+    ranges: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        is_table_line = stripped.startswith("|") and "|" in stripped[1:]
+        if is_table_line and start is None:
+            start = index
+        elif not is_table_line and start is not None:
+            ranges.append((start, index))
+            start = None
+    if start is not None:
+        ranges.append((start, len(lines)))
+    return ranges
+
+
+def _replace_first_markdown_table(current_text: str, repaired_text: str) -> tuple[str, str | None]:
+    current_ranges = _markdown_table_ranges(current_text)
+    repaired_ranges = _markdown_table_ranges(repaired_text)
+    if not current_ranges:
+        return current_text, "当前译文中没有可定位的 Markdown 表格。"
+    if not repaired_ranges:
+        return current_text, "候选修复片段中没有 Markdown 表格。"
+    current_lines = current_text.splitlines()
+    repaired_lines = repaired_text.splitlines()
+    current_start, current_end = current_ranges[0]
+    repaired_start, repaired_end = repaired_ranges[0]
+    merged_lines = [
+        *current_lines[:current_start],
+        *repaired_lines[repaired_start:repaired_end],
+        *current_lines[current_end:],
+    ]
+    return "\n".join(merged_lines).strip() + "\n", None
+
+
+def _merge_candidate_into_chunk(
+    current_text: str,
+    repaired_text: str,
+    request: dict[str, Any],
+) -> tuple[str, str, str | None]:
+    action = str(request.get("action") or "")
+    scope = str(request.get("scope") or "")
+    if action in {"repair_table_cell_tokens", "repair_table_shape"}:
+        merged_text, reason = _replace_first_markdown_table(current_text, repaired_text)
+        return merged_text, "replace_first_markdown_table", reason
+    if scope == "chunk" and action in {
+        "translate_missing_chunk",
+        "rewrite_with_locked_tokens",
+        "rewrite_with_glossary_terms",
+        "rewrite_with_entity_tokens",
+    }:
+        return repaired_text.strip() + "\n", "replace_chunk", None
+    return current_text, "manual_merge_required", "当前修复动作尚无安全的本地自动合并策略。"
 
 
 def _repair_instruction(item: dict[str, Any], locked_tokens: list[str]) -> str:
@@ -791,6 +858,206 @@ def repair_validation_to_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def build_repair_merge(
+    repair_requests: dict[str, Any],
+    repair_results: dict[str, Any],
+    repair_validation: dict[str, Any],
+    chunks: list[TextChunk],
+    chunk_dir: Path,
+    *,
+    repaired_chunk_dir: Path | None = None,
+    repaired_full_path: Path | None = None,
+) -> dict[str, Any]:
+    """Merge validated repair candidates into a separate patched translation copy."""
+    requests_by_id = {
+        str(request.get("request_id") or ""): request
+        for request in repair_requests.get("requests") or []
+        if isinstance(request, dict)
+    }
+    results_by_id = {
+        str(result.get("request_id") or ""): result
+        for result in repair_results.get("results") or []
+        if isinstance(result, dict)
+    }
+    chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
+    chunk_text: dict[str, str] = {}
+    chunk_front_matter: dict[str, str] = {}
+    for chunk in chunks:
+        path = chunk_dir / f"{chunk.chunk_id}.md"
+        if path.is_file():
+            front_matter, body = _split_yaml_front_matter(path.read_text(encoding="utf-8"))
+            chunk_front_matter[chunk.chunk_id] = front_matter
+            chunk_text[chunk.chunk_id] = body.strip()
+
+    patches: list[dict[str, Any]] = []
+    status_counts: Counter[str] = Counter()
+    strategy_counts: Counter[str] = Counter()
+    patched_chunks: set[str] = set()
+    candidate_count = 0
+
+    for validation in repair_validation.get("validations") or []:
+        if not isinstance(validation, dict):
+            continue
+        request_id = str(validation.get("request_id") or "")
+        request = requests_by_id.get(request_id)
+        result = results_by_id.get(request_id)
+        chunk_id = str(validation.get("chunk_id") or (request or {}).get("chunk_id") or "")
+        base = {
+            "request_id": request_id,
+            "repair_id": validation.get("repair_id"),
+            "chunk_id": chunk_id,
+            "pages_1based": validation.get("pages_1based") or [],
+            "priority": validation.get("priority"),
+            "issue_type": validation.get("issue_type"),
+            "action": validation.get("action"),
+            "scope": validation.get("scope"),
+        }
+
+        if validation.get("status") != "passed":
+            status = "skipped_validation_not_passed"
+            status_counts[status] += 1
+            patches.append(
+                {
+                    **base,
+                    "status": status,
+                    "reason": "候选修复片段未通过验证门禁，未进入合并。",
+                    "validation_status": validation.get("status"),
+                }
+            )
+            continue
+
+        candidate_count += 1
+        if not request:
+            status = "skipped_missing_request"
+            status_counts[status] += 1
+            patches.append({**base, "status": status, "reason": "未找到对应的修复请求。"})
+            continue
+        if not result or result.get("status") != "succeeded":
+            status = "skipped_missing_result"
+            status_counts[status] += 1
+            patches.append({**base, "status": status, "reason": "未找到成功生成的候选修复结果。"})
+            continue
+        if chunk_id not in chunk_by_id or chunk_id not in chunk_text:
+            status = "skipped_missing_chunk"
+            status_counts[status] += 1
+            patches.append({**base, "status": status, "reason": "未找到可合并的原始译文 chunk。"})
+            continue
+        if chunk_id in patched_chunks:
+            status = "skipped_chunk_conflict"
+            status_counts[status] += 1
+            patches.append({**base, "status": status, "reason": "同一 chunk 已应用过候选修复，需人工处理冲突。"})
+            continue
+
+        repaired_text = _repair_result_text(result)
+        merged_text, strategy, reason = _merge_candidate_into_chunk(chunk_text[chunk_id], repaired_text, request)
+        strategy_counts[strategy] += 1
+        if reason:
+            status = "skipped_manual_merge_required"
+            status_counts[status] += 1
+            patches.append({**base, "status": status, "strategy": strategy, "reason": reason})
+            continue
+
+        chunk_text[chunk_id] = merged_text.strip()
+        patched_chunks.add(chunk_id)
+        status = "applied"
+        status_counts[status] += 1
+        patches.append(
+            {
+                **base,
+                "status": status,
+                "strategy": strategy,
+                "result_path": result.get("result_path") or "",
+                "patched_chunk_path": (repaired_chunk_dir / f"{chunk_id}.md").as_posix()
+                if repaired_chunk_dir is not None
+                else "",
+                "result_excerpt": _clip_text(repaired_text, 500),
+            }
+        )
+
+    if repaired_chunk_dir is not None:
+        repaired_chunk_dir.mkdir(parents=True, exist_ok=True)
+        for chunk in chunks:
+            if chunk.chunk_id not in chunk_text:
+                continue
+            front_matter = chunk_front_matter.get(chunk.chunk_id, "")
+            body = chunk_text[chunk.chunk_id].strip()
+            if front_matter:
+                content = f"{front_matter}\n{body}\n"
+            else:
+                content = f"{body}\n"
+            (repaired_chunk_dir / f"{chunk.chunk_id}.md").write_text(content, encoding="utf-8")
+        if repaired_full_path is not None:
+            merge_chunks_markdown(repaired_chunk_dir, repaired_full_path, chunks)
+
+    return {
+        "schema_version": MERGE_SCHEMA_VERSION,
+        "summary": {
+            "repair_requests_schema_version": repair_requests.get("schema_version"),
+            "repair_results_schema_version": repair_results.get("schema_version"),
+            "repair_validation_schema_version": repair_validation.get("schema_version"),
+            "repair_request_count": repair_requests.get("summary", {}).get("repair_request_count", 0),
+            "merge_candidate_count": candidate_count,
+            "applied_count": status_counts.get("applied", 0),
+            "patched_chunk_count": len(patched_chunks),
+            "skipped_count": sum(
+                count
+                for status, count in status_counts.items()
+                if status.startswith("skipped_")
+            ),
+            "manual_merge_required_count": status_counts.get("skipped_manual_merge_required", 0),
+            "conflict_count": status_counts.get("skipped_chunk_conflict", 0),
+            "status_counts": dict(status_counts),
+            "strategy_counts": dict(strategy_counts),
+            "repaired_chunks_dir": repaired_chunk_dir.as_posix() if repaired_chunk_dir else "",
+            "repaired_full_path": repaired_full_path.as_posix() if repaired_full_path else "",
+        },
+        "patches": patches,
+    }
+
+
+def repair_merge_to_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary", {})
+    lines = [
+        "# 局部修复合并",
+        "",
+        "| 指标 | 值 |",
+        "| --- | --- |",
+        f"| 修复请求 | {summary.get('repair_request_count', 0)} |",
+        f"| 合并候选 | {summary.get('merge_candidate_count', 0)} |",
+        f"| 已应用 | {summary.get('applied_count', 0)} |",
+        f"| 已修改 chunk | {summary.get('patched_chunk_count', 0)} |",
+        f"| 需人工合并 | {summary.get('manual_merge_required_count', 0)} |",
+        f"| 冲突 | {summary.get('conflict_count', 0)} |",
+        f"| 跳过 | {summary.get('skipped_count', 0)} |",
+        f"| 修复分块目录 | `{summary.get('repaired_chunks_dir') or '-'}` |",
+        f"| 修复合并译文 | `{summary.get('repaired_full_path') or '-'}` |",
+        "",
+    ]
+    patches = report.get("patches") or []
+    if not patches:
+        lines.append("当前没有局部修复合并记录。")
+        return "\n".join(lines).rstrip() + "\n"
+
+    lines.extend(["## 合并明细", ""])
+    for patch in patches:
+        pages = patch.get("pages_1based") or []
+        page_text = f"{pages[0]}-{pages[-1]}" if pages else "-"
+        lines.append(
+            f"### {patch.get('request_id')} · {patch.get('status')} · {patch.get('chunk_id')} · 页 {page_text}"
+        )
+        lines.append(f"- 动作：`{patch.get('action')}`，范围 `{patch.get('scope')}`")
+        if patch.get("strategy"):
+            lines.append(f"- 合并策略：`{patch.get('strategy')}`")
+        if patch.get("reason"):
+            lines.append(f"- 原因：{patch.get('reason')}")
+        if patch.get("patched_chunk_path"):
+            lines.append(f"- 修复 chunk：`{patch.get('patched_chunk_path')}`")
+        if patch.get("result_path"):
+            lines.append(f"- 候选片段：`{patch.get('result_path')}`")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def write_repair_plan(qa_report: dict[str, Any], json_path: Path, markdown_path: Path) -> dict[str, Any]:
     plan = build_repair_plan(qa_report)
     json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -849,4 +1116,34 @@ def write_repair_validation(
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
     markdown_path.write_text(repair_validation_to_markdown(report), encoding="utf-8")
+    return report
+
+
+def write_repair_merge(
+    repair_requests: dict[str, Any],
+    repair_results: dict[str, Any],
+    repair_validation: dict[str, Any],
+    chunks: list[TextChunk],
+    chunk_dir: Path,
+    json_path: Path,
+    markdown_path: Path,
+    *,
+    repaired_chunk_dir: Path | None = None,
+    repaired_full_path: Path | None = None,
+) -> dict[str, Any]:
+    repaired_chunk_dir = repaired_chunk_dir or json_path.parent / "repaired_chunks"
+    repaired_full_path = repaired_full_path or json_path.parent / "repaired_full.md"
+    report = build_repair_merge(
+        repair_requests,
+        repair_results,
+        repair_validation,
+        chunks,
+        chunk_dir,
+        repaired_chunk_dir=repaired_chunk_dir,
+        repaired_full_path=repaired_full_path,
+    )
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(repair_merge_to_markdown(report), encoding="utf-8")
     return report

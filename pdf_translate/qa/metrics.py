@@ -17,6 +17,8 @@ DEFAULT_EVIDENCE_FILES = {
     "repair_requests": "output/repair_requests.json",
     "repair_results": "output/repair_results.json",
     "repair_validation": "output/repair_validation.json",
+    "repair_merge": "output/repair_merge.json",
+    "repair_merge_qa": "output/repair_merge_qa.json",
 }
 
 
@@ -79,6 +81,8 @@ def build_experiment_metrics(
     repair_requests: dict[str, Any] | None = None,
     repair_results: dict[str, Any] | None = None,
     repair_validation: dict[str, Any] | None = None,
+    repair_merge: dict[str, Any] | None = None,
+    repair_merge_qa: dict[str, Any] | None = None,
     evidence_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Aggregate pipeline QA artifacts into a patent-facing experiment summary."""
@@ -92,6 +96,8 @@ def build_experiment_metrics(
     repair_request_summary = _summary(repair_requests)
     repair_result_summary = _summary(repair_results)
     repair_validation_summary = _summary(repair_validation)
+    repair_merge_summary = _summary(repair_merge)
+    repair_merge_qa_summary = _summary(repair_merge_qa)
 
     block_counts = _counter_dict(structure_summary.get("block_counts"))
     entity_type_counts = _counter_dict(structure_summary.get("entity_type_counts"))
@@ -174,6 +180,18 @@ def build_experiment_metrics(
     )
     repair_validation_table_shape_check_count = _as_int(repair_validation_summary.get("table_shape_check_count"))
     repair_validation_table_shape_passed_count = _as_int(repair_validation_summary.get("table_shape_passed_count"))
+    repair_merge_candidate_count = _as_int(repair_merge_summary.get("merge_candidate_count"))
+    repair_merge_applied_count = _as_int(repair_merge_summary.get("applied_count"))
+    repair_merge_patched_chunk_count = _as_int(repair_merge_summary.get("patched_chunk_count"))
+    repair_merge_skipped_count = _as_int(repair_merge_summary.get("skipped_count"))
+    repair_merge_manual_required_count = _as_int(repair_merge_summary.get("manual_merge_required_count"))
+    repair_merge_conflict_count = _as_int(repair_merge_summary.get("conflict_count"))
+    post_repair_issue_count = _as_int(repair_merge_qa_summary.get("issue_count"))
+    post_repair_table_shape_error_count = _as_int(repair_merge_qa_summary.get("table_shape_error_count"))
+    post_repair_table_cell_token_error_count = _as_int(repair_merge_qa_summary.get("table_cell_token_error_count"))
+    post_repair_missing_table_locked_token_count = _as_int(
+        repair_merge_qa_summary.get("missing_table_locked_token_count")
+    )
     max_english_residual_ratio = _as_float(translation_summary.get("max_english_residual_ratio"))
 
     relationship_total = caption_count + footnote_count
@@ -245,6 +263,17 @@ def build_experiment_metrics(
             "repair_validation_missing_locked_token_count": repair_validation_missing_locked_token_count,
             "repair_validation_table_shape_check_count": repair_validation_table_shape_check_count,
             "repair_validation_table_shape_passed_count": repair_validation_table_shape_passed_count,
+            "repair_merge_candidate_count": repair_merge_candidate_count,
+            "repair_merge_applied_count": repair_merge_applied_count,
+            "repair_merge_patched_chunk_count": repair_merge_patched_chunk_count,
+            "repair_merge_skipped_count": repair_merge_skipped_count,
+            "repair_merge_manual_required_count": repair_merge_manual_required_count,
+            "repair_merge_conflict_count": repair_merge_conflict_count,
+            "post_repair_issue_count": post_repair_issue_count,
+            "post_repair_issue_delta": translation_issue_count - post_repair_issue_count,
+            "post_repair_table_shape_error_count": post_repair_table_shape_error_count,
+            "post_repair_table_cell_token_error_count": post_repair_table_cell_token_error_count,
+            "post_repair_missing_table_locked_token_count": post_repair_missing_table_locked_token_count,
             "max_english_residual_ratio": max_english_residual_ratio,
         },
         "rates": {
@@ -282,6 +311,11 @@ def build_experiment_metrics(
                 repair_validation_table_shape_passed_count,
                 repair_validation_table_shape_check_count,
             ),
+            "repair_merge_apply_rate": _rate(repair_merge_applied_count, repair_merge_candidate_count),
+            "post_repair_issue_reduction_rate": _rate(
+                translation_issue_count - post_repair_issue_count,
+                translation_issue_count,
+            ),
             "ocr_candidate_page_rate": _rate(ocr_candidate_page_count, page_count),
             "routed_page_rate": _rate(routed_page_count, page_count),
             "qa_issue_per_chunk": _rate(translation_issue_count, chunk_count),
@@ -316,6 +350,8 @@ def write_experiment_metrics(
     repair_requests: dict[str, Any] | None = None,
     repair_results: dict[str, Any] | None = None,
     repair_validation: dict[str, Any] | None = None,
+    repair_merge: dict[str, Any] | None = None,
+    repair_merge_qa: dict[str, Any] | None = None,
     evidence_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     metrics = build_experiment_metrics(
@@ -331,6 +367,8 @@ def write_experiment_metrics(
         repair_requests=repair_requests,
         repair_results=repair_results,
         repair_validation=repair_validation,
+        repair_merge=repair_merge,
+        repair_merge_qa=repair_merge_qa,
         evidence_files=evidence_files,
     )
     path.parent.mkdir(parents=True, exist_ok=True)

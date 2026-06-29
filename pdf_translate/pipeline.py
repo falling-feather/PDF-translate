@@ -24,6 +24,7 @@ from pdf_translate.qa.repair import (
     write_repair_plan,
     write_repair_requests,
     write_repair_results,
+    write_repair_merge,
     write_repair_validation,
 )
 from pdf_translate.qa.structure import write_structure_qa
@@ -337,6 +338,27 @@ def run_translate(
             out_dir / "repair_validation.json",
             out_dir / "repair_validation.md",
         )
+        repair_merge = write_repair_merge(
+            repair_requests,
+            repair_results,
+            repair_validation,
+            chunks,
+            chunk_dir,
+            out_dir / "repair_merge.json",
+            out_dir / "repair_merge.md",
+            repaired_chunk_dir=out_dir / "repaired_chunks",
+            repaired_full_path=out_dir / "repaired_full.md",
+        )
+        repair_merge_qa = write_translation_qa(
+            chunks,
+            out_dir / "repaired_chunks",
+            out_dir / "repair_merge_qa.json",
+            out_dir / "repair_merge_qa.md",
+            glossary=mem.load_glossary(),
+            pending_review=mem.load_pending_review(),
+            document_ir=doc_ir,
+            table_reconstruction=table_reconstruction,
+        )
         write_experiment_metrics(
             structure_qa,
             vision_route,
@@ -351,6 +373,8 @@ def run_translate(
             repair_requests=repair_requests,
             repair_results=repair_results,
             repair_validation=repair_validation,
+            repair_merge=repair_merge,
+            repair_merge_qa=repair_merge_qa,
         )
         write_bilingual_html(
             chunks,
