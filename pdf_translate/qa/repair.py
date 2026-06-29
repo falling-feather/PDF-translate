@@ -5,7 +5,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from pdf_translate.chunking import TextChunk
+from pdf_translate.deferral_markers import strip_yaml_front_matter
+
 SCHEMA_VERSION = "repair-plan-v1"
+REQUEST_SCHEMA_VERSION = "repair-requests-v1"
 
 _ISSUE_RULES = {
     "missing_translation": {
@@ -101,6 +105,100 @@ def _issue_evidence(issue: dict[str, Any]) -> dict[str, Any]:
     return evidence
 
 
+def _clip_text(text: str, limit: int = 1200) -> str:
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1].rstrip() + "…"
+
+
+def _chunk_translation_text(chunk_dir: Path, chunk_id: str | None) -> str:
+    if not chunk_id:
+        return ""
+    path = chunk_dir / f"{chunk_id}.md"
+    if not path.is_file():
+        return ""
+    return strip_yaml_front_matter(path.read_text(encoding="utf-8")).strip()
+
+
+def _locked_tokens_from_evidence(evidence: dict[str, Any]) -> list[str]:
+    tokens: list[str] = []
+    tokens.extend(str(token) for token in evidence.get("tokens") or [] if str(token))
+    for term in evidence.get("terms") or []:
+        if not isinstance(term, dict):
+            continue
+        tokens.extend(str(term.get(key) or "") for key in ("en", "expected_zh") if str(term.get(key) or ""))
+    for entity in evidence.get("entities") or []:
+        if isinstance(entity, dict) and str(entity.get("text") or ""):
+            tokens.append(str(entity["text"]))
+    for table in evidence.get("tables") or []:
+        if isinstance(table, dict):
+            tokens.extend(str(token) for token in table.get("numeric_tokens") or [] if str(token))
+    for cell in evidence.get("cells") or []:
+        if isinstance(cell, dict):
+            tokens.extend(str(token) for token in cell.get("missing_tokens") or [] if str(token))
+    return list(dict.fromkeys(token.strip() for token in tokens if token.strip()))
+
+
+def _repair_instruction(item: dict[str, Any], locked_tokens: list[str]) -> str:
+    action = str(item.get("action") or "")
+    if action == "repair_table_cell_tokens":
+        return "按表格单元格证据修复译文表格；保持原表格行列与 Markdown 形状，缺失的锁定 token 必须回到对应单元格。"
+    if action == "repair_table_shape":
+        return "按源表格维度重构译文表格；保持表头、行头、数字和单位，不要把表格线性化为普通段落。"
+    if action == "rewrite_with_glossary_terms":
+        return "重译当前块并严格使用术语表中的期望中文译名；不要输出解释。"
+    if action == "rewrite_with_entity_tokens":
+        return "重译当前块并保留模型、数据集、机构、缩写等实体 token；不要输出解释。"
+    if action == "rewrite_with_locked_tokens":
+        return "重译当前块并原样保留所有锁定 token；不要输出解释。"
+    if action == "rewrite_formula_context":
+        return "修复公式或变量邻近段落；保留公式符号、编号和变量名。"
+    if action == "translate_missing_chunk":
+        return "补译缺失块；保持学术论文语气和结构。"
+    if action == "deduplicate_overlap":
+        return "复核并移除由重叠页或合并造成的重复译文，保留完整语义。"
+    if action == "review_glossary_conflict":
+        return "先人工确认术语译名，再重译相关块。"
+    if action == "review_english_residual":
+        return "判断英文残留是术语保留还是漏译；必要时重译相关句子。"
+    if locked_tokens:
+        return "修复当前 QA 问题，并确保锁定 token 原样保留。"
+    return "复核并修复当前 QA 问题。"
+
+
+def _backend_payload(
+    item: dict[str, Any],
+    source_text: str,
+    current_translation: str,
+    locked_tokens: list[str],
+) -> dict[str, str]:
+    evidence = item.get("evidence") or {}
+    instruction = _repair_instruction(item, locked_tokens)
+    parts = [
+        "【修复目标】",
+        instruction,
+        "",
+        "【问题类型】",
+        str(item.get("issue_type") or "unknown"),
+        "",
+        "【源文范围】",
+        _clip_text(source_text),
+    ]
+    if current_translation:
+        parts.extend(["", "【当前译文】", _clip_text(current_translation)])
+    if locked_tokens:
+        parts.extend(["", "【必须保留的锁定 token】", ", ".join(locked_tokens[:80])])
+    if evidence:
+        parts.extend(["", "【QA 证据】", json.dumps(evidence, ensure_ascii=False)])
+    parts.extend(["", "【输出要求】", "只输出修复后的中文译文或 Markdown 表格，不要解释原因，不要添加额外标题。"])
+    return {
+        "system_message": "你是学术论文翻译局部修复执行器，任务是最小范围修复译文错误并保持结构不变量。",
+        "user_message": "\n".join(parts),
+        "expected_output": "repaired_translation_fragment",
+    }
+
+
 def build_repair_plan(qa_report: dict[str, Any]) -> dict[str, Any]:
     """Convert translation QA issues into executable repair candidates."""
     items: list[dict[str, Any]] = []
@@ -159,6 +257,75 @@ def build_repair_plan(qa_report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_repair_requests(
+    repair_plan: dict[str, Any],
+    chunks: list[TextChunk],
+    chunk_dir: Path,
+) -> dict[str, Any]:
+    """Turn repair plan items into backend/human executable request envelopes."""
+    chunks_by_id = {chunk.chunk_id: chunk for chunk in chunks}
+    requests: list[dict[str, Any]] = []
+    action_counts: Counter[str] = Counter()
+    priority_counts: Counter[str] = Counter()
+    executor_counts: Counter[str] = Counter()
+    status_counts: Counter[str] = Counter()
+
+    for item in repair_plan.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        chunk_id = str(item.get("chunk_id") or "")
+        chunk = chunks_by_id.get(chunk_id)
+        source_text = chunk.text if chunk else ""
+        current_translation = _chunk_translation_text(chunk_dir, chunk_id)
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        locked_tokens = _locked_tokens_from_evidence(evidence)
+        executor = str(item.get("executor") or "human_review")
+        action = str(item.get("action") or "review_chunk")
+        priority = str(item.get("priority") or "P2")
+        status = "ready_for_translation_backend" if "translation_backend" in executor else "needs_manual_review"
+
+        action_counts[action] += 1
+        priority_counts[priority] += 1
+        executor_counts[executor] += 1
+        status_counts[status] += 1
+        requests.append(
+            {
+                "request_id": f"rq{len(requests):04d}",
+                "repair_id": item.get("repair_id"),
+                "chunk_id": chunk_id,
+                "pages_1based": item.get("pages_1based") or [],
+                "priority": priority,
+                "issue_type": item.get("issue_type"),
+                "action": action,
+                "scope": item.get("scope"),
+                "executor": executor,
+                "status": status,
+                "instruction": _repair_instruction(item, locked_tokens),
+                "locked_tokens": locked_tokens,
+                "source_excerpt": _clip_text(source_text),
+                "current_translation_excerpt": _clip_text(current_translation),
+                "evidence": evidence,
+                "backend_payload": _backend_payload(item, source_text, current_translation, locked_tokens),
+            }
+        )
+
+    return {
+        "schema_version": REQUEST_SCHEMA_VERSION,
+        "summary": {
+            "repair_plan_schema_version": repair_plan.get("schema_version"),
+            "repair_item_count": repair_plan.get("summary", {}).get("repair_item_count", 0),
+            "repair_request_count": len(requests),
+            "ready_for_translation_backend_count": status_counts.get("ready_for_translation_backend", 0),
+            "manual_review_request_count": status_counts.get("needs_manual_review", 0),
+            "action_counts": dict(action_counts),
+            "priority_counts": dict(priority_counts),
+            "executor_counts": dict(executor_counts),
+            "status_counts": dict(status_counts),
+        },
+        "requests": requests,
+    }
+
+
 def repair_plan_to_markdown(plan: dict[str, Any]) -> str:
     summary = plan.get("summary", {})
     lines = [
@@ -195,6 +362,44 @@ def repair_plan_to_markdown(plan: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def repair_requests_to_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary", {})
+    lines = [
+        "# 局部修复请求",
+        "",
+        "| 指标 | 值 |",
+        "| --- | --- |",
+        f"| 源修复项 | {summary.get('repair_item_count', 0)} |",
+        f"| 修复请求 | {summary.get('repair_request_count', 0)} |",
+        f"| 可交给翻译后端 | {summary.get('ready_for_translation_backend_count', 0)} |",
+        f"| 需人工复核 | {summary.get('manual_review_request_count', 0)} |",
+        "",
+    ]
+    requests = report.get("requests") or []
+    if not requests:
+        lines.append("当前没有生成局部修复请求。")
+        return "\n".join(lines).rstrip() + "\n"
+
+    lines.extend(["## 请求明细", ""])
+    for request in requests:
+        pages = request.get("pages_1based") or []
+        page_text = f"{pages[0]}-{pages[-1]}" if pages else "-"
+        locked = ", ".join(str(token) for token in request.get("locked_tokens", [])[:30])
+        lines.append(
+            f"### {request.get('request_id')}｜{request.get('priority')}｜{request.get('chunk_id')}｜页 {page_text}"
+        )
+        lines.append(f"- 状态：`{request.get('status')}`，执行器 `{request.get('executor')}`")
+        lines.append(f"- 动作：`{request.get('action')}`，范围 `{request.get('scope')}`")
+        lines.append(f"- 指令：{request.get('instruction')}")
+        if locked:
+            lines.append(f"- 锁定 token：{locked}")
+        evidence = request.get("evidence") or {}
+        if evidence:
+            lines.append(f"- 证据：{json.dumps(evidence, ensure_ascii=False)}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def write_repair_plan(qa_report: dict[str, Any], json_path: Path, markdown_path: Path) -> dict[str, Any]:
     plan = build_repair_plan(qa_report)
     json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -202,3 +407,18 @@ def write_repair_plan(qa_report: dict[str, Any], json_path: Path, markdown_path:
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
     markdown_path.write_text(repair_plan_to_markdown(plan), encoding="utf-8")
     return plan
+
+
+def write_repair_requests(
+    repair_plan: dict[str, Any],
+    chunks: list[TextChunk],
+    chunk_dir: Path,
+    json_path: Path,
+    markdown_path: Path,
+) -> dict[str, Any]:
+    report = build_repair_requests(repair_plan, chunks, chunk_dir)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(repair_requests_to_markdown(report), encoding="utf-8")
+    return report
