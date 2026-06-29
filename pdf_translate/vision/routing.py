@@ -5,9 +5,13 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+import fitz
+
 from pdf_translate.extractors.document_ir import DocumentIR, PageIR
 
 SCHEMA_VERSION = "vision-route-v1"
+PREVIEW_DIR_NAME = "vision_pages"
+PREVIEW_MAX_WIDTH = 960
 
 
 def _bbox_area(bbox: tuple[float, float, float, float]) -> float:
@@ -170,6 +174,13 @@ def build_vision_route(doc_ir: DocumentIR) -> dict[str, Any]:
                     "block_counts": dict(block_counts),
                     "page_warnings": page.warnings,
                 },
+                "evidence": {
+                    "page_preview_status": "not_rendered",
+                    "page_preview_path": "",
+                    "page_preview_width": 0,
+                    "page_preview_height": 0,
+                    "page_preview_scale": 0,
+                },
             }
         )
 
@@ -181,6 +192,7 @@ def build_vision_route(doc_ir: DocumentIR) -> dict[str, Any]:
             "page_count": len(doc_ir.pages),
             "routed_page_count": routed_count,
             "high_risk_page_count": risk_counts.get("high", 0),
+            "preview_page_count": 0,
             "action_counts": dict(action_counts),
             "risk_counts": dict(risk_counts),
         },
@@ -188,9 +200,101 @@ def build_vision_route(doc_ir: DocumentIR) -> dict[str, Any]:
     }
 
 
+def _render_scale(page: fitz.Page) -> float:
+    width = max(1.0, float(page.rect.width))
+    return min(2.0, max(1.0, PREVIEW_MAX_WIDTH / width))
+
+
+def _attach_page_previews(route: dict[str, Any], doc_ir: DocumentIR, output_dir: Path) -> None:
+    pages = route.get("pages")
+    if not isinstance(pages, list):
+        return
+
+    source_pdf = Path(doc_ir.source_pdf)
+    preview_dir = output_dir / PREVIEW_DIR_NAME
+    rendered_count = 0
+    missing_count = 0
+
+    if not source_pdf.is_file():
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            evidence = page.setdefault("evidence", {})
+            if page.get("action") == "text_only":
+                evidence["page_preview_status"] = "not_needed"
+            else:
+                evidence["page_preview_status"] = "source_missing"
+                missing_count += 1
+        summary = route.get("summary")
+        if isinstance(summary, dict):
+            summary["preview_page_count"] = rendered_count
+            summary["preview_missing_count"] = missing_count
+            summary["preview_dir"] = PREVIEW_DIR_NAME
+        return
+
+    try:
+        doc = fitz.open(source_pdf)
+    except Exception:
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            evidence = page.setdefault("evidence", {})
+            if page.get("action") == "text_only":
+                evidence["page_preview_status"] = "not_needed"
+                continue
+            evidence["page_preview_status"] = "source_open_failed"
+            missing_count += 1
+        summary = route.get("summary")
+        if isinstance(summary, dict):
+            summary["preview_page_count"] = rendered_count
+            summary["preview_missing_count"] = missing_count
+            summary["preview_dir"] = PREVIEW_DIR_NAME
+        return
+
+    try:
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            evidence = page.setdefault("evidence", {})
+            if page.get("action") == "text_only":
+                evidence["page_preview_status"] = "not_needed"
+                continue
+            page_no = int(page.get("page_no") or 0)
+            if page_no < 1 or page_no > len(doc):
+                evidence["page_preview_status"] = "page_missing"
+                missing_count += 1
+                continue
+
+            preview_dir.mkdir(parents=True, exist_ok=True)
+            pdf_page = doc[page_no - 1]
+            scale = _render_scale(pdf_page)
+            pix = pdf_page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+            preview_path = preview_dir / f"page-{page_no:04d}.png"
+            pix.save(preview_path)
+            evidence.update(
+                {
+                    "page_preview_status": "rendered",
+                    "page_preview_path": preview_path.relative_to(output_dir).as_posix(),
+                    "page_preview_width": pix.width,
+                    "page_preview_height": pix.height,
+                    "page_preview_scale": round(scale, 3),
+                }
+            )
+            rendered_count += 1
+    finally:
+        doc.close()
+
+    summary = route.get("summary")
+    if isinstance(summary, dict):
+        summary["preview_page_count"] = rendered_count
+        summary["preview_missing_count"] = missing_count
+        summary["preview_dir"] = PREVIEW_DIR_NAME
+
+
 def write_vision_route(doc_ir: DocumentIR, path: Path) -> dict[str, Any]:
     route = build_vision_route(doc_ir)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _attach_page_previews(route, doc_ir, path.parent)
     path.write_text(
         json.dumps(route, ensure_ascii=False, indent=2),
         encoding="utf-8",

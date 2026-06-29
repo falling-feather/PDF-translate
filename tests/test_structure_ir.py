@@ -42,7 +42,7 @@ from pdf_translate.run_metrics import build_run_metrics
 from pdf_translate.translators.base import TranslationRequest
 from pdf_translate.translators.http_retry import call_with_http_retry, capture_http_retry_events
 from pdf_translate.translators.openai_compatible import _build_user_message
-from pdf_translate.vision.routing import build_vision_route
+from pdf_translate.vision.routing import build_vision_route, write_vision_route
 from pdf_translate.zip_bundle import iter_bundle_files, map_bundle_arcname
 
 
@@ -830,6 +830,60 @@ class StructureIRTests(unittest.TestCase):
         self.assertIn("very_low_text", route["pages"][0]["reasons"])
         self.assertEqual(route["pages"][0]["metrics"]["image_count"], 1)
 
+    def test_write_vision_route_renders_routed_page_preview(self) -> None:
+        root = Path.cwd() / "test-output" / "vision-preview"
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True)
+        try:
+            pdf_path = root / "sample.pdf"
+            doc = fitz.open()
+            page = doc.new_page(width=300, height=420)
+            page.insert_text((40, 40), "Fig. 1")
+            pdf_path.write_bytes(doc.tobytes())
+            doc.close()
+
+            doc_ir = DocumentIR(
+                doc_id="vision-preview",
+                source_pdf=str(pdf_path),
+                pages=[
+                    PageIR(
+                        page_no=1,
+                        width=300,
+                        height=420,
+                        text="Fig. 1",
+                        image_count=1,
+                        warnings=["low_text_image_heavy_page"],
+                        meta={
+                            "text_char_count": 6,
+                            "text_area_ratio": 0.01,
+                            "image_area_ratio": 0.52,
+                        },
+                        blocks=[
+                            BlockIR("p1-b0000", 1, "image", "", (40, 80, 260, 300), 0),
+                            BlockIR("p1-b0001", 1, "caption", "Fig. 1 Overview", (60, 320, 240, 345), 1),
+                        ],
+                    )
+                ],
+            )
+            route_path = root / "output" / "vision_route.json"
+
+            route = write_vision_route(doc_ir, route_path)
+
+            self.assertTrue(route_path.is_file())
+            self.assertEqual(route["summary"]["preview_page_count"], 1)
+            evidence = route["pages"][0]["evidence"]
+            self.assertEqual(evidence["page_preview_status"], "rendered")
+            self.assertEqual(evidence["page_preview_path"], "vision_pages/page-0001.png")
+            self.assertGreater(evidence["page_preview_width"], 0)
+            self.assertTrue((root / "output" / evidence["page_preview_path"]).is_file())
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
     def test_http_retry_capture_records_retry_attempts(self) -> None:
         request = httpx.Request("POST", "https://example.test/chat")
         response = httpx.Response(503, request=request)
@@ -1051,6 +1105,7 @@ class StructureIRTests(unittest.TestCase):
                 "summary": {
                     "page_count": 4,
                     "routed_page_count": 2,
+                    "preview_page_count": 2,
                     "action_counts": {"text_only": 2, "local_ocr": 1, "vlm_review": 1},
                     "risk_counts": {"low": 2, "medium": 1, "high": 1},
                 },
@@ -1304,6 +1359,8 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["repair_merge_apply_rate"], 0.5)
         self.assertEqual(metrics["rates"]["post_repair_issue_reduction_rate"], 0.25)
         self.assertEqual(metrics["rates"]["relationship_warning_rate"], 0.3333)
+        self.assertEqual(metrics["quality"]["vision_preview_page_count"], 2)
+        self.assertEqual(metrics["rates"]["vision_preview_page_rate"], 0.5)
         self.assertEqual(metrics["breakdowns"]["vision_action_counts"]["local_ocr"], 1)
         self.assertEqual(metrics["breakdowns"]["stage_elapsed_ms"]["document_ir"], 50)
         self.assertEqual(metrics["breakdowns"]["translator_counts"]["echo"], 2)
@@ -1844,6 +1901,8 @@ class StructureIRTests(unittest.TestCase):
         repairs_dir.mkdir(parents=True)
         repaired_chunks_dir = output / "repaired_chunks"
         repaired_chunks_dir.mkdir(parents=True)
+        vision_pages_dir = output / "vision_pages"
+        vision_pages_dir.mkdir(parents=True)
         try:
             for name in [
                 "translated_full.md",
@@ -1877,6 +1936,7 @@ class StructureIRTests(unittest.TestCase):
                 (output / name).write_text("{}", encoding="utf-8")
             (repairs_dir / "rq0000.md").write_text("候选修复片段", encoding="utf-8")
             (repaired_chunks_dir / "c0000.md").write_text("修复合并分块", encoding="utf-8")
+            (vision_pages_dir / "page-0001.png").write_bytes(b"fakepng")
             rels = {
                 path.relative_to(root).as_posix()
                 for path in iter_bundle_files(root)
@@ -1889,6 +1949,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/repair_merge_qa.json", rels)
             self.assertIn("output/repairs/rq0000.md", rels)
             self.assertIn("output/repaired_chunks/c0000.md", rels)
+            self.assertIn("output/vision_pages/page-0001.png", rels)
             self.assertIn("output/repaired_full.md", rels)
             self.assertIn("output/bilingual.html", rels)
             self.assertIn("output/qa_report.md", rels)
@@ -1909,6 +1970,10 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(map_bundle_arcname("output/repair_merge_qa.md"), "质量/局部修复后QA.md")
             self.assertEqual(map_bundle_arcname("output/repairs/rq0000.md"), "质量/局部修复片段/rq0000.md")
             self.assertEqual(map_bundle_arcname("output/repaired_chunks/c0000.md"), "译文/局部修复分块/c0000.md")
+            self.assertEqual(
+                map_bundle_arcname("output/vision_pages/page-0001.png"),
+                "质量/图像OCR页面预览/page-0001.png",
+            )
             self.assertEqual(map_bundle_arcname("output/structure_qa.json"), "质量/结构QA.json")
             self.assertEqual(map_bundle_arcname("output/table_reconstruction.json"), "质量/表格重建证据.json")
             self.assertEqual(map_bundle_arcname("output/chunk_boundary_qa.json"), "质量/分段边界QA.json")

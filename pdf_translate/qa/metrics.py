@@ -174,6 +174,7 @@ def build_experiment_metrics(
         chunk_strategy_summary.get("active_split_reduction_rate_vs_baseline")
     )
     routed_page_count = _as_int(vision_summary.get("routed_page_count"))
+    vision_preview_page_count = _as_int(vision_summary.get("preview_page_count"))
     ocr_candidate_page_count = (
         vision_action_counts.get("local_ocr", 0) + vision_action_counts.get("vlm_review", 0)
     )
@@ -300,6 +301,7 @@ def build_experiment_metrics(
             "active_split_boundary_count": active_split_boundary_count,
             "active_split_reduction_vs_baseline": active_split_reduction_vs_baseline,
             "routed_page_count": routed_page_count,
+            "vision_preview_page_count": vision_preview_page_count,
             "ocr_candidate_page_count": ocr_candidate_page_count,
             "translation_issue_count": translation_issue_count,
             "repair_item_count": repair_item_count,
@@ -409,6 +411,7 @@ def build_experiment_metrics(
             ),
             "ocr_candidate_page_rate": _rate(ocr_candidate_page_count, page_count),
             "routed_page_rate": _rate(routed_page_count, page_count),
+            "vision_preview_page_rate": _rate(vision_preview_page_count, page_count),
             "qa_issue_per_chunk": _rate(translation_issue_count, chunk_count),
             "translation_request_per_chunk": _rate(translation_request_count, chunk_count),
             "http_attempt_per_translation_request": _rate(

@@ -50,6 +50,9 @@ def map_bundle_arcname(rel_posix: str) -> str:
     if rel.startswith("output/repaired_chunks/"):
         name = rel.split("/")[-1]
         return f"译文/局部修复分块/{name}"
+    if rel.startswith("output/vision_pages/"):
+        name = rel.split("/")[-1]
+        return f"质量/图像OCR页面预览/{name}"
 
     split_map = {
         "split/manifest.json": "设置/拆分清单.json",
@@ -133,6 +136,11 @@ def iter_bundle_files(root: Path) -> list[Path]:
     repaired_chunks = root / "output" / "repaired_chunks"
     if repaired_chunks.is_dir():
         for p in repaired_chunks.rglob("*"):
+            if p.is_file():
+                out.append(p)
+    vision_pages = root / "output" / "vision_pages"
+    if vision_pages.is_dir():
+        for p in vision_pages.rglob("*"):
             if p.is_file():
                 out.append(p)
     return out
