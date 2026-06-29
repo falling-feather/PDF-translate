@@ -20,7 +20,7 @@ from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
 from pdf_translate.pipeline_merge import merge_chunks_markdown
 from pdf_translate.qa.chunk_boundary import write_chunk_boundary_qa, write_chunk_strategy_comparison
 from pdf_translate.qa.metrics import write_experiment_metrics
-from pdf_translate.qa.repair import write_repair_plan, write_repair_requests
+from pdf_translate.qa.repair import write_repair_plan, write_repair_requests, write_repair_results
 from pdf_translate.qa.structure import write_structure_qa
 from pdf_translate.qa.table_reconstruction import build_table_translation_hints, write_table_reconstruction_report
 from pdf_translate.qa.translation import write_translation_qa
@@ -190,6 +190,8 @@ def run_translate(
     parallel_workers: int = 4,
     survey_override: bool | None = None,
     chunk_strategy: Literal["page", "structure"] = "page",
+    execute_repair_requests: bool = False,
+    max_repair_requests: int | None = None,
 ) -> Path:
     """survey_override：None 使用 cfg.survey_enabled；True/False 强制开关译前巡视（精品翻译传 True）。"""
     cfg = replace(cfg, survey_enabled=survey_override) if survey_override is not None else cfg
@@ -315,6 +317,15 @@ def run_translate(
             out_dir / "repair_requests.json",
             out_dir / "repair_requests.md",
         )
+        repair_translator = build_translator(be, cfg) if execute_repair_requests else None
+        repair_results = write_repair_results(
+            repair_requests,
+            out_dir / "repair_results.json",
+            out_dir / "repair_results.md",
+            translator=repair_translator,
+            execute=execute_repair_requests,
+            max_requests=max_repair_requests,
+        )
         write_experiment_metrics(
             structure_qa,
             vision_route,
@@ -327,6 +338,7 @@ def run_translate(
             chunk_strategy_comparison=chunk_strategy_comparison,
             table_reconstruction=table_reconstruction,
             repair_requests=repair_requests,
+            repair_results=repair_results,
         )
         write_bilingual_html(
             chunks,

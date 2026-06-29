@@ -15,6 +15,7 @@ DEFAULT_EVIDENCE_FILES = {
     "translation_qa": "output/qa_report.json",
     "repair_plan": "output/repair_plan.json",
     "repair_requests": "output/repair_requests.json",
+    "repair_results": "output/repair_results.json",
 }
 
 
@@ -75,6 +76,7 @@ def build_experiment_metrics(
     chunk_strategy_comparison: dict[str, Any] | None = None,
     table_reconstruction: dict[str, Any] | None = None,
     repair_requests: dict[str, Any] | None = None,
+    repair_results: dict[str, Any] | None = None,
     evidence_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Aggregate pipeline QA artifacts into a patent-facing experiment summary."""
@@ -86,6 +88,7 @@ def build_experiment_metrics(
     translation_summary = _summary(translation_qa)
     repair_summary = _summary(repair_plan)
     repair_request_summary = _summary(repair_requests)
+    repair_result_summary = _summary(repair_results)
 
     block_counts = _counter_dict(structure_summary.get("block_counts"))
     entity_type_counts = _counter_dict(structure_summary.get("entity_type_counts"))
@@ -151,6 +154,10 @@ def build_experiment_metrics(
     repair_request_count = _as_int(repair_request_summary.get("repair_request_count"))
     repair_backend_request_count = _as_int(repair_request_summary.get("ready_for_translation_backend_count"))
     repair_manual_request_count = _as_int(repair_request_summary.get("manual_review_request_count"))
+    repair_executed_request_count = _as_int(repair_result_summary.get("executed_request_count"))
+    repair_succeeded_count = _as_int(repair_result_summary.get("succeeded_count"))
+    repair_failed_count = _as_int(repair_result_summary.get("failed_count"))
+    repair_skipped_count = _as_int(repair_result_summary.get("skipped_count"))
     max_english_residual_ratio = _as_float(translation_summary.get("max_english_residual_ratio"))
 
     relationship_total = caption_count + footnote_count
@@ -209,6 +216,10 @@ def build_experiment_metrics(
             "repair_request_count": repair_request_count,
             "repair_backend_request_count": repair_backend_request_count,
             "repair_manual_request_count": repair_manual_request_count,
+            "repair_executed_request_count": repair_executed_request_count,
+            "repair_succeeded_count": repair_succeeded_count,
+            "repair_failed_count": repair_failed_count,
+            "repair_skipped_count": repair_skipped_count,
             "max_english_residual_ratio": max_english_residual_ratio,
         },
         "rates": {
@@ -233,6 +244,7 @@ def build_experiment_metrics(
             "entity_missing_rate": _rate(missing_entity_token_count, effective_entity_candidate_count),
             "repair_item_per_chunk": _rate(repair_item_count, chunk_count),
             "repair_request_ready_rate": _rate(repair_backend_request_count, repair_request_count),
+            "repair_execution_success_rate": _rate(repair_succeeded_count, repair_executed_request_count),
             "ocr_candidate_page_rate": _rate(ocr_candidate_page_count, page_count),
             "routed_page_rate": _rate(routed_page_count, page_count),
             "qa_issue_per_chunk": _rate(translation_issue_count, chunk_count),
@@ -265,6 +277,7 @@ def write_experiment_metrics(
     chunk_strategy_comparison: dict[str, Any] | None = None,
     table_reconstruction: dict[str, Any] | None = None,
     repair_requests: dict[str, Any] | None = None,
+    repair_results: dict[str, Any] | None = None,
     evidence_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     metrics = build_experiment_metrics(
@@ -278,6 +291,7 @@ def write_experiment_metrics(
         chunk_strategy_comparison=chunk_strategy_comparison,
         table_reconstruction=table_reconstruction,
         repair_requests=repair_requests,
+        repair_results=repair_results,
         evidence_files=evidence_files,
     )
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -7,7 +7,14 @@ from pdf_translate.qa.chunk_boundary import (
     write_chunk_strategy_comparison,
 )
 from pdf_translate.qa.metrics import build_experiment_metrics, write_experiment_metrics
-from pdf_translate.qa.repair import build_repair_plan, build_repair_requests, write_repair_plan, write_repair_requests
+from pdf_translate.qa.repair import (
+    build_repair_plan,
+    build_repair_requests,
+    build_repair_results,
+    write_repair_plan,
+    write_repair_requests,
+    write_repair_results,
+)
 from pdf_translate.qa.structure import build_structure_qa, write_structure_qa
 from pdf_translate.qa.table_reconstruction import (
     build_table_reconstruction_report,
@@ -24,8 +31,10 @@ __all__ = [
     "write_experiment_metrics",
     "build_repair_plan",
     "build_repair_requests",
+    "build_repair_results",
     "write_repair_plan",
     "write_repair_requests",
+    "write_repair_results",
     "build_structure_qa",
     "write_structure_qa",
     "build_table_reconstruction_report",

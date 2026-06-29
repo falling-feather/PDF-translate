@@ -54,6 +54,17 @@ def cmd_translate(
     overlap: int = typer.Option(1, "--overlap", min=0, help="块间重叠页数"),
     no_resume: bool = typer.Option(False, "--no-resume", help="忽略断点，重译所有块"),
     max_chunks: int = typer.Option(None, "--max-chunks", help="仅处理前 N 块（调试）"),
+    execute_repairs: bool = typer.Option(
+        False,
+        "--execute-repairs",
+        help="执行局部修复请求并写出 repair_results（默认只生成请求，不改写译文）",
+    ),
+    max_repair_requests: int = typer.Option(
+        None,
+        "--max-repair-requests",
+        min=1,
+        help="最多执行 N 条局部修复请求；仅 --execute-repairs 生效",
+    ),
     chunk_strategy: str = typer.Option(
         "page",
         "--chunk-strategy",
@@ -70,6 +81,8 @@ def cmd_translate(
         resume=not no_resume,
         max_chunks=max_chunks,
         chunk_strategy=chunk_strategy,  # type: ignore[arg-type]
+        execute_repair_requests=execute_repairs,
+        max_repair_requests=max_repair_requests,
     )
     typer.echo(f"已写入合并稿: {out}")
 
@@ -91,6 +104,17 @@ def cmd_run(
     pages_per_chunk: int = typer.Option(3, "--pages", min=1, max=3),
     overlap: int = typer.Option(1, "--overlap", min=0),
     max_chunks: int = typer.Option(None, "--max-chunks"),
+    execute_repairs: bool = typer.Option(
+        False,
+        "--execute-repairs",
+        help="执行局部修复请求并写出 repair_results（默认只生成请求，不改写译文）",
+    ),
+    max_repair_requests: int = typer.Option(
+        None,
+        "--max-repair-requests",
+        min=1,
+        help="最多执行 N 条局部修复请求；仅 --execute-repairs 生效",
+    ),
     chunk_strategy: str = typer.Option(
         "page",
         "--chunk-strategy",
@@ -110,6 +134,8 @@ def cmd_run(
         resume=True,
         max_chunks=max_chunks,
         chunk_strategy=chunk_strategy,  # type: ignore[arg-type]
+        execute_repair_requests=execute_repairs,
+        max_repair_requests=max_repair_requests,
     )
     typer.echo(f"完成: {out}")
 

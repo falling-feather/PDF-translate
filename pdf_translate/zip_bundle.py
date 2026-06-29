@@ -26,6 +26,8 @@ def map_bundle_arcname(rel_posix: str) -> str:
         "output/repair_plan.md": "质量/局部修复计划.md",
         "output/repair_requests.json": "质量/局部修复请求.json",
         "output/repair_requests.md": "质量/局部修复请求.md",
+        "output/repair_results.json": "质量/局部修复结果.json",
+        "output/repair_results.md": "质量/局部修复结果.md",
         "output/experiment_metrics.json": "质量/实验指标.json",
         "output/links_index.csv": "关键词/链接索引.csv",
         "output/state.json": "设置/翻译状态.json",
@@ -33,6 +35,9 @@ def map_bundle_arcname(rel_posix: str) -> str:
     }
     if rel in output_map:
         return output_map[rel]
+    if rel.startswith("output/repairs/"):
+        name = rel.split("/")[-1]
+        return f"质量/局部修复片段/{name}"
 
     split_map = {
         "split/manifest.json": "设置/拆分清单.json",
@@ -80,6 +85,8 @@ def iter_bundle_files(root: Path) -> list[Path]:
         root / "output" / "repair_plan.md",
         root / "output" / "repair_requests.json",
         root / "output" / "repair_requests.md",
+        root / "output" / "repair_results.json",
+        root / "output" / "repair_results.md",
         root / "output" / "experiment_metrics.json",
         root / "output" / "links_index.csv",
         root / "output" / "state.json",
@@ -95,6 +102,11 @@ def iter_bundle_files(root: Path) -> list[Path]:
     mem = root / "memory"
     if mem.is_dir():
         for p in mem.rglob("*"):
+            if p.is_file():
+                out.append(p)
+    repairs = root / "output" / "repairs"
+    if repairs.is_dir():
+        for p in repairs.rglob("*"):
             if p.is_file():
                 out.append(p)
     return out

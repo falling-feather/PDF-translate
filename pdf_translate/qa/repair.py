@@ -7,9 +7,11 @@ from typing import Any
 
 from pdf_translate.chunking import TextChunk
 from pdf_translate.deferral_markers import strip_yaml_front_matter
+from pdf_translate.translators.base import TranslationRequest, Translator
 
 SCHEMA_VERSION = "repair-plan-v1"
 REQUEST_SCHEMA_VERSION = "repair-requests-v1"
+RESULT_SCHEMA_VERSION = "repair-results-v1"
 
 _ISSUE_RULES = {
     "missing_translation": {
@@ -400,6 +402,162 @@ def repair_requests_to_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _execute_one_repair_request(
+    request: dict[str, Any],
+    translator: Translator,
+) -> str:
+    payload = request.get("backend_payload") if isinstance(request.get("backend_payload"), dict) else {}
+    source_text = str(payload.get("user_message") or "")
+    style_notes = str(payload.get("system_message") or "局部修复执行器。")
+    req = TranslationRequest(
+        source_text=source_text,
+        glossary_excerpt="",
+        prior_summaries="",
+        style_notes=style_notes,
+    )
+    return translator.translate(req).strip()
+
+
+def build_repair_results(
+    repair_requests: dict[str, Any],
+    *,
+    translator: Translator | None = None,
+    execute: bool = False,
+    max_requests: int | None = None,
+    repairs_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Execute or account for repair requests without mutating chunk translations."""
+    results: list[dict[str, Any]] = []
+    status_counts: Counter[str] = Counter()
+    action_counts: Counter[str] = Counter()
+    executed_count = 0
+
+    for raw_request in repair_requests.get("requests") or []:
+        if not isinstance(raw_request, dict):
+            continue
+        request_id = str(raw_request.get("request_id") or f"rq{len(results):04d}")
+        action = str(raw_request.get("action") or "unknown")
+        request_status = str(raw_request.get("status") or "")
+        base = {
+            "request_id": request_id,
+            "repair_id": raw_request.get("repair_id"),
+            "chunk_id": raw_request.get("chunk_id"),
+            "pages_1based": raw_request.get("pages_1based") or [],
+            "priority": raw_request.get("priority"),
+            "issue_type": raw_request.get("issue_type"),
+            "action": action,
+            "scope": raw_request.get("scope"),
+            "executor": raw_request.get("executor"),
+        }
+        action_counts[action] += 1
+
+        if request_status != "ready_for_translation_backend":
+            status = "skipped_not_ready"
+            status_counts[status] += 1
+            results.append({**base, "status": status, "reason": "该请求不是翻译后端可直接执行项。"})
+            continue
+        if not execute:
+            status = "skipped_execution_disabled"
+            status_counts[status] += 1
+            results.append({**base, "status": status, "reason": "局部修复执行未开启。"})
+            continue
+        if max_requests is not None and executed_count >= max_requests:
+            status = "skipped_limit"
+            status_counts[status] += 1
+            results.append({**base, "status": status, "reason": "达到本次局部修复执行数量上限。"})
+            continue
+        if translator is None:
+            status = "failed"
+            status_counts[status] += 1
+            results.append({**base, "status": status, "error": "未提供翻译后端。"})
+            continue
+
+        try:
+            repaired_text = _execute_one_repair_request(raw_request, translator)
+            executed_count += 1
+            result_path = ""
+            if repairs_dir is not None:
+                repairs_dir.mkdir(parents=True, exist_ok=True)
+                out_path = repairs_dir / f"{request_id}.md"
+                out_path.write_text(repaired_text + "\n", encoding="utf-8")
+                result_path = out_path.as_posix()
+            status = "succeeded"
+            status_counts[status] += 1
+            results.append(
+                {
+                    **base,
+                    "status": status,
+                    "result_path": result_path,
+                    "result_excerpt": _clip_text(repaired_text, 800),
+                }
+            )
+        except Exception as exc:  # pragma: no cover - defensive boundary for external backends
+            status = "failed"
+            status_counts[status] += 1
+            results.append({**base, "status": status, "error": str(exc)})
+
+    return {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "summary": {
+            "repair_requests_schema_version": repair_requests.get("schema_version"),
+            "repair_request_count": repair_requests.get("summary", {}).get("repair_request_count", 0),
+            "execution_enabled": bool(execute),
+            "execution_backend": getattr(translator, "name", None) if translator else None,
+            "executed_request_count": executed_count,
+            "succeeded_count": status_counts.get("succeeded", 0),
+            "failed_count": status_counts.get("failed", 0),
+            "skipped_count": sum(
+                count
+                for status, count in status_counts.items()
+                if status.startswith("skipped_")
+            ),
+            "status_counts": dict(status_counts),
+            "action_counts": dict(action_counts),
+        },
+        "results": results,
+    }
+
+
+def repair_results_to_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary", {})
+    lines = [
+        "# 局部修复执行结果",
+        "",
+        "| 指标 | 值 |",
+        "| --- | --- |",
+        f"| 请求总数 | {summary.get('repair_request_count', 0)} |",
+        f"| 执行开关 | {summary.get('execution_enabled', False)} |",
+        f"| 执行后端 | {summary.get('execution_backend') or '-'} |",
+        f"| 已执行请求 | {summary.get('executed_request_count', 0)} |",
+        f"| 成功 | {summary.get('succeeded_count', 0)} |",
+        f"| 失败 | {summary.get('failed_count', 0)} |",
+        f"| 跳过 | {summary.get('skipped_count', 0)} |",
+        "",
+    ]
+    results = report.get("results") or []
+    if not results:
+        lines.append("当前没有局部修复执行结果。")
+        return "\n".join(lines).rstrip() + "\n"
+    lines.extend(["## 结果明细", ""])
+    for result in results:
+        pages = result.get("pages_1based") or []
+        page_text = f"{pages[0]}-{pages[-1]}" if pages else "-"
+        lines.append(
+            f"### {result.get('request_id')}｜{result.get('status')}｜{result.get('chunk_id')}｜页 {page_text}"
+        )
+        lines.append(f"- 动作：`{result.get('action')}`，范围 `{result.get('scope')}`")
+        if result.get("reason"):
+            lines.append(f"- 原因：{result.get('reason')}")
+        if result.get("error"):
+            lines.append(f"- 错误：{result.get('error')}")
+        if result.get("result_path"):
+            lines.append(f"- 结果文件：`{result.get('result_path')}`")
+        if result.get("result_excerpt"):
+            lines.append(f"- 结果预览：{result.get('result_excerpt')}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def write_repair_plan(qa_report: dict[str, Any], json_path: Path, markdown_path: Path) -> dict[str, Any]:
     plan = build_repair_plan(qa_report)
     json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -421,4 +579,27 @@ def write_repair_requests(
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
     markdown_path.write_text(repair_requests_to_markdown(report), encoding="utf-8")
+    return report
+
+
+def write_repair_results(
+    repair_requests: dict[str, Any],
+    json_path: Path,
+    markdown_path: Path,
+    *,
+    translator: Translator | None = None,
+    execute: bool = False,
+    max_requests: int | None = None,
+) -> dict[str, Any]:
+    report = build_repair_results(
+        repair_requests,
+        translator=translator,
+        execute=execute,
+        max_requests=max_requests,
+        repairs_dir=json_path.parent / "repairs",
+    )
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(repair_results_to_markdown(report), encoding="utf-8")
     return report
