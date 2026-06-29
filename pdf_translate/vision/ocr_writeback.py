@@ -163,6 +163,71 @@ def build_empty_ocr_results(ocr_tasks: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def load_ocr_results(path: Path) -> dict[str, Any] | list[dict[str, Any]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, dict) or isinstance(payload, list):
+        return payload
+    raise ValueError("OCR results must be a JSON object or a list of result objects.")
+
+
+def build_ocr_results_payload(
+    ocr_tasks: dict[str, Any] | None,
+    ocr_results: dict[str, Any] | list[dict[str, Any]] | None = None,
+    *,
+    source_path: str = "",
+) -> dict[str, Any]:
+    if ocr_results is None:
+        payload = build_empty_ocr_results(ocr_tasks)
+        payload["source"] = "not_provided"
+    elif isinstance(ocr_results, dict):
+        payload = _json_copy(ocr_results)
+        payload["schema_version"] = str(payload.get("schema_version") or OCR_RESULTS_SCHEMA_VERSION)
+        payload["doc_id"] = str(payload.get("doc_id") or (ocr_tasks or {}).get("doc_id") or "")
+        payload["source"] = str(payload.get("source") or "provided_file")
+    elif isinstance(ocr_results, list):
+        payload = {
+            "schema_version": OCR_RESULTS_SCHEMA_VERSION,
+            "doc_id": str((ocr_tasks or {}).get("doc_id") or ""),
+            "source": "provided_list",
+            "results": _json_copy(ocr_results),
+        }
+    else:
+        raise ValueError("OCR results must be a JSON object or a list of result objects.")
+
+    raw_results = payload.get("results")
+    raw_result_count = len(raw_results) if isinstance(raw_results, list) else 0
+    normalized_results = _results(payload)
+    status_counts = Counter(str(item.get("status") or "succeeded") for item in normalized_results)
+    engine_counts = Counter(str(item.get("engine") or "unknown") for item in normalized_results)
+    payload["results"] = normalized_results
+    payload["summary"] = {
+        "result_count": len(normalized_results),
+        "invalid_result_count": raw_result_count - len(normalized_results),
+        "status_counts": dict(status_counts),
+        "engine_counts": dict(engine_counts),
+    }
+    if source_path:
+        payload["source_path"] = source_path
+    return payload
+
+
+def write_ocr_results_payload(
+    ocr_tasks: dict[str, Any] | None,
+    path: Path,
+    ocr_results: dict[str, Any] | list[dict[str, Any]] | None = None,
+    *,
+    source_path: Path | str | None = None,
+) -> dict[str, Any]:
+    payload = build_ocr_results_payload(
+        ocr_tasks,
+        ocr_results,
+        source_path=str(source_path or ""),
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return payload
+
+
 def build_ocr_writeback(
     doc_ir: DocumentIR,
     ocr_tasks: dict[str, Any] | None,

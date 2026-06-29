@@ -46,7 +46,7 @@ from pdf_translate.translators.factory import build_translator
 from pdf_translate.translators.http_retry import capture_http_retry_events
 from pdf_translate.translators.openai_compatible import SYSTEM_PROMPT_VERSION, prompt_fingerprint
 from pdf_translate.vision.ocr_tasks import write_ocr_task_manifest
-from pdf_translate.vision.ocr_writeback import write_ocr_writeback
+from pdf_translate.vision.ocr_writeback import load_ocr_results, write_ocr_results_payload, write_ocr_writeback
 from pdf_translate.vision.routing import write_vision_route
 
 
@@ -109,6 +109,13 @@ def _translator_supports_deferral(translator: object) -> bool:
     if name == "hybrid":
         return False
     return True
+
+
+def _ocr_results_source(out_dir: Path, explicit_path: Path | None) -> Path | None:
+    if explicit_path is not None:
+        return explicit_path
+    default_path = out_dir / "ocr_results.json"
+    return default_path if default_path.is_file() else None
 
 
 def _write_survey_and_merge_glossary(
@@ -223,6 +230,7 @@ def run_translate(
     chunk_strategy: Literal["page", "structure"] = "page",
     execute_repair_requests: bool = False,
     max_repair_requests: int | None = None,
+    ocr_results_path: Path | None = None,
 ) -> Path:
     """survey_override：None 使用 cfg.survey_enabled；True/False 强制开关译前巡视（精品翻译传 True）。"""
     cfg = replace(cfg, survey_enabled=survey_override) if survey_override is not None else cfg
@@ -268,12 +276,22 @@ def run_translate(
         vision_route = write_vision_route(doc_ir, out_dir / "vision_route.json")
     with run_metrics.stage("ocr_tasks"):
         ocr_tasks = write_ocr_task_manifest(doc_ir, vision_route, out_dir / "ocr_tasks.json")
+    with run_metrics.stage("ocr_results"):
+        resolved_ocr_results_path = _ocr_results_source(out_dir, ocr_results_path)
+        raw_ocr_results = load_ocr_results(resolved_ocr_results_path) if resolved_ocr_results_path else None
+        ocr_results = write_ocr_results_payload(
+            ocr_tasks,
+            out_dir / "ocr_results.json",
+            raw_ocr_results,
+            source_path=resolved_ocr_results_path,
+        )
     with run_metrics.stage("ocr_writeback"):
         ocr_writeback = write_ocr_writeback(
             doc_ir,
             ocr_tasks,
             out_dir / "ocr_writeback.json",
             out_dir / "document_ir_ocr.json",
+            ocr_results,
         )
     with run_metrics.stage("structure_chunking"):
         structure_chunks = build_structure_chunks(
