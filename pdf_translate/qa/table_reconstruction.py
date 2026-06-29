@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from pdf_translate.chunking import TextChunk
 from pdf_translate.extractors.document_ir import BlockIR, DocumentIR
 
 SCHEMA_VERSION = "table-reconstruction-v1"
@@ -27,6 +28,13 @@ def _unique(items: list[str]) -> list[str]:
         seen.add(text)
         out.append(text)
     return out
+
+
+def _clip(text: str, limit: int = 120) -> str:
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1].rstrip() + "…"
 
 
 def _as_rows(raw_rows: Any) -> list[list[str]]:
@@ -274,3 +282,113 @@ def write_table_reconstruction_report(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
+
+
+def _chunk_block_ids(chunk: TextChunk) -> set[str]:
+    return {str(block_id) for block_id in getattr(chunk, "block_ids", []) if str(block_id)}
+
+
+def _table_matches_chunk(table: dict[str, Any], chunk: TextChunk, block_ids: set[str]) -> bool:
+    table_id = str(table.get("block_id") or table.get("table_id") or "")
+    if block_ids:
+        return table_id in block_ids
+    pages = {page + 1 for page in chunk.pages_0based}
+    return int(table.get("page_no") or 0) in pages
+
+
+def _table_locked_tokens(table: dict[str, Any], limit: int = 32) -> list[str]:
+    tokens: list[str] = []
+    for key in ("numeric_tokens", "unit_tokens", "significance_tokens"):
+        tokens.extend(str(item) for item in table.get(key) or [] if str(item))
+    for cell in table.get("cells") or []:
+        if not isinstance(cell, dict):
+            continue
+        tokens.extend(str(item) for item in cell.get("locked_tokens") or [] if str(item))
+    return _unique(tokens)[:limit]
+
+
+def _cell_hint(cell: dict[str, Any]) -> str:
+    row = int(cell.get("row_index") or 0)
+    col = int(cell.get("column_index") or 0)
+    role = str(cell.get("role") or "data")
+    text = _clip(str(cell.get("text") or ""), 80)
+    column_header = _clip(str(cell.get("column_header") or ""), 50)
+    row_header = _clip(str(cell.get("row_header") or ""), 50)
+    locked = _unique([str(item) for item in cell.get("locked_tokens") or [] if str(item)])
+    parts = [f"r{row}c{col}", role]
+    if column_header:
+        parts.append(f"列={column_header}")
+    if row_header:
+        parts.append(f"行={row_header}")
+    parts.append(f"值={text or '<空>'}")
+    if locked:
+        parts.append("锁定=" + ", ".join(locked[:8]))
+    return "；".join(parts)
+
+
+def build_table_translation_hints(
+    chunk: TextChunk,
+    table_reconstruction: dict[str, Any] | None,
+    *,
+    max_tables: int = 3,
+    max_cells_per_table: int = 18,
+) -> str:
+    """Build compact table-preservation instructions for one translation chunk."""
+    if not isinstance(table_reconstruction, dict):
+        return ""
+    tables = [table for table in table_reconstruction.get("tables") or [] if isinstance(table, dict)]
+    if not tables:
+        return ""
+    block_ids = _chunk_block_ids(chunk)
+    selected = [table for table in tables if _table_matches_chunk(table, chunk, block_ids)]
+    if not selected:
+        return ""
+
+    lines = [
+        "以下表格结构来自本地 DocumentIR。翻译时请保留相同行列数，输出 Markdown 表格；不要把表格线性化为普通段落；锁定 token 必须原样保留。",
+    ]
+    for table in selected[:max_tables]:
+        table_id = str(table.get("table_id") or table.get("block_id") or "unknown")
+        row_count = int(table.get("row_count") or 0)
+        column_count = int(table.get("column_count") or 0)
+        page_no = int(table.get("page_no") or 0)
+        header = [str(item).strip() for item in table.get("header") or [] if str(item).strip()]
+        locked_tokens = _table_locked_tokens(table)
+        lines.append(f"- 表格 {table_id}（第 {page_no} 页）：{row_count} 行 x {column_count} 列。")
+        if header:
+            lines.append("  表头：" + " | ".join(_clip(item, 40) for item in header[:12]))
+        if locked_tokens:
+            lines.append("  锁定 token：" + ", ".join(locked_tokens[:32]))
+        captions = table.get("caption_blocks") or []
+        if captions:
+            caption_texts = [_clip(item.get("text"), 100) for item in captions[:2] if isinstance(item, dict)]
+            if caption_texts:
+                lines.append("  表注/标题：" + " / ".join(caption_texts))
+        footnotes = table.get("footnote_blocks") or []
+        if footnotes:
+            footnote_texts = [_clip(item.get("text"), 100) for item in footnotes[:2] if isinstance(item, dict)]
+            if footnote_texts:
+                lines.append("  表格脚注：" + " / ".join(footnote_texts))
+        continuation = [
+            str(table.get("continued_from_block_id") or "").strip(),
+            str(table.get("continued_to_block_id") or "").strip(),
+        ]
+        continuation = [item for item in continuation if item]
+        if continuation:
+            lines.append("  续表关系：" + " / ".join(continuation))
+        cells = [
+            cell
+            for cell in table.get("cells") or []
+            if isinstance(cell, dict)
+            and (
+                cell.get("locked_tokens")
+                or cell.get("role") in {"header", "row_header"}
+            )
+        ]
+        if cells:
+            lines.append("  单元格上下文：")
+            for cell in cells[:max_cells_per_table]:
+                lines.append("    - " + _cell_hint(cell))
+    if len(selected) > max_tables:
+        lines.append(f"- 其余 {len(selected) - max_tables} 个表格仅按原文中的 Markdown 表格形状保持。")
+    return "\n".join(lines)

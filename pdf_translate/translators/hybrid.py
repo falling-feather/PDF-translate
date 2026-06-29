@@ -26,6 +26,7 @@ class HybridTranslator:
             glossary_excerpt=req.glossary_excerpt,
             prior_summaries=req.prior_summaries,
             style_notes=req.style_notes or "",
+            structure_hints=req.structure_hints,
             source_lang=req.target_lang,
             target_lang=req.target_lang,
             prior_tail_zh=req.prior_tail_zh,

@@ -22,7 +22,7 @@ from pdf_translate.qa.chunk_boundary import write_chunk_boundary_qa, write_chunk
 from pdf_translate.qa.metrics import write_experiment_metrics
 from pdf_translate.qa.repair import write_repair_plan
 from pdf_translate.qa.structure import write_structure_qa
-from pdf_translate.qa.table_reconstruction import write_table_reconstruction_report
+from pdf_translate.qa.table_reconstruction import build_table_translation_hints, write_table_reconstruction_report
 from pdf_translate.qa.translation import write_translation_qa
 from pdf_translate.rich_content import extract_page_rich_meta
 from pdf_translate.continuation_extract import translation_tail_for_next_chunk
@@ -153,6 +153,7 @@ def _parallel_translate_one(
     backend: str,
     style_text: str,
     ch: TextChunk,
+    table_reconstruction: dict | None = None,
 ) -> tuple[TextChunk, str, str]:
     if is_cancel_requested(work_dir):
         raise JobCancelled()
@@ -168,6 +169,7 @@ def _parallel_translate_one(
         glossary_excerpt=gloss,
         prior_summaries="",
         style_notes=style_text,
+        structure_hints=build_table_translation_hints(ch, table_reconstruction),
     )
     zh = translator.translate(req)
     tname = getattr(translator, "name", type(translator).__name__)
@@ -359,7 +361,7 @@ def run_translate(
                     )
             with ThreadPoolExecutor(max_workers=len(batch)) as ex:
                 futs = [
-                    ex.submit(_parallel_translate_one, work_dir, cfg, be, style_text, ch)
+                    ex.submit(_parallel_translate_one, work_dir, cfg, be, style_text, ch, table_reconstruction)
                     for _idx, ch in batch
                 ]
                 got: list[tuple[TextChunk, str, str]] = []
@@ -456,6 +458,7 @@ def run_translate(
             glossary_excerpt=gloss,
             prior_summaries=priors,
             style_notes=style_text,
+            structure_hints=build_table_translation_hints(ch, table_reconstruction),
             prior_tail_zh=prior_tail,
             continuation_hint=cont_hint,
             prior_untranslated_continuation=carry,

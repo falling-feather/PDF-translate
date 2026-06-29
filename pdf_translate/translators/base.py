@@ -10,6 +10,7 @@ class TranslationRequest:
     glossary_excerpt: str
     prior_summaries: str
     style_notes: str
+    structure_hints: str = ""
     source_lang: str = "English"
     target_lang: str = "Simplified Chinese"
     # 串联翻译：上一块译文的段尾（勿重复输出）；与 continuation_hint 配合处理页级重叠

@@ -25,9 +25,11 @@ from pdf_translate.qa.chunk_boundary import build_chunk_boundary_qa, build_chunk
 from pdf_translate.qa.metrics import build_experiment_metrics
 from pdf_translate.qa.repair import build_repair_plan
 from pdf_translate.qa.structure import build_structure_qa
-from pdf_translate.qa.table_reconstruction import build_table_reconstruction_report
+from pdf_translate.qa.table_reconstruction import build_table_reconstruction_report, build_table_translation_hints
 from pdf_translate.qa.translation import build_translation_qa
 from pdf_translate.pipeline import init_workdir, run_split, run_translate
+from pdf_translate.translators.base import TranslationRequest
+from pdf_translate.translators.openai_compatible import _build_user_message
 from pdf_translate.vision.routing import build_vision_route
 from pdf_translate.zip_bundle import iter_bundle_files, map_bundle_arcname
 
@@ -361,6 +363,76 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(acc_cell["row_header"], "BERT")
         self.assertIn("91.2%", acc_cell["locked_tokens"])
         self.assertIn("%", acc_cell["locked_tokens"])
+
+    def test_table_translation_hints_are_chunk_scoped(self) -> None:
+        page1_table = BlockIR(
+            "p1-b0000",
+            1,
+            "table",
+            "Model Acc\nBERT 91.2%",
+            (40, 110, 520, 180),
+            0,
+            meta={
+                "table": {
+                    "rows": [["Model", "Acc"], ["BERT", "91.2%"]],
+                    "row_count": 2,
+                    "column_count": 2,
+                    "header": ["Model", "Acc"],
+                    "confidence": "medium",
+                }
+            },
+        )
+        page2_table = BlockIR(
+            "p2-b0000",
+            2,
+            "table",
+            "Dataset F1\nCOCO 88.1",
+            (40, 110, 520, 180),
+            0,
+            meta={
+                "table": {
+                    "rows": [["Dataset", "F1"], ["COCO", "88.1"]],
+                    "row_count": 2,
+                    "column_count": 2,
+                    "header": ["Dataset", "F1"],
+                    "confidence": "medium",
+                }
+            },
+        )
+        doc_ir = DocumentIR(
+            doc_id="table-hints",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(1, 600, 800, "Model Acc\nBERT 91.2%", [page1_table]),
+                PageIR(2, 600, 800, "Dataset F1\nCOCO 88.1", [page2_table]),
+            ],
+        )
+        report = build_table_reconstruction_report(doc_ir, build_structure_qa(doc_ir))
+        chunk = TextChunk("c0000", [0], "Model Acc\nBERT 91.2%", 0, 0)
+
+        hints = build_table_translation_hints(chunk, report)
+
+        self.assertIn("DocumentIR", hints)
+        self.assertIn("表格 p1-b0000", hints)
+        self.assertIn("2 行 x 2 列", hints)
+        self.assertIn("91.2%", hints)
+        self.assertIn("Markdown", hints)
+        self.assertNotIn("88.1", hints)
+
+    def test_openai_user_message_includes_structure_hints(self) -> None:
+        message = _build_user_message(
+            TranslationRequest(
+                source_text="| Model | Acc |\n| --- | --- |\n| BERT | 91.2% |",
+                glossary_excerpt="",
+                prior_summaries="",
+                style_notes="",
+                structure_hints="表格 p1-b0000：2 行 x 2 列；锁定 token：91.2%。",
+            )
+        )
+
+        self.assertIn("【结构保护提示】", message)
+        self.assertIn("锁定 token：91.2%", message)
+        self.assertLess(message.index("【结构保护提示】"), message.index("【待译正文】"))
 
     def test_structure_qa_reports_page_boundary_fragments(self) -> None:
         doc_ir = DocumentIR(
