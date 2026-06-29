@@ -6,6 +6,7 @@ import typer
 
 from pdf_translate.config import AppConfig
 from pdf_translate import pipeline
+from pdf_translate.experiments import parse_variant_specs, run_batch_experiment
 
 app = typer.Typer(help="PDF 英文学术文献：拆分参考文献、按块翻译、记忆目录（见 README.md memory/ 说明）")
 
@@ -182,6 +183,48 @@ def cmd_run(
         ocr_command=ocr_command,
     )
     typer.echo(f"完成: {out}")
+
+
+@app.command("experiment")
+def cmd_experiment(
+    pdfs: list[Path] = typer.Argument(..., exists=True, dir_okay=False, help="用于批量实验的一篇或多篇 PDF"),
+    output_dir: Path = typer.Option(..., "--output-dir", "-o", help="批量实验输出目录"),
+    backend: str = typer.Option("echo", "--backend", "-b", help="实验后端；专利指标预跑建议先用 echo"),
+    variants: str = typer.Option(
+        "page,structure",
+        "--variants",
+        help="逗号分隔策略：page, structure, structure+ocr, structure+repair",
+    ),
+    tail_fallback: bool = typer.Option(False, "--tail-fallback", help="未检测到参考文献标题时启用尾部兜底"),
+    pages_per_chunk: int = typer.Option(3, "--pages", min=1, max=3, help="每块页数 1-3"),
+    overlap: int = typer.Option(1, "--overlap", min=0, help="固定页分块的重叠页数"),
+    max_chunks: int | None = typer.Option(None, "--max-chunks", min=1, help="每次运行最多翻译 N 块（调试/预跑）"),
+    translate_mode: str = typer.Option("serial", "--translate-mode", help="serial | parallel"),
+    parallel_workers: int = typer.Option(4, "--parallel-workers", min=1, help="并行模式 worker 数"),
+    resume: bool = typer.Option(False, "--resume", help="复用已有完成块；默认每次重跑当前策略"),
+    stop_on_error: bool = typer.Option(False, "--stop-on-error", help="任一运行失败时立即停止"),
+) -> None:
+    if translate_mode not in ("serial", "parallel"):
+        raise typer.BadParameter("translate-mode must be serial or parallel")
+    cfg = AppConfig.from_env()
+    report = run_batch_experiment(
+        pdfs,
+        output_dir,
+        cfg,
+        variants=parse_variant_specs(variants),
+        backend=backend,
+        pages_per_chunk=pages_per_chunk,
+        overlap_pages=overlap,
+        max_chunks=max_chunks,
+        tail_fallback=tail_fallback,
+        translate_mode=translate_mode,  # type: ignore[arg-type]
+        parallel_workers=parallel_workers,
+        resume=resume,
+        stop_on_error=stop_on_error,
+    )
+    typer.echo(f"批量实验汇总: {(output_dir / 'batch_experiment_summary.json').resolve()}")
+    typer.echo(f"Markdown 报告: {(output_dir / 'batch_experiment_summary.md').resolve()}")
+    typer.echo(f"成功/总数: {report['succeeded_count']}/{report['run_count']}")
 
 
 def main() -> None:

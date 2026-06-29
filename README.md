@@ -171,9 +171,12 @@ pdf-translate split <输入.pdf> <工作目录> [--tail-fallback]
 pdf-translate translate <工作目录> [-b openai] [--pages 3] [--overlap 1] [--chunk-strategy page|structure] [--ocr-results results.json] [--execute-ocr] [--max-chunks N]
 pdf-translate links <工作目录>
 pdf-translate run <输入.pdf> <工作目录>   # init + split + translate 一键
+pdf-translate experiment <论文1.pdf> [论文2.pdf ...] --output-dir <实验目录> --variants page,structure --backend echo
 ```
 
 CLI 的 `translate` / `run` 默认使用 **串联** 与当前 `pipeline` 默认参数；`--chunk-strategy structure` 为实验性结构分段路径，会基于 `DocumentIR` 结构块生成翻译块；`--ocr-results` 可传入外部或本地 OCR 执行器生成的 `ocr-results-v1` JSON；`--execute-ocr` 会在未提供结果文件时尝试执行本地 OCR 任务，并把执行摘要规范化写入 `output/ocr_results.json` 后进入 OCR 回写、候选 QA 和候选晋级门禁。**并联、Web 专属选项**以 Web 表单为准。详见 `pdf-translate translate --help`。
+
+`experiment` 用于专利证据链预跑：它会把多篇 PDF 与多个策略组成实验矩阵，逐次复用 `run` 管线，并汇总每次的 `experiment_metrics.json`、`run_metrics.json` 和 `cost_estimate.json`，输出 `batch_experiment_manifest.json`、`batch_experiment_summary.json` 与 `batch_experiment_summary.md`。建议先用 `--backend echo --max-chunks 1` 做本地结构/指标冒烟，再切换真实翻译后端做样本对比。
 
 ---
 
