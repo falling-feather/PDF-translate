@@ -10,6 +10,7 @@ DEFAULT_EVIDENCE_FILES = {
     "structure_qa": "output/structure_qa.json",
     "table_reconstruction": "output/table_reconstruction.json",
     "vision_route": "output/vision_route.json",
+    "ocr_tasks": "output/ocr_tasks.json",
     "chunk_boundary_qa": "output/chunk_boundary_qa.json",
     "chunk_strategy_comparison": "output/chunk_strategy_comparison.json",
     "translation_qa": "output/qa_report.json",
@@ -89,6 +90,7 @@ def build_experiment_metrics(
     chunk_boundary_qa: dict[str, Any] | None = None,
     chunk_strategy_comparison: dict[str, Any] | None = None,
     table_reconstruction: dict[str, Any] | None = None,
+    ocr_tasks: dict[str, Any] | None = None,
     repair_requests: dict[str, Any] | None = None,
     repair_results: dict[str, Any] | None = None,
     repair_validation: dict[str, Any] | None = None,
@@ -102,6 +104,7 @@ def build_experiment_metrics(
     structure_summary = _summary(structure_qa)
     table_reconstruction_summary = _summary(table_reconstruction)
     vision_summary = _summary(vision_route)
+    ocr_task_summary = _summary(ocr_tasks)
     chunk_boundary_summary = _summary(chunk_boundary_qa)
     chunk_strategy_summary = _summary(chunk_strategy_comparison)
     translation_summary = _summary(translation_qa)
@@ -118,6 +121,11 @@ def build_experiment_metrics(
     entity_type_counts = _counter_dict(structure_summary.get("entity_type_counts"))
     vision_action_counts = _counter_dict(vision_summary.get("action_counts"))
     vision_risk_counts = _counter_dict(vision_summary.get("risk_counts"))
+    ocr_task_scope_counts = _counter_dict(ocr_task_summary.get("scope_counts"))
+    ocr_task_status_counts = _counter_dict(ocr_task_summary.get("status_counts"))
+    ocr_task_priority_counts = _counter_dict(ocr_task_summary.get("priority_counts"))
+    ocr_task_engine_counts = _counter_dict(ocr_task_summary.get("recommended_engine_counts"))
+    ocr_task_block_type_counts = _counter_dict(ocr_task_summary.get("block_type_counts"))
     translation_issue_counts = _counter_dict(translation_summary.get("issue_counts"))
     translation_severity_counts = _counter_dict(translation_summary.get("severity_counts"))
     repair_action_counts = _counter_dict(repair_summary.get("action_counts"))
@@ -176,6 +184,12 @@ def build_experiment_metrics(
     routed_page_count = _as_int(vision_summary.get("routed_page_count"))
     vision_preview_page_count = _as_int(vision_summary.get("preview_page_count"))
     vision_region_crop_count = _as_int(vision_summary.get("preview_crop_count"))
+    ocr_task_count = _as_int(ocr_task_summary.get("task_count"))
+    ocr_region_task_count = _as_int(ocr_task_summary.get("region_task_count"))
+    ocr_page_task_count = _as_int(ocr_task_summary.get("page_task_count"))
+    ocr_ready_task_count = _as_int(ocr_task_summary.get("ready_task_count"))
+    ocr_blocked_task_count = _as_int(ocr_task_summary.get("blocked_by_missing_evidence_count"))
+    ocr_vlm_fallback_task_count = _as_int(ocr_task_summary.get("vlm_fallback_task_count"))
     ocr_candidate_page_count = (
         vision_action_counts.get("local_ocr", 0) + vision_action_counts.get("vlm_review", 0)
     )
@@ -304,6 +318,12 @@ def build_experiment_metrics(
             "routed_page_count": routed_page_count,
             "vision_preview_page_count": vision_preview_page_count,
             "vision_region_crop_count": vision_region_crop_count,
+            "ocr_task_count": ocr_task_count,
+            "ocr_region_task_count": ocr_region_task_count,
+            "ocr_page_task_count": ocr_page_task_count,
+            "ocr_ready_task_count": ocr_ready_task_count,
+            "ocr_blocked_task_count": ocr_blocked_task_count,
+            "ocr_vlm_fallback_task_count": ocr_vlm_fallback_task_count,
             "ocr_candidate_page_count": ocr_candidate_page_count,
             "translation_issue_count": translation_issue_count,
             "repair_item_count": repair_item_count,
@@ -418,6 +438,9 @@ def build_experiment_metrics(
                 vision_region_crop_count,
                 routed_page_count,
             ),
+            "ocr_task_per_routed_page": _rate(ocr_task_count, routed_page_count),
+            "ocr_region_task_rate": _rate(ocr_region_task_count, ocr_task_count),
+            "ocr_ready_task_rate": _rate(ocr_ready_task_count, ocr_task_count),
             "qa_issue_per_chunk": _rate(translation_issue_count, chunk_count),
             "translation_request_per_chunk": _rate(translation_request_count, chunk_count),
             "http_attempt_per_translation_request": _rate(
@@ -437,6 +460,11 @@ def build_experiment_metrics(
             "entity_type_counts": entity_type_counts,
             "vision_action_counts": vision_action_counts,
             "vision_risk_counts": vision_risk_counts,
+            "ocr_task_scope_counts": ocr_task_scope_counts,
+            "ocr_task_status_counts": ocr_task_status_counts,
+            "ocr_task_priority_counts": ocr_task_priority_counts,
+            "ocr_task_engine_counts": ocr_task_engine_counts,
+            "ocr_task_block_type_counts": ocr_task_block_type_counts,
             "translation_issue_counts": translation_issue_counts,
             "translation_severity_counts": translation_severity_counts,
             "repair_action_counts": repair_action_counts,
@@ -463,6 +491,7 @@ def write_experiment_metrics(
     chunk_boundary_qa: dict[str, Any] | None = None,
     chunk_strategy_comparison: dict[str, Any] | None = None,
     table_reconstruction: dict[str, Any] | None = None,
+    ocr_tasks: dict[str, Any] | None = None,
     repair_requests: dict[str, Any] | None = None,
     repair_results: dict[str, Any] | None = None,
     repair_validation: dict[str, Any] | None = None,
@@ -482,6 +511,7 @@ def write_experiment_metrics(
         chunk_boundary_qa=chunk_boundary_qa,
         chunk_strategy_comparison=chunk_strategy_comparison,
         table_reconstruction=table_reconstruction,
+        ocr_tasks=ocr_tasks,
         repair_requests=repair_requests,
         repair_results=repair_results,
         repair_validation=repair_validation,
