@@ -206,6 +206,17 @@ def build_experiment_metrics(
     footnote_count = _as_int(structure_summary.get("footnote_count"))
     footnote_orphan_count = _as_int(structure_summary.get("footnote_orphan_count"))
     relationship_warning_count = _as_int(structure_summary.get("relationship_warning_count"))
+    cross_page_relationship_count = _as_int(structure_summary.get("cross_page_relationship_count"))
+    caption_cross_page_linked_count = _as_int(structure_summary.get("caption_cross_page_linked_count"))
+    caption_cross_page_orphan_count = _as_int(structure_summary.get("caption_cross_page_orphan_count"))
+    footnote_cross_page_linked_count = _as_int(structure_summary.get("footnote_cross_page_linked_count"))
+    footnote_cross_page_orphan_count = _as_int(structure_summary.get("footnote_cross_page_orphan_count"))
+    cross_page_parent_gap_max = _as_int(structure_summary.get("cross_page_parent_gap_max"))
+    cross_page_parent_attempt_count = (
+        cross_page_relationship_count
+        + caption_cross_page_orphan_count
+        + footnote_cross_page_orphan_count
+    )
     entity_candidate_count = _as_int(structure_summary.get("entity_candidate_count"))
     entity_unique_count = _as_int(structure_summary.get("entity_unique_count"))
     translation_entity_candidate_count = _as_int(translation_summary.get("entity_candidate_count"))
@@ -388,6 +399,12 @@ def build_experiment_metrics(
             "caption_orphan_count": caption_orphan_count,
             "footnote_orphan_count": footnote_orphan_count,
             "relationship_warning_count": relationship_warning_count,
+            "cross_page_relationship_count": cross_page_relationship_count,
+            "caption_cross_page_linked_count": caption_cross_page_linked_count,
+            "caption_cross_page_orphan_count": caption_cross_page_orphan_count,
+            "footnote_cross_page_linked_count": footnote_cross_page_linked_count,
+            "footnote_cross_page_orphan_count": footnote_cross_page_orphan_count,
+            "cross_page_parent_gap_max": cross_page_parent_gap_max,
             "entity_candidate_count": entity_candidate_count,
             "entity_unique_count": entity_unique_count,
             "translation_entity_candidate_count": translation_entity_candidate_count,
@@ -514,6 +531,13 @@ def build_experiment_metrics(
         },
         "rates": {
             "relationship_warning_rate": _rate(relationship_warning_count, relationship_total),
+            "cross_page_relationship_rate": _rate(cross_page_relationship_count, relationship_total),
+            "cross_page_parent_success_rate": _rate(
+                cross_page_relationship_count,
+                cross_page_parent_attempt_count,
+            ),
+            "caption_cross_page_link_rate": _rate(caption_cross_page_linked_count, caption_count),
+            "footnote_cross_page_link_rate": _rate(footnote_cross_page_linked_count, footnote_count),
             "caption_orphan_rate": _rate(caption_orphan_count, caption_count),
             "footnote_orphan_rate": _rate(footnote_orphan_count, footnote_count),
             "table_reconstruction_ready_rate": table_reconstruction_ready_rate,

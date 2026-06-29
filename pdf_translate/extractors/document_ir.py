@@ -392,22 +392,80 @@ def _caption_kind(text: str) -> str | None:
     return None
 
 
-def _nearest_previous(block: BlockIR, candidates: list[BlockIR]) -> BlockIR | None:
-    previous = [item for item in candidates if item.page_no == block.page_no and item.order < block.order]
+def _nearest_previous(
+    block: BlockIR,
+    candidates: list[BlockIR],
+    *,
+    allow_cross_page: bool = False,
+    max_page_gap: int = 1,
+) -> BlockIR | None:
+    if allow_cross_page:
+        previous = [
+            item
+            for item in candidates
+            if item.page_no <= block.page_no
+            and 0 <= block.page_no - item.page_no <= max_page_gap
+            and (item.page_no < block.page_no or item.order < block.order)
+        ]
+    else:
+        previous = [item for item in candidates if item.page_no == block.page_no and item.order < block.order]
     if not previous:
         return None
-    return max(previous, key=lambda item: item.order)
+    return max(previous, key=lambda item: (item.page_no, item.order))
 
 
-def _nearest_following(block: BlockIR, candidates: list[BlockIR]) -> BlockIR | None:
-    following = [item for item in candidates if item.page_no == block.page_no and item.order > block.order]
+def _nearest_following(
+    block: BlockIR,
+    candidates: list[BlockIR],
+    *,
+    allow_cross_page: bool = False,
+    max_page_gap: int = 1,
+) -> BlockIR | None:
+    if allow_cross_page:
+        following = [
+            item
+            for item in candidates
+            if item.page_no >= block.page_no
+            and 0 <= item.page_no - block.page_no <= max_page_gap
+            and (item.page_no > block.page_no or item.order > block.order)
+        ]
+    else:
+        following = [item for item in candidates if item.page_no == block.page_no and item.order > block.order]
     if not following:
         return None
-    return min(following, key=lambda item: item.order)
+    return min(following, key=lambda item: (item.page_no, item.order))
+
+
+def _clear_parent_metadata(block: BlockIR) -> None:
+    block.parent_id = None
+    for key in (
+        "parent_relation",
+        "parent_warning",
+        "parent_page_no",
+        "parent_page_gap",
+        "cross_page_parent",
+        "cross_page_parent_attempted",
+        "table_footnote",
+    ):
+        block.meta.pop(key, None)
+
+
+def _attach_parent(block: BlockIR, parent: BlockIR, relation: str, *, cross_page_attempted: bool) -> None:
+    page_gap = abs(block.page_no - parent.page_no)
+    block.parent_id = parent.block_id
+    block.meta["parent_relation"] = relation
+    block.meta["parent_page_no"] = parent.page_no
+    block.meta["parent_page_gap"] = page_gap
+    block.meta["cross_page_parent"] = page_gap > 0
+    if cross_page_attempted:
+        block.meta["cross_page_parent_attempted"] = True
+    else:
+        block.meta.pop("cross_page_parent_attempted", None)
+    block.meta.pop("parent_warning", None)
 
 
 def assign_block_parents(blocks: list[BlockIR]) -> None:
-    """Attach captions and footnotes to nearby same-page structure parents."""
+    """Attach captions and footnotes to nearby structure parents, preferring same-page matches."""
     image_blocks = [block for block in blocks if block.type == "image"]
     table_blocks = [block for block in blocks if block.type == "table"]
     footnote_parent_types = {"paragraph", "table", "formula"}
@@ -415,37 +473,85 @@ def assign_block_parents(blocks: list[BlockIR]) -> None:
     for block in blocks:
         if block.type != "caption":
             continue
+        _clear_parent_metadata(block)
         kind = _caption_kind(block.text)
         parent: BlockIR | None = None
+        cross_page_attempted = False
         if kind == "table":
             parent = _nearest_following(block, table_blocks) or _nearest_previous(block, table_blocks)
+            if parent is None:
+                cross_page_attempted = True
+                parent = _nearest_following(
+                    block,
+                    table_blocks,
+                    allow_cross_page=True,
+                ) or _nearest_previous(
+                    block,
+                    table_blocks,
+                    allow_cross_page=True,
+                )
         elif kind == "figure":
             parent = _nearest_previous(block, image_blocks) or _nearest_following(block, image_blocks)
+            if parent is None:
+                cross_page_attempted = True
+                parent = _nearest_previous(
+                    block,
+                    image_blocks,
+                    allow_cross_page=True,
+                ) or _nearest_following(
+                    block,
+                    image_blocks,
+                    allow_cross_page=True,
+                )
 
         block.meta["caption_kind"] = kind or "unknown"
         if parent is None:
             block.meta["parent_warning"] = "orphan_caption"
+            if cross_page_attempted:
+                block.meta["cross_page_parent_attempted"] = True
             continue
-        block.parent_id = parent.block_id
-        block.meta["parent_relation"] = f"caption_for_{kind}"
-        block.meta.pop("parent_warning", None)
+        _attach_parent(
+            block,
+            parent,
+            f"caption_for_{kind}",
+            cross_page_attempted=cross_page_attempted,
+        )
 
     for block in blocks:
         if block.type != "footnote":
             continue
+        _clear_parent_metadata(block)
         candidates = [item for item in blocks if item.type in footnote_parent_types]
         parent = _nearest_previous(block, candidates)
+        cross_page_attempted = False
+        if parent is None:
+            cross_page_attempted = True
+            parent = _nearest_previous(
+                block,
+                candidates,
+                allow_cross_page=True,
+            )
         if parent is None:
             block.meta["parent_warning"] = "orphan_footnote"
+            if cross_page_attempted:
+                block.meta["cross_page_parent_attempted"] = True
             continue
-        block.parent_id = parent.block_id
         if parent.type == "table":
-            block.meta["parent_relation"] = "footnote_for_table"
+            _attach_parent(
+                block,
+                parent,
+                "footnote_for_table",
+                cross_page_attempted=cross_page_attempted,
+            )
             block.meta["table_footnote"] = True
         else:
-            block.meta["parent_relation"] = "footnote_for_block"
+            _attach_parent(
+                block,
+                parent,
+                "footnote_for_block",
+                cross_page_attempted=cross_page_attempted,
+            )
             block.meta.pop("table_footnote", None)
-        block.meta.pop("parent_warning", None)
 
 
 def classify_text_block(
@@ -590,8 +696,6 @@ def extract_document_ir(pdf_path: Path, *, doc_id: str | None = None) -> Documen
                 if block.type != "header_footer":
                     text_parts.append(text)
 
-            assign_block_parents(blocks)
-
             page_text = "\n\n".join(text_parts)
             image_count = len(page.get_images() or [])
             link_count = len(page.get_links() or [])
@@ -641,6 +745,9 @@ def extract_document_ir(pdf_path: Path, *, doc_id: str | None = None) -> Documen
                     meta=page_meta,
                 )
             )
+
+        all_blocks = [block for page in pages for block in page.blocks]
+        assign_block_parents(all_blocks)
 
         return DocumentIR(
             doc_id=doc_id or pdf_path.stem,

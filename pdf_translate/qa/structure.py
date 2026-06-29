@@ -61,6 +61,10 @@ def build_structure_qa(doc_ir: DocumentIR) -> dict[str, Any]:
                         "type": block.type,
                         "parent_id": block.parent_id,
                         "parent_relation": meta.get("parent_relation"),
+                        "parent_page_no": meta.get("parent_page_no"),
+                        "parent_page_gap": meta.get("parent_page_gap"),
+                        "cross_page_parent": bool(meta.get("cross_page_parent")),
+                        "cross_page_parent_attempted": bool(meta.get("cross_page_parent_attempted")),
                         "warning": meta.get("parent_warning"),
                         "caption_kind": meta.get("caption_kind") if block.type == "caption" else None,
                         "text_preview": block.text.strip().replace("\n", " ")[:160],
@@ -94,6 +98,31 @@ def build_structure_qa(doc_ir: DocumentIR) -> dict[str, Any]:
     caption_orphan_count = sum(1 for item in relationships if item["type"] == "caption" and not item.get("parent_id"))
     footnote_orphan_count = sum(1 for item in relationships if item["type"] == "footnote" and not item.get("parent_id"))
     table_footnote_count = sum(1 for item in relationships if item.get("parent_relation") == "footnote_for_table")
+    cross_page_relationship_count = sum(1 for item in relationships if item.get("cross_page_parent"))
+    caption_cross_page_linked_count = sum(
+        1 for item in relationships if item["type"] == "caption" and item.get("cross_page_parent")
+    )
+    footnote_cross_page_linked_count = sum(
+        1 for item in relationships if item["type"] == "footnote" and item.get("cross_page_parent")
+    )
+    caption_cross_page_orphan_count = sum(
+        1
+        for item in relationships
+        if item["type"] == "caption"
+        and not item.get("parent_id")
+        and item.get("cross_page_parent_attempted")
+    )
+    footnote_cross_page_orphan_count = sum(
+        1
+        for item in relationships
+        if item["type"] == "footnote"
+        and not item.get("parent_id")
+        and item.get("cross_page_parent_attempted")
+    )
+    cross_page_parent_gap_max = max(
+        [int(item.get("parent_page_gap") or 0) for item in relationships if item.get("cross_page_parent")],
+        default=0,
+    )
     unique_entity_count = len({item["text"].casefold() for item in entity_candidates})
     return {
         "schema_version": "structure-qa-v1",
@@ -112,6 +141,12 @@ def build_structure_qa(doc_ir: DocumentIR) -> dict[str, Any]:
             "footnote_linked_count": footnote_count - footnote_orphan_count,
             "footnote_orphan_count": footnote_orphan_count,
             "table_footnote_count": table_footnote_count,
+            "cross_page_relationship_count": cross_page_relationship_count,
+            "caption_cross_page_linked_count": caption_cross_page_linked_count,
+            "caption_cross_page_orphan_count": caption_cross_page_orphan_count,
+            "footnote_cross_page_linked_count": footnote_cross_page_linked_count,
+            "footnote_cross_page_orphan_count": footnote_cross_page_orphan_count,
+            "cross_page_parent_gap_max": cross_page_parent_gap_max,
             "table_continuation_count": len(table_continuations),
             "relationship_count": linked_relationship_count,
             "relationship_warning_count": len(relationships) - linked_relationship_count,

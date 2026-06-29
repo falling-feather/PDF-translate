@@ -207,6 +207,102 @@ class StructureIRTests(unittest.TestCase):
         warnings = [item for item in qa["relationships"] if item["warning"]]
         self.assertEqual(warnings[0]["block_id"], orphan_caption.block_id)
 
+    def test_assign_block_parents_links_cross_page_relationships(self) -> None:
+        image = BlockIR("p1-b0000", 1, "image", "", (40, 80, 560, 300), 0)
+        table = BlockIR(
+            "p1-b0001",
+            1,
+            "table",
+            "Metric Acc\nA 91.2",
+            (60, 330, 500, 430),
+            1,
+            meta={"table": {"row_count": 2, "column_count": 2}},
+        )
+        paragraph = BlockIR("p1-b0002", 1, "paragraph", "The result is stable.", (60, 460, 500, 520), 2)
+        figure_caption = BlockIR("p2-b0000", 2, "caption", "Fig. 1 Overview.", (60, 60, 500, 90), 0)
+        table_caption = BlockIR("p2-b0001", 2, "caption", "Table 1: Results.", (60, 100, 500, 130), 1)
+        footnote = BlockIR("p2-b0002", 2, "footnote", "1 Additional implementation note.", (60, 140, 500, 165), 2)
+        far_caption = BlockIR("p3-b0000", 3, "caption", "Table 9: Far appendix.", (60, 60, 500, 90), 0)
+        blocks = [image, table, paragraph, figure_caption, table_caption, footnote, far_caption]
+
+        assign_block_parents(blocks)
+
+        self.assertEqual(figure_caption.parent_id, image.block_id)
+        self.assertTrue(figure_caption.meta["cross_page_parent"])
+        self.assertTrue(figure_caption.meta["cross_page_parent_attempted"])
+        self.assertEqual(figure_caption.meta["parent_page_no"], 1)
+        self.assertEqual(figure_caption.meta["parent_page_gap"], 1)
+        self.assertEqual(table_caption.parent_id, table.block_id)
+        self.assertEqual(table_caption.meta["parent_relation"], "caption_for_table")
+        self.assertTrue(table_caption.meta["cross_page_parent"])
+        self.assertEqual(footnote.parent_id, paragraph.block_id)
+        self.assertEqual(footnote.meta["parent_relation"], "footnote_for_block")
+        self.assertTrue(footnote.meta["cross_page_parent"])
+        self.assertIsNone(far_caption.parent_id)
+        self.assertEqual(far_caption.meta["parent_warning"], "orphan_caption")
+        self.assertTrue(far_caption.meta["cross_page_parent_attempted"])
+
+        qa = build_structure_qa(
+            DocumentIR(
+                doc_id="cross-page-relationships",
+                source_pdf="sample.pdf",
+                pages=[
+                    PageIR(1, 600, 800, "page 1", [image, table, paragraph]),
+                    PageIR(2, 600, 800, "page 2", [figure_caption, table_caption, footnote]),
+                    PageIR(3, 600, 800, "page 3", [far_caption]),
+                ],
+            )
+        )
+        self.assertEqual(qa["summary"]["caption_count"], 3)
+        self.assertEqual(qa["summary"]["caption_linked_count"], 2)
+        self.assertEqual(qa["summary"]["caption_orphan_count"], 1)
+        self.assertEqual(qa["summary"]["cross_page_relationship_count"], 3)
+        self.assertEqual(qa["summary"]["caption_cross_page_linked_count"], 2)
+        self.assertEqual(qa["summary"]["caption_cross_page_orphan_count"], 1)
+        self.assertEqual(qa["summary"]["footnote_cross_page_linked_count"], 1)
+        self.assertEqual(qa["summary"]["footnote_cross_page_orphan_count"], 0)
+        self.assertEqual(qa["summary"]["cross_page_parent_gap_max"], 1)
+        relationships = {item["block_id"]: item for item in qa["relationships"]}
+        self.assertTrue(relationships[figure_caption.block_id]["cross_page_parent"])
+        self.assertEqual(relationships[figure_caption.block_id]["parent_page_no"], 1)
+        self.assertTrue(relationships[far_caption.block_id]["cross_page_parent_attempted"])
+
+    def test_structure_chunks_protect_cross_page_parent_relation(self) -> None:
+        table = BlockIR(
+            "p1-b0000",
+            1,
+            "table",
+            "Metric Acc\nA 91.2",
+            (60, 640, 500, 740),
+            0,
+            meta={"table": {"row_count": 2, "column_count": 2}},
+        )
+        caption = BlockIR("p2-b0000", 2, "caption", "Table 1: Results.", (60, 60, 500, 90), 0)
+        assign_block_parents([table, caption])
+        relation_id = "p1-b0000->p2-b0000:caption_for_table"
+        doc_ir = DocumentIR(
+            doc_id="cross-page-structure-chunk",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(1, 600, 800, table.text, [table]),
+                PageIR(2, 600, 800, caption.text, [caption]),
+            ],
+        )
+
+        chunks = build_structure_chunks(
+            doc_ir,
+            target_chars=1000,
+            max_chars=2000,
+            max_pages_per_chunk=1,
+        )
+
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].block_ids, ["p1-b0000", "p2-b0000"])
+        self.assertEqual(chunks[0].structural_relation_ids, [relation_id])
+        self.assertIn(f"protected_structural_relation:{relation_id}", chunks[0].warnings)
+        boundary_qa = build_chunk_boundary_qa(chunks, build_structure_qa(doc_ir), pipeline_variant="structure")
+        self.assertEqual(boundary_qa["summary"]["structural_relation_protected_count"], 1)
+
     def test_structure_chunks_preserve_block_provenance(self) -> None:
         table_meta = {
             "rows": [["Metric", "Acc", "F1"], ["A", "91", "88"]],
@@ -1839,6 +1935,12 @@ class StructureIRTests(unittest.TestCase):
                     "footnote_count": 1,
                     "footnote_orphan_count": 0,
                     "relationship_warning_count": 1,
+                    "cross_page_relationship_count": 1,
+                    "caption_cross_page_linked_count": 1,
+                    "caption_cross_page_orphan_count": 0,
+                    "footnote_cross_page_linked_count": 0,
+                    "footnote_cross_page_orphan_count": 0,
+                    "cross_page_parent_gap_max": 1,
                     "entity_candidate_count": 6,
                     "entity_unique_count": 5,
                     "entity_type_counts": {"model_or_dataset": 2, "person": 1},
@@ -2189,6 +2291,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["budget_overflow_chunk_count"], 1)
         self.assertEqual(metrics["quality"]["budget_overflow_char_total"], 160)
         self.assertEqual(metrics["quality"]["structural_relation_protected_count"], 2)
+        self.assertEqual(metrics["quality"]["cross_page_relationship_count"], 1)
+        self.assertEqual(metrics["quality"]["caption_cross_page_linked_count"], 1)
+        self.assertEqual(metrics["quality"]["cross_page_parent_gap_max"], 1)
         self.assertEqual(metrics["quality"]["baseline_split_boundary_count"], 2)
         self.assertEqual(metrics["quality"]["active_split_reduction_vs_baseline"], 1)
         self.assertEqual(metrics["quality"]["reconstructable_table_count"], 1)
@@ -2217,6 +2322,10 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["protected_boundary_rate"], 0.5)
         self.assertEqual(metrics["rates"]["budget_overflow_chunk_rate"], 0.5)
         self.assertEqual(metrics["rates"]["active_split_reduction_rate_vs_baseline"], 0.5)
+        self.assertEqual(metrics["rates"]["cross_page_relationship_rate"], 0.3333)
+        self.assertEqual(metrics["rates"]["cross_page_parent_success_rate"], 1.0)
+        self.assertEqual(metrics["rates"]["caption_cross_page_link_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["footnote_cross_page_link_rate"], 0.0)
         self.assertEqual(metrics["breakdowns"]["budget_split_reason_counts"]["target_chars"], 1)
         self.assertEqual(metrics["breakdowns"]["budget_pressure_counts"]["over_max"], 1)
         self.assertEqual(metrics["rates"]["entity_missing_rate"], 0.25)
