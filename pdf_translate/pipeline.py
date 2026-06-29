@@ -15,7 +15,7 @@ from pdf_translate.chunking import TextChunk, build_text_chunks
 from pdf_translate.config import AppConfig
 from pdf_translate.costing import backend_model_name, load_cost_profile, write_cost_estimate
 from pdf_translate.exporters.bilingual_html import write_bilingual_html
-from pdf_translate.extractors.document_ir import extract_document_ir
+from pdf_translate.extractors.document_ir import document_ir_from_json_dict, extract_document_ir
 from pdf_translate.memory_store import MemoryStore
 from pdf_translate.pdf_structure import SplitManifest, split_main_and_references
 from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
@@ -47,6 +47,7 @@ from pdf_translate.translators.factory import build_translator
 from pdf_translate.translators.http_retry import capture_http_retry_events
 from pdf_translate.translators.openai_compatible import SYSTEM_PROMPT_VERSION, prompt_fingerprint
 from pdf_translate.vision.ocr_executor import execute_ocr_tasks
+from pdf_translate.vision.ocr_promotion import write_ocr_candidate_promotion
 from pdf_translate.vision.ocr_tasks import write_ocr_task_manifest
 from pdf_translate.vision.ocr_writeback import (
     load_ocr_results,
@@ -326,9 +327,20 @@ def run_translate(
             out_dir / "ocr_candidate_qa.json",
             out_dir / "ocr_candidate_qa.md",
         )
+    with run_metrics.stage("ocr_candidate_promotion"):
+        ocr_candidate_promotion = write_ocr_candidate_promotion(
+            document_ir_ocr,
+            ocr_candidate_qa,
+            out_dir / "ocr_candidate_promotion.json",
+            out_dir / "ocr_candidate_promotion.md",
+            out_dir / "document_ir_promoted.json",
+        )
+        promoted_document_ir = document_ir_from_json_dict(
+            json.loads((out_dir / "document_ir_promoted.json").read_text(encoding="utf-8"))
+        )
     with run_metrics.stage("structure_chunking"):
         structure_chunks = build_structure_chunks(
-            doc_ir,
+            promoted_document_ir,
             max_pages_per_chunk=pages_per_chunk,
         )
         write_structure_manifest(structure_chunks, out_dir / "structure_chunks_manifest.json")
@@ -512,6 +524,7 @@ def run_translate(
             ocr_results=ocr_results,
             ocr_writeback=ocr_writeback,
             ocr_candidate_qa=ocr_candidate_qa,
+            ocr_candidate_promotion=ocr_candidate_promotion,
             repair_requests=repair_requests,
             repair_results=repair_results,
             repair_validation=repair_validation,

@@ -14,7 +14,9 @@ DEFAULT_EVIDENCE_FILES = {
     "ocr_results": "output/ocr_results.json",
     "ocr_writeback": "output/ocr_writeback.json",
     "ocr_candidate_qa": "output/ocr_candidate_qa.json",
+    "ocr_candidate_promotion": "output/ocr_candidate_promotion.json",
     "document_ir_ocr": "output/document_ir_ocr.json",
+    "document_ir_promoted": "output/document_ir_promoted.json",
     "chunk_boundary_qa": "output/chunk_boundary_qa.json",
     "chunk_strategy_comparison": "output/chunk_strategy_comparison.json",
     "translation_qa": "output/qa_report.json",
@@ -98,6 +100,7 @@ def build_experiment_metrics(
     ocr_results: dict[str, Any] | None = None,
     ocr_writeback: dict[str, Any] | None = None,
     ocr_candidate_qa: dict[str, Any] | None = None,
+    ocr_candidate_promotion: dict[str, Any] | None = None,
     repair_requests: dict[str, Any] | None = None,
     repair_results: dict[str, Any] | None = None,
     repair_validation: dict[str, Any] | None = None,
@@ -117,6 +120,7 @@ def build_experiment_metrics(
     ocr_execution_summary = _summary(ocr_execution if isinstance(ocr_execution, dict) else None)
     ocr_writeback_summary = _summary(ocr_writeback)
     ocr_candidate_summary = _summary(ocr_candidate_qa)
+    ocr_candidate_promotion_summary = _summary(ocr_candidate_promotion)
     chunk_boundary_summary = _summary(chunk_boundary_qa)
     chunk_strategy_summary = _summary(chunk_strategy_comparison)
     translation_summary = _summary(translation_qa)
@@ -146,6 +150,10 @@ def build_experiment_metrics(
     ocr_writeback_rejection_counts = _counter_dict(ocr_writeback_summary.get("rejection_reason_counts"))
     ocr_candidate_status_counts = _counter_dict(ocr_candidate_summary.get("status_counts"))
     ocr_candidate_issue_counts = _counter_dict(ocr_candidate_summary.get("issue_counts"))
+    ocr_candidate_promotion_status_counts = _counter_dict(
+        ocr_candidate_promotion_summary.get("candidate_status_counts")
+    )
+    ocr_candidate_promotion_skip_counts = _counter_dict(ocr_candidate_promotion_summary.get("skip_reason_counts"))
     translation_issue_counts = _counter_dict(translation_summary.get("issue_counts"))
     translation_severity_counts = _counter_dict(translation_summary.get("severity_counts"))
     repair_action_counts = _counter_dict(repair_summary.get("action_counts"))
@@ -230,6 +238,14 @@ def build_experiment_metrics(
     ocr_candidate_needs_review_count = _as_int(ocr_candidate_summary.get("needs_review_candidate_count"))
     ocr_candidate_blocked_count = _as_int(ocr_candidate_summary.get("blocked_candidate_count"))
     ocr_candidate_text_char_count = _as_int(ocr_candidate_summary.get("candidate_text_char_count"))
+    ocr_candidate_promotion_eligible_count = _as_int(ocr_candidate_promotion_summary.get("eligible_candidate_count"))
+    ocr_candidate_promoted_count = _as_int(ocr_candidate_promotion_summary.get("promoted_candidate_count"))
+    ocr_candidate_promotion_skipped_count = _as_int(ocr_candidate_promotion_summary.get("skipped_candidate_count"))
+    ocr_candidate_block_promotion_count = _as_int(ocr_candidate_promotion_summary.get("block_promotion_count"))
+    ocr_candidate_page_promotion_count = _as_int(ocr_candidate_promotion_summary.get("page_promotion_count"))
+    ocr_candidate_promoted_text_char_count = _as_int(
+        ocr_candidate_promotion_summary.get("promoted_text_char_count")
+    )
     ocr_candidate_page_count = (
         vision_action_counts.get("local_ocr", 0) + vision_action_counts.get("vlm_review", 0)
     )
@@ -384,6 +400,12 @@ def build_experiment_metrics(
             "ocr_candidate_needs_review_count": ocr_candidate_needs_review_count,
             "ocr_candidate_blocked_count": ocr_candidate_blocked_count,
             "ocr_candidate_text_char_count": ocr_candidate_text_char_count,
+            "ocr_candidate_promotion_eligible_count": ocr_candidate_promotion_eligible_count,
+            "ocr_candidate_promoted_count": ocr_candidate_promoted_count,
+            "ocr_candidate_promotion_skipped_count": ocr_candidate_promotion_skipped_count,
+            "ocr_candidate_block_promotion_count": ocr_candidate_block_promotion_count,
+            "ocr_candidate_page_promotion_count": ocr_candidate_page_promotion_count,
+            "ocr_candidate_promoted_text_char_count": ocr_candidate_promoted_text_char_count,
             "ocr_candidate_page_count": ocr_candidate_page_count,
             "translation_issue_count": translation_issue_count,
             "repair_item_count": repair_item_count,
@@ -517,6 +539,11 @@ def build_experiment_metrics(
             ),
             "ocr_candidate_promotable_rate": _rate(ocr_candidate_promotable_count, ocr_candidate_qa_count),
             "ocr_candidate_blocked_rate": _rate(ocr_candidate_blocked_count, ocr_candidate_qa_count),
+            "ocr_candidate_promotion_rate": _rate(ocr_candidate_promoted_count, ocr_candidate_qa_count),
+            "ocr_candidate_eligible_promotion_rate": _rate(
+                ocr_candidate_promoted_count,
+                ocr_candidate_promotion_eligible_count,
+            ),
             "qa_issue_per_chunk": _rate(translation_issue_count, chunk_count),
             "translation_request_per_chunk": _rate(translation_request_count, chunk_count),
             "http_attempt_per_translation_request": _rate(
@@ -549,6 +576,8 @@ def build_experiment_metrics(
             "ocr_writeback_rejection_counts": ocr_writeback_rejection_counts,
             "ocr_candidate_status_counts": ocr_candidate_status_counts,
             "ocr_candidate_issue_counts": ocr_candidate_issue_counts,
+            "ocr_candidate_promotion_status_counts": ocr_candidate_promotion_status_counts,
+            "ocr_candidate_promotion_skip_counts": ocr_candidate_promotion_skip_counts,
             "translation_issue_counts": translation_issue_counts,
             "translation_severity_counts": translation_severity_counts,
             "repair_action_counts": repair_action_counts,
@@ -579,6 +608,7 @@ def write_experiment_metrics(
     ocr_results: dict[str, Any] | None = None,
     ocr_writeback: dict[str, Any] | None = None,
     ocr_candidate_qa: dict[str, Any] | None = None,
+    ocr_candidate_promotion: dict[str, Any] | None = None,
     repair_requests: dict[str, Any] | None = None,
     repair_results: dict[str, Any] | None = None,
     repair_validation: dict[str, Any] | None = None,
@@ -602,6 +632,7 @@ def write_experiment_metrics(
         ocr_results=ocr_results,
         ocr_writeback=ocr_writeback,
         ocr_candidate_qa=ocr_candidate_qa,
+        ocr_candidate_promotion=ocr_candidate_promotion,
         repair_requests=repair_requests,
         repair_results=repair_results,
         repair_validation=repair_validation,

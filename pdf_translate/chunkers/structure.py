@@ -34,8 +34,11 @@ class StructureChunk(TextChunk):
 
 
 def _block_for_translation(block: BlockIR) -> bool:
-    if block.type in ("header_footer", "image"):
+    if block.type == "header_footer":
         return False
+    if block.type == "image":
+        promotions = block.meta.get("ocr_promotions") if isinstance(block.meta, dict) else None
+        return bool(block.text.strip() and isinstance(promotions, list) and promotions)
     return bool(block.text.strip())
 
 

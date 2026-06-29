@@ -5,7 +5,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import fitz
 
@@ -128,6 +128,98 @@ class DocumentIR:
     def write_json(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(self.to_json_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _float_value(value: Any) -> float:
+    if isinstance(value, bool):
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _int_value(value: Any) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return 0
+    return 0
+
+
+def _bbox_tuple(value: Any) -> tuple[float, float, float, float]:
+    if not isinstance(value, (list, tuple)):
+        return (0.0, 0.0, 0.0, 0.0)
+    items = list(value)[:4]
+    items.extend([0.0] * (4 - len(items)))
+    return tuple(_float_value(item) for item in items)  # type: ignore[return-value]
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item)]
+
+
+def document_ir_from_json_dict(payload: dict[str, Any]) -> DocumentIR:
+    """Rehydrate DocumentIR from a JSON artifact while preserving unknown meta fields."""
+    pages: list[PageIR] = []
+    raw_pages = payload.get("pages") if isinstance(payload.get("pages"), list) else []
+    for raw_page in raw_pages:
+        if not isinstance(raw_page, dict):
+            continue
+        blocks: list[BlockIR] = []
+        raw_blocks = raw_page.get("blocks") if isinstance(raw_page.get("blocks"), list) else []
+        for raw_block in raw_blocks:
+            if not isinstance(raw_block, dict):
+                continue
+            meta = raw_block.get("meta") if isinstance(raw_block.get("meta"), dict) else {}
+            parent_id_raw = raw_block.get("parent_id")
+            block_type = str(raw_block.get("type") or "paragraph")
+            blocks.append(
+                BlockIR(
+                    block_id=str(raw_block.get("block_id") or ""),
+                    page_no=_int_value(raw_block.get("page_no") or raw_page.get("page_no")),
+                    type=cast(BlockType, block_type),
+                    text=str(raw_block.get("text") or ""),
+                    bbox=_bbox_tuple(raw_block.get("bbox")),
+                    order=_int_value(raw_block.get("order")),
+                    parent_id=str(parent_id_raw) if parent_id_raw is not None else None,
+                    locked_tokens=_string_list(raw_block.get("locked_tokens")),
+                    meta=dict(meta),
+                )
+            )
+        page_meta = raw_page.get("meta") if isinstance(raw_page.get("meta"), dict) else {}
+        pages.append(
+            PageIR(
+                page_no=_int_value(raw_page.get("page_no")),
+                width=_float_value(raw_page.get("width")),
+                height=_float_value(raw_page.get("height")),
+                text=str(raw_page.get("text") or ""),
+                blocks=blocks,
+                link_count=_int_value(raw_page.get("link_count")),
+                image_count=_int_value(raw_page.get("image_count")),
+                warnings=_string_list(raw_page.get("warnings")),
+                meta=dict(page_meta),
+            )
+        )
+    return DocumentIR(
+        doc_id=str(payload.get("doc_id") or ""),
+        source_pdf=str(payload.get("source_pdf") or ""),
+        pages=pages,
+        schema_version=str(payload.get("schema_version") or SCHEMA_VERSION),
+    )
 
 
 def _span_text(line: dict[str, Any]) -> str:
