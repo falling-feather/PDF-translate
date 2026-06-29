@@ -46,6 +46,7 @@ from pdf_translate.translators.factory import build_translator
 from pdf_translate.translators.http_retry import capture_http_retry_events
 from pdf_translate.translators.openai_compatible import SYSTEM_PROMPT_VERSION, prompt_fingerprint
 from pdf_translate.vision.ocr_tasks import write_ocr_task_manifest
+from pdf_translate.vision.ocr_writeback import write_ocr_writeback
 from pdf_translate.vision.routing import write_vision_route
 
 
@@ -267,6 +268,13 @@ def run_translate(
         vision_route = write_vision_route(doc_ir, out_dir / "vision_route.json")
     with run_metrics.stage("ocr_tasks"):
         ocr_tasks = write_ocr_task_manifest(doc_ir, vision_route, out_dir / "ocr_tasks.json")
+    with run_metrics.stage("ocr_writeback"):
+        ocr_writeback = write_ocr_writeback(
+            doc_ir,
+            ocr_tasks,
+            out_dir / "ocr_writeback.json",
+            out_dir / "document_ir_ocr.json",
+        )
     with run_metrics.stage("structure_chunking"):
         structure_chunks = build_structure_chunks(
             doc_ir,
@@ -450,6 +458,7 @@ def run_translate(
             chunk_strategy_comparison=chunk_strategy_comparison,
             table_reconstruction=table_reconstruction,
             ocr_tasks=ocr_tasks,
+            ocr_writeback=ocr_writeback,
             repair_requests=repair_requests,
             repair_results=repair_results,
             repair_validation=repair_validation,

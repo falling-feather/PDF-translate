@@ -43,6 +43,7 @@ from pdf_translate.translators.base import TranslationRequest
 from pdf_translate.translators.http_retry import call_with_http_retry, capture_http_retry_events
 from pdf_translate.translators.openai_compatible import _build_user_message
 from pdf_translate.vision.ocr_tasks import build_ocr_task_manifest, write_ocr_task_manifest
+from pdf_translate.vision.ocr_writeback import build_ocr_writeback, write_ocr_writeback
 from pdf_translate.vision.routing import build_vision_route, write_vision_route
 from pdf_translate.zip_bundle import iter_bundle_files, map_bundle_arcname
 
@@ -980,6 +981,143 @@ class StructureIRTests(unittest.TestCase):
             if parent.is_dir() and not any(parent.iterdir()):
                 shutil.rmtree(parent)
 
+    def test_ocr_writeback_appends_candidates_to_augmented_ir(self) -> None:
+        doc_ir = DocumentIR(
+            doc_id="ocr-writeback-sample",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text="Fig. 1",
+                    image_count=1,
+                    warnings=["low_text_image_heavy_page"],
+                    meta={
+                        "text_char_count": 6,
+                        "text_area_ratio": 0.01,
+                        "image_area_ratio": 0.52,
+                    },
+                    blocks=[
+                        BlockIR("p1-b0000", 1, "image", "", (40, 80, 560, 520), 0),
+                        BlockIR(
+                            "p1-b0001",
+                            1,
+                            "table",
+                            "Metric Acc\nA 91.2",
+                            (60, 540, 500, 620),
+                            1,
+                            meta={"table": {"row_count": 2, "column_count": 2}},
+                        ),
+                    ],
+                )
+            ],
+        )
+        route = build_vision_route(doc_ir)
+        route["pages"][0]["evidence"].update(
+            {
+                "page_preview_status": "rendered",
+                "page_preview_path": "vision_pages/page-0001.png",
+                "region_crop_count": 2,
+                "region_crops": [
+                    {
+                        "block_id": "p1-b0000",
+                        "block_type": "image",
+                        "crop_path": "vision_crops/page-0001/p1-b0000-image.png",
+                        "bbox": [40, 80, 560, 520],
+                        "crop_width": 720,
+                        "crop_height": 610,
+                    },
+                    {
+                        "block_id": "p1-b0001",
+                        "block_type": "table",
+                        "crop_path": "vision_crops/page-0001/p1-b0001-table.png",
+                        "bbox": [60, 540, 500, 620],
+                        "crop_width": 720,
+                        "crop_height": 140,
+                    },
+                ],
+            }
+        )
+        manifest = build_ocr_task_manifest(doc_ir, route)
+        image_task_id = manifest["tasks"][0]["task_id"]
+        table_task_id = manifest["tasks"][1]["task_id"]
+        results = {
+            "schema_version": "ocr-results-v1",
+            "results": [
+                {
+                    "task_id": image_task_id,
+                    "status": "succeeded",
+                    "text": "Figure overview text",
+                    "confidence": 0.91,
+                    "engine": "unit_ocr",
+                    "language": "en",
+                    "bbox": [42, 82, 558, 518],
+                    "warnings": [],
+                },
+                {
+                    "task_id": table_task_id,
+                    "status": "succeeded",
+                    "text": "",
+                    "confidence": 0.99,
+                    "engine": "unit_table_ocr",
+                    "language": "en",
+                    "bbox": [60, 540, 500, 620],
+                    "warnings": ["empty_region"],
+                },
+                {
+                    "task_id": "missing-task",
+                    "status": "succeeded",
+                    "text": "ghost",
+                    "confidence": 0.9,
+                    "engine": "unit_ocr",
+                    "language": "en",
+                    "bbox": [],
+                    "warnings": [],
+                },
+            ],
+        }
+
+        built = build_ocr_writeback(doc_ir, manifest, results)
+        self.assertEqual(built["summary"]["accepted_result_count"], 1)
+        self.assertIn("augmented_document_ir", built)
+
+        root = Path.cwd() / "test-output" / "ocr-writeback"
+        if root.exists():
+            shutil.rmtree(root)
+        try:
+            report_path = root / "output" / "ocr_writeback.json"
+            augmented_path = root / "output" / "document_ir_ocr.json"
+            report = write_ocr_writeback(doc_ir, manifest, report_path, augmented_path, results)
+
+            self.assertTrue(report_path.is_file())
+            self.assertTrue(augmented_path.is_file())
+            self.assertEqual(report["schema_version"], "ocr-writeback-v1")
+            self.assertEqual(report["summary"]["task_count"], 2)
+            self.assertEqual(report["summary"]["result_count"], 3)
+            self.assertEqual(report["summary"]["accepted_result_count"], 1)
+            self.assertEqual(report["summary"]["rejected_result_count"], 2)
+            self.assertEqual(report["summary"]["pending_task_count"], 0)
+            self.assertEqual(report["summary"]["unknown_task_result_count"], 1)
+            self.assertEqual(report["summary"]["block_writeback_count"], 1)
+            self.assertEqual(report["summary"]["page_writeback_count"], 0)
+            self.assertEqual(report["summary"]["rejection_reason_counts"]["empty_text"], 1)
+            self.assertEqual(report["summary"]["rejection_reason_counts"]["unknown_task"], 1)
+            self.assertEqual(report["artifacts"]["augmented_document_ir"], "output/document_ir_ocr.json")
+
+            augmented = json.loads(augmented_path.read_text(encoding="utf-8"))
+            candidates = augmented["pages"][0]["blocks"][0]["meta"]["ocr_candidates"]
+            self.assertEqual(candidates[0]["task_id"], image_task_id)
+            self.assertEqual(candidates[0]["text"], "Figure overview text")
+            self.assertEqual(candidates[0]["confidence"], 0.91)
+            self.assertNotIn("ocr_candidates", doc_ir.pages[0].blocks[0].meta)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
     def test_http_retry_capture_records_retry_attempts(self) -> None:
         request = httpx.Request("POST", "https://example.test/chat")
         response = httpx.Response(503, request=request)
@@ -1296,6 +1434,23 @@ class StructureIRTests(unittest.TestCase):
                     "block_type_counts": {"image": 2, "table": 1, "formula": 1},
                 },
             },
+            ocr_writeback={
+                "schema_version": "ocr-writeback-v1",
+                "summary": {
+                    "task_count": 4,
+                    "result_count": 3,
+                    "accepted_result_count": 2,
+                    "rejected_result_count": 1,
+                    "pending_task_count": 1,
+                    "missing_result_task_count": 1,
+                    "unknown_task_result_count": 0,
+                    "block_writeback_count": 2,
+                    "page_writeback_count": 0,
+                    "result_status_counts": {"succeeded": 3},
+                    "accepted_engine_counts": {"local_ocr": 1, "local_table_ocr": 1},
+                    "rejection_reason_counts": {"low_confidence": 1},
+                },
+            },
             repair_requests={
                 "schema_version": "repair-requests-v1",
                 "summary": {
@@ -1484,17 +1639,31 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_ready_task_count"], 3)
         self.assertEqual(metrics["quality"]["ocr_blocked_task_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_vlm_fallback_task_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_result_count"], 3)
+        self.assertEqual(metrics["quality"]["ocr_accepted_result_count"], 2)
+        self.assertEqual(metrics["quality"]["ocr_rejected_result_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_pending_task_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_missing_result_task_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_block_writeback_count"], 2)
+        self.assertEqual(metrics["quality"]["ocr_page_writeback_count"], 0)
         self.assertEqual(metrics["rates"]["vision_preview_page_rate"], 0.5)
         self.assertEqual(metrics["rates"]["vision_region_crop_per_routed_page"], 1.5)
         self.assertEqual(metrics["rates"]["ocr_task_per_routed_page"], 2.0)
         self.assertEqual(metrics["rates"]["ocr_region_task_rate"], 0.75)
         self.assertEqual(metrics["rates"]["ocr_ready_task_rate"], 0.75)
+        self.assertEqual(metrics["rates"]["ocr_task_result_coverage_rate"], 0.75)
+        self.assertEqual(metrics["rates"]["ocr_result_acceptance_rate"], 0.6667)
+        self.assertEqual(metrics["rates"]["ocr_writeback_apply_rate"], 0.5)
         self.assertEqual(metrics["breakdowns"]["vision_action_counts"]["local_ocr"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_task_engine_counts"]["local_table_ocr"], 1)
+        self.assertEqual(metrics["breakdowns"]["ocr_writeback_engine_counts"]["local_table_ocr"], 1)
+        self.assertEqual(metrics["breakdowns"]["ocr_writeback_rejection_counts"]["low_confidence"], 1)
         self.assertEqual(metrics["breakdowns"]["stage_elapsed_ms"]["document_ir"], 50)
         self.assertEqual(metrics["breakdowns"]["translator_counts"]["echo"], 2)
         self.assertEqual(metrics["evidence_files"]["translation_qa"], "output/qa_report.json")
         self.assertEqual(metrics["evidence_files"]["ocr_tasks"], "output/ocr_tasks.json")
+        self.assertEqual(metrics["evidence_files"]["ocr_writeback"], "output/ocr_writeback.json")
+        self.assertEqual(metrics["evidence_files"]["document_ir_ocr"], "output/document_ir_ocr.json")
         self.assertEqual(metrics["evidence_files"]["repair_requests"], "output/repair_requests.json")
         self.assertEqual(metrics["evidence_files"]["repair_results"], "output/repair_results.json")
         self.assertEqual(metrics["evidence_files"]["repair_validation"], "output/repair_validation.json")
@@ -1847,6 +2016,8 @@ class StructureIRTests(unittest.TestCase):
             chunk_strategy_comparison_path = work_dir / "output" / "chunk_strategy_comparison.json"
             vision_path = work_dir / "output" / "vision_route.json"
             ocr_tasks_path = work_dir / "output" / "ocr_tasks.json"
+            ocr_writeback_path = work_dir / "output" / "ocr_writeback.json"
+            document_ir_ocr_path = work_dir / "output" / "document_ir_ocr.json"
             translation_qa_path = work_dir / "output" / "qa_report.json"
             translation_qa_md_path = work_dir / "output" / "qa_report.md"
             repair_plan_path = work_dir / "output" / "repair_plan.json"
@@ -1875,6 +2046,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(chunk_strategy_comparison_path.is_file())
             self.assertTrue(vision_path.is_file())
             self.assertTrue(ocr_tasks_path.is_file())
+            self.assertTrue(ocr_writeback_path.is_file())
+            self.assertTrue(document_ir_ocr_path.is_file())
             self.assertTrue(translation_qa_path.is_file())
             self.assertTrue(translation_qa_md_path.is_file())
             self.assertTrue(repair_plan_path.is_file())
@@ -1903,6 +2076,8 @@ class StructureIRTests(unittest.TestCase):
             chunk_strategy_comparison = json.loads(chunk_strategy_comparison_path.read_text(encoding="utf-8"))
             vision = json.loads(vision_path.read_text(encoding="utf-8"))
             ocr_tasks = json.loads(ocr_tasks_path.read_text(encoding="utf-8"))
+            ocr_writeback = json.loads(ocr_writeback_path.read_text(encoding="utf-8"))
+            document_ir_ocr = json.loads(document_ir_ocr_path.read_text(encoding="utf-8"))
             translation_qa = json.loads(translation_qa_path.read_text(encoding="utf-8"))
             repair_plan = json.loads(repair_plan_path.read_text(encoding="utf-8"))
             repair_requests = json.loads(repair_requests_path.read_text(encoding="utf-8"))
@@ -1957,6 +2132,9 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("action_counts", vision["summary"])
             self.assertEqual(ocr_tasks["schema_version"], "ocr-task-manifest-v1")
             self.assertIn("task_count", ocr_tasks["summary"])
+            self.assertEqual(ocr_writeback["schema_version"], "ocr-writeback-v1")
+            self.assertIn("pending_task_count", ocr_writeback["summary"])
+            self.assertEqual(document_ir_ocr["schema_version"], "document-ir-v1")
             self.assertEqual(translation_qa["schema_version"], "translation-qa-v1")
             self.assertIn("issue_counts", translation_qa["summary"])
             self.assertIn("entity_candidate_count", translation_qa["summary"])
@@ -2000,6 +2178,9 @@ class StructureIRTests(unittest.TestCase):
             )
             self.assertIn("ocr_task_count", metrics["quality"])
             self.assertEqual(metrics["evidence_files"]["ocr_tasks"], "output/ocr_tasks.json")
+            self.assertIn("ocr_pending_task_count", metrics["quality"])
+            self.assertEqual(metrics["evidence_files"]["ocr_writeback"], "output/ocr_writeback.json")
+            self.assertEqual(metrics["evidence_files"]["document_ir_ocr"], "output/document_ir_ocr.json")
             self.assertIn("entity_missing_rate", metrics["rates"])
             self.assertIn("split_boundary_rate", metrics["rates"])
             self.assertEqual(metrics["evidence_files"]["chunk_boundary_qa"], "output/chunk_boundary_qa.json")
@@ -2055,6 +2236,8 @@ class StructureIRTests(unittest.TestCase):
                 "chunk_strategy_comparison.json",
                 "vision_route.json",
                 "ocr_tasks.json",
+                "ocr_writeback.json",
+                "document_ir_ocr.json",
                 "qa_report.json",
                 "qa_report.md",
                 "repair_plan.json",
@@ -2093,6 +2276,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/vision_pages/page-0001.png", rels)
             self.assertIn("output/vision_crops/page-0001/p1-b0000-image.png", rels)
             self.assertIn("output/ocr_tasks.json", rels)
+            self.assertIn("output/ocr_writeback.json", rels)
+            self.assertIn("output/document_ir_ocr.json", rels)
             self.assertIn("output/repaired_full.md", rels)
             self.assertIn("output/bilingual.html", rels)
             self.assertIn("output/qa_report.md", rels)
@@ -2122,6 +2307,8 @@ class StructureIRTests(unittest.TestCase):
                 "质量/图像OCR区域裁剪/page-0001/p1-b0000-image.png",
             )
             self.assertEqual(map_bundle_arcname("output/ocr_tasks.json"), "质量/OCR调度任务.json")
+            self.assertEqual(map_bundle_arcname("output/ocr_writeback.json"), "质量/OCR结果回写.json")
+            self.assertEqual(map_bundle_arcname("output/document_ir_ocr.json"), "设置/OCR增强文档结构IR.json")
             self.assertEqual(map_bundle_arcname("output/structure_qa.json"), "质量/结构QA.json")
             self.assertEqual(map_bundle_arcname("output/table_reconstruction.json"), "质量/表格重建证据.json")
             self.assertEqual(map_bundle_arcname("output/chunk_boundary_qa.json"), "质量/分段边界QA.json")
