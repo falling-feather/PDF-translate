@@ -46,7 +46,11 @@ from pdf_translate.translators.factory import build_translator
 from pdf_translate.translators.http_retry import capture_http_retry_events
 from pdf_translate.translators.openai_compatible import SYSTEM_PROMPT_VERSION, prompt_fingerprint
 from pdf_translate.vision.ocr_tasks import write_ocr_task_manifest
-from pdf_translate.vision.ocr_writeback import load_ocr_results, write_ocr_results_payload, write_ocr_writeback
+from pdf_translate.vision.ocr_writeback import (
+    load_ocr_results,
+    write_ocr_results_payload,
+    write_ocr_writeback,
+)
 from pdf_translate.vision.routing import write_vision_route
 
 
@@ -476,6 +480,7 @@ def run_translate(
             chunk_strategy_comparison=chunk_strategy_comparison,
             table_reconstruction=table_reconstruction,
             ocr_tasks=ocr_tasks,
+            ocr_results=ocr_results,
             ocr_writeback=ocr_writeback,
             repair_requests=repair_requests,
             repair_results=repair_results,

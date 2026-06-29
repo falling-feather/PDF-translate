@@ -43,7 +43,13 @@ from pdf_translate.translators.base import TranslationRequest
 from pdf_translate.translators.http_retry import call_with_http_retry, capture_http_retry_events
 from pdf_translate.translators.openai_compatible import _build_user_message
 from pdf_translate.vision.ocr_tasks import build_ocr_task_manifest, write_ocr_task_manifest
-from pdf_translate.vision.ocr_writeback import build_ocr_writeback, write_ocr_writeback
+from pdf_translate.vision.ocr_writeback import (
+    build_ocr_results_payload,
+    build_ocr_writeback,
+    load_ocr_results,
+    write_ocr_results_payload,
+    write_ocr_writeback,
+)
 from pdf_translate.vision.routing import build_vision_route, write_vision_route
 from pdf_translate.zip_bundle import iter_bundle_files, map_bundle_arcname
 
@@ -1078,7 +1084,15 @@ class StructureIRTests(unittest.TestCase):
             ],
         }
 
-        built = build_ocr_writeback(doc_ir, manifest, results)
+        normalized_results = build_ocr_results_payload(manifest, results, source_path="manual.json")
+        self.assertEqual(normalized_results["schema_version"], "ocr-results-v1")
+        self.assertEqual(normalized_results["source_path"], "manual.json")
+        self.assertEqual(normalized_results["summary"]["result_count"], 3)
+        self.assertEqual(normalized_results["summary"]["invalid_result_count"], 0)
+        self.assertEqual(normalized_results["summary"]["status_counts"]["succeeded"], 3)
+        self.assertEqual(normalized_results["summary"]["engine_counts"]["unit_ocr"], 2)
+
+        built = build_ocr_writeback(doc_ir, manifest, normalized_results)
         self.assertEqual(built["summary"]["accepted_result_count"], 1)
         self.assertIn("augmented_document_ir", built)
 
@@ -1088,10 +1102,21 @@ class StructureIRTests(unittest.TestCase):
         try:
             report_path = root / "output" / "ocr_writeback.json"
             augmented_path = root / "output" / "document_ir_ocr.json"
-            report = write_ocr_writeback(doc_ir, manifest, report_path, augmented_path, results)
+            results_path = root / "output" / "ocr_results.json"
+            stored_results = write_ocr_results_payload(
+                manifest,
+                results_path,
+                results,
+                source_path="manual.json",
+            )
+            loaded_results = load_ocr_results(results_path)
+            report = write_ocr_writeback(doc_ir, manifest, report_path, augmented_path, loaded_results)
 
+            self.assertTrue(results_path.is_file())
             self.assertTrue(report_path.is_file())
             self.assertTrue(augmented_path.is_file())
+            self.assertEqual(stored_results["summary"]["result_count"], 3)
+            self.assertEqual(loaded_results["summary"]["engine_counts"]["unit_table_ocr"], 1)
             self.assertEqual(report["schema_version"], "ocr-writeback-v1")
             self.assertEqual(report["summary"]["task_count"], 2)
             self.assertEqual(report["summary"]["result_count"], 3)
@@ -1434,6 +1459,15 @@ class StructureIRTests(unittest.TestCase):
                     "block_type_counts": {"image": 2, "table": 1, "formula": 1},
                 },
             },
+            ocr_results={
+                "schema_version": "ocr-results-v1",
+                "summary": {
+                    "result_count": 3,
+                    "invalid_result_count": 1,
+                    "status_counts": {"succeeded": 3},
+                    "engine_counts": {"local_ocr": 1, "local_table_ocr": 1, "vlm_fallback": 1},
+                },
+            },
             ocr_writeback={
                 "schema_version": "ocr-writeback-v1",
                 "summary": {
@@ -1639,6 +1673,8 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_ready_task_count"], 3)
         self.assertEqual(metrics["quality"]["ocr_blocked_task_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_vlm_fallback_task_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_result_payload_count"], 3)
+        self.assertEqual(metrics["quality"]["ocr_invalid_result_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_result_count"], 3)
         self.assertEqual(metrics["quality"]["ocr_accepted_result_count"], 2)
         self.assertEqual(metrics["quality"]["ocr_rejected_result_count"], 1)
@@ -1651,17 +1687,20 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["ocr_task_per_routed_page"], 2.0)
         self.assertEqual(metrics["rates"]["ocr_region_task_rate"], 0.75)
         self.assertEqual(metrics["rates"]["ocr_ready_task_rate"], 0.75)
+        self.assertEqual(metrics["rates"]["ocr_result_payload_valid_rate"], 0.75)
         self.assertEqual(metrics["rates"]["ocr_task_result_coverage_rate"], 0.75)
         self.assertEqual(metrics["rates"]["ocr_result_acceptance_rate"], 0.6667)
         self.assertEqual(metrics["rates"]["ocr_writeback_apply_rate"], 0.5)
         self.assertEqual(metrics["breakdowns"]["vision_action_counts"]["local_ocr"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_task_engine_counts"]["local_table_ocr"], 1)
+        self.assertEqual(metrics["breakdowns"]["ocr_result_payload_engine_counts"]["vlm_fallback"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_writeback_engine_counts"]["local_table_ocr"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_writeback_rejection_counts"]["low_confidence"], 1)
         self.assertEqual(metrics["breakdowns"]["stage_elapsed_ms"]["document_ir"], 50)
         self.assertEqual(metrics["breakdowns"]["translator_counts"]["echo"], 2)
         self.assertEqual(metrics["evidence_files"]["translation_qa"], "output/qa_report.json")
         self.assertEqual(metrics["evidence_files"]["ocr_tasks"], "output/ocr_tasks.json")
+        self.assertEqual(metrics["evidence_files"]["ocr_results"], "output/ocr_results.json")
         self.assertEqual(metrics["evidence_files"]["ocr_writeback"], "output/ocr_writeback.json")
         self.assertEqual(metrics["evidence_files"]["document_ir_ocr"], "output/document_ir_ocr.json")
         self.assertEqual(metrics["evidence_files"]["repair_requests"], "output/repair_requests.json")
@@ -1996,6 +2035,29 @@ class StructureIRTests(unittest.TestCase):
             work_dir = root / "work"
             init_workdir(work_dir)
             run_split(pdf_path, work_dir)
+            external_ocr_results_path = root / "external_ocr_results.json"
+            external_ocr_results_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "ocr-results-v1",
+                        "source": "unit_external_file",
+                        "results": [
+                            {
+                                "task_id": "unknown-task",
+                                "status": "succeeded",
+                                "text": "External OCR result",
+                                "confidence": 0.93,
+                                "engine": "unit_external_ocr",
+                                "language": "en",
+                                "bbox": [],
+                                "warnings": [],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
             cfg = AppConfig.from_env()
             out = run_translate(
                 work_dir,
@@ -2005,6 +2067,7 @@ class StructureIRTests(unittest.TestCase):
                 overlap_pages=0,
                 max_chunks=1,
                 chunk_strategy="structure",
+                ocr_results_path=external_ocr_results_path,
             )
 
             self.assertTrue(out.is_file())
@@ -2016,6 +2079,7 @@ class StructureIRTests(unittest.TestCase):
             chunk_strategy_comparison_path = work_dir / "output" / "chunk_strategy_comparison.json"
             vision_path = work_dir / "output" / "vision_route.json"
             ocr_tasks_path = work_dir / "output" / "ocr_tasks.json"
+            ocr_results_path = work_dir / "output" / "ocr_results.json"
             ocr_writeback_path = work_dir / "output" / "ocr_writeback.json"
             document_ir_ocr_path = work_dir / "output" / "document_ir_ocr.json"
             translation_qa_path = work_dir / "output" / "qa_report.json"
@@ -2046,6 +2110,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(chunk_strategy_comparison_path.is_file())
             self.assertTrue(vision_path.is_file())
             self.assertTrue(ocr_tasks_path.is_file())
+            self.assertTrue(ocr_results_path.is_file())
             self.assertTrue(ocr_writeback_path.is_file())
             self.assertTrue(document_ir_ocr_path.is_file())
             self.assertTrue(translation_qa_path.is_file())
@@ -2076,6 +2141,7 @@ class StructureIRTests(unittest.TestCase):
             chunk_strategy_comparison = json.loads(chunk_strategy_comparison_path.read_text(encoding="utf-8"))
             vision = json.loads(vision_path.read_text(encoding="utf-8"))
             ocr_tasks = json.loads(ocr_tasks_path.read_text(encoding="utf-8"))
+            ocr_results = json.loads(ocr_results_path.read_text(encoding="utf-8"))
             ocr_writeback = json.loads(ocr_writeback_path.read_text(encoding="utf-8"))
             document_ir_ocr = json.loads(document_ir_ocr_path.read_text(encoding="utf-8"))
             translation_qa = json.loads(translation_qa_path.read_text(encoding="utf-8"))
@@ -2132,7 +2198,14 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("action_counts", vision["summary"])
             self.assertEqual(ocr_tasks["schema_version"], "ocr-task-manifest-v1")
             self.assertIn("task_count", ocr_tasks["summary"])
+            self.assertEqual(ocr_results["schema_version"], "ocr-results-v1")
+            self.assertEqual(ocr_results["source"], "unit_external_file")
+            self.assertEqual(ocr_results["summary"]["result_count"], 1)
+            self.assertEqual(ocr_results["summary"]["engine_counts"]["unit_external_ocr"], 1)
+            self.assertEqual(ocr_results["source_path"], str(external_ocr_results_path))
             self.assertEqual(ocr_writeback["schema_version"], "ocr-writeback-v1")
+            self.assertEqual(ocr_writeback["summary"]["result_count"], 1)
+            self.assertEqual(ocr_writeback["summary"]["unknown_task_result_count"], 1)
             self.assertIn("pending_task_count", ocr_writeback["summary"])
             self.assertEqual(document_ir_ocr["schema_version"], "document-ir-v1")
             self.assertEqual(translation_qa["schema_version"], "translation-qa-v1")
@@ -2178,6 +2251,9 @@ class StructureIRTests(unittest.TestCase):
             )
             self.assertIn("ocr_task_count", metrics["quality"])
             self.assertEqual(metrics["evidence_files"]["ocr_tasks"], "output/ocr_tasks.json")
+            self.assertEqual(metrics["quality"]["ocr_result_payload_count"], 1)
+            self.assertEqual(metrics["breakdowns"]["ocr_result_payload_engine_counts"]["unit_external_ocr"], 1)
+            self.assertEqual(metrics["evidence_files"]["ocr_results"], "output/ocr_results.json")
             self.assertIn("ocr_pending_task_count", metrics["quality"])
             self.assertEqual(metrics["evidence_files"]["ocr_writeback"], "output/ocr_writeback.json")
             self.assertEqual(metrics["evidence_files"]["document_ir_ocr"], "output/document_ir_ocr.json")
@@ -2236,6 +2312,7 @@ class StructureIRTests(unittest.TestCase):
                 "chunk_strategy_comparison.json",
                 "vision_route.json",
                 "ocr_tasks.json",
+                "ocr_results.json",
                 "ocr_writeback.json",
                 "document_ir_ocr.json",
                 "qa_report.json",
@@ -2276,6 +2353,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/vision_pages/page-0001.png", rels)
             self.assertIn("output/vision_crops/page-0001/p1-b0000-image.png", rels)
             self.assertIn("output/ocr_tasks.json", rels)
+            self.assertIn("output/ocr_results.json", rels)
             self.assertIn("output/ocr_writeback.json", rels)
             self.assertIn("output/document_ir_ocr.json", rels)
             self.assertIn("output/repaired_full.md", rels)
@@ -2307,6 +2385,7 @@ class StructureIRTests(unittest.TestCase):
                 "质量/图像OCR区域裁剪/page-0001/p1-b0000-image.png",
             )
             self.assertEqual(map_bundle_arcname("output/ocr_tasks.json"), "质量/OCR调度任务.json")
+            self.assertEqual(map_bundle_arcname("output/ocr_results.json"), "质量/OCR识别结果.json")
             self.assertEqual(map_bundle_arcname("output/ocr_writeback.json"), "质量/OCR结果回写.json")
             self.assertEqual(map_bundle_arcname("output/document_ir_ocr.json"), "设置/OCR增强文档结构IR.json")
             self.assertEqual(map_bundle_arcname("output/structure_qa.json"), "质量/结构QA.json")

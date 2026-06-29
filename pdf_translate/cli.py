@@ -70,6 +70,13 @@ def cmd_translate(
         "--chunk-strategy",
         help="page | structure；structure 使用 DocumentIR 结构块分段（实验性）",
     ),
+    ocr_results: Path | None = typer.Option(
+        None,
+        "--ocr-results",
+        exists=True,
+        dir_okay=False,
+        help="OCR results JSON (ocr-results-v1) for output/document_ir_ocr.json.",
+    ),
 ) -> None:
     cfg = AppConfig.from_env()
     out = pipeline.run_translate(
@@ -83,6 +90,7 @@ def cmd_translate(
         chunk_strategy=chunk_strategy,  # type: ignore[arg-type]
         execute_repair_requests=execute_repairs,
         max_repair_requests=max_repair_requests,
+        ocr_results_path=ocr_results,
     )
     typer.echo(f"已写入合并稿: {out}")
 
@@ -120,6 +128,13 @@ def cmd_run(
         "--chunk-strategy",
         help="page | structure；structure 使用 DocumentIR 结构块分段（实验性）",
     ),
+    ocr_results: Path | None = typer.Option(
+        None,
+        "--ocr-results",
+        exists=True,
+        dir_okay=False,
+        help="OCR results JSON (ocr-results-v1) for output/document_ir_ocr.json.",
+    ),
 ) -> None:
     """init → split → translate 一键执行。"""
     pipeline.init_workdir(work_dir)
@@ -136,6 +151,7 @@ def cmd_run(
         chunk_strategy=chunk_strategy,  # type: ignore[arg-type]
         execute_repair_requests=execute_repairs,
         max_repair_requests=max_repair_requests,
+        ocr_results_path=ocr_results,
     )
     typer.echo(f"完成: {out}")
 

@@ -187,6 +187,9 @@ pdf-translate split ./article.pdf ./my-paper --tail-fallback
 # 3) 按块翻译（默认后端由 PDF_TRANSLATE_BACKEND 决定）
 pdf-translate translate ./my-paper --backend echo
 
+# 可选：回灌外部/本地 OCR 执行器生成的 ocr-results-v1 JSON
+pdf-translate translate ./my-paper --backend echo --ocr-results ./ocr-results.json
+
 # 4) 导出正文中各页超链接索引 CSV（便于后续 HTML/对照）
 pdf-translate links ./my-paper
 ```
