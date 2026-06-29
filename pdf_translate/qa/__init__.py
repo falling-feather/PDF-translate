@@ -7,6 +7,7 @@ from pdf_translate.qa.chunk_boundary import (
     write_chunk_strategy_comparison,
 )
 from pdf_translate.qa.metrics import build_experiment_metrics, write_experiment_metrics
+from pdf_translate.qa.ocr_candidates import build_ocr_candidate_qa, write_ocr_candidate_qa
 from pdf_translate.qa.repair import (
     build_repair_plan,
     build_repair_requests,
@@ -33,6 +34,8 @@ __all__ = [
     "write_chunk_strategy_comparison",
     "build_experiment_metrics",
     "write_experiment_metrics",
+    "build_ocr_candidate_qa",
+    "write_ocr_candidate_qa",
     "build_repair_plan",
     "build_repair_requests",
     "build_repair_results",

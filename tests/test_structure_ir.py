@@ -28,6 +28,7 @@ from pdf_translate.extractors.document_ir import (
 from pdf_translate.memory_store import MemoryStore
 from pdf_translate.qa.chunk_boundary import build_chunk_boundary_qa, build_chunk_strategy_comparison
 from pdf_translate.qa.metrics import build_experiment_metrics
+from pdf_translate.qa.ocr_candidates import build_ocr_candidate_qa, write_ocr_candidate_qa
 from pdf_translate.qa.repair import (
     build_repair_plan,
     build_repair_requests,
@@ -1170,6 +1171,11 @@ class StructureIRTests(unittest.TestCase):
         built = build_ocr_writeback(doc_ir, manifest, normalized_results)
         self.assertEqual(built["summary"]["accepted_result_count"], 1)
         self.assertIn("augmented_document_ir", built)
+        candidate_qa = build_ocr_candidate_qa(built["augmented_document_ir"], built)
+        self.assertEqual(candidate_qa["schema_version"], "ocr-candidate-qa-v1")
+        self.assertEqual(candidate_qa["summary"]["candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["promotable_candidate_count"], 1)
+        self.assertEqual(candidate_qa["candidates"][0]["status"], "candidate")
 
         root = Path.cwd() / "test-output" / "ocr-writeback"
         if root.exists():
@@ -1177,6 +1183,8 @@ class StructureIRTests(unittest.TestCase):
         try:
             report_path = root / "output" / "ocr_writeback.json"
             augmented_path = root / "output" / "document_ir_ocr.json"
+            candidate_qa_path = root / "output" / "ocr_candidate_qa.json"
+            candidate_qa_md_path = root / "output" / "ocr_candidate_qa.md"
             results_path = root / "output" / "ocr_results.json"
             stored_results = write_ocr_results_payload(
                 manifest,
@@ -1206,6 +1214,16 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(report["artifacts"]["augmented_document_ir"], "output/document_ir_ocr.json")
 
             augmented = json.loads(augmented_path.read_text(encoding="utf-8"))
+            candidate_qa_report = write_ocr_candidate_qa(
+                augmented,
+                report,
+                candidate_qa_path,
+                candidate_qa_md_path,
+            )
+            self.assertTrue(candidate_qa_path.is_file())
+            self.assertTrue(candidate_qa_md_path.is_file())
+            self.assertEqual(candidate_qa_report["summary"]["candidate_count"], 1)
+            self.assertIn("OCR Candidate QA", candidate_qa_md_path.read_text(encoding="utf-8"))
             candidates = augmented["pages"][0]["blocks"][0]["meta"]["ocr_candidates"]
             self.assertEqual(candidates[0]["task_id"], image_task_id)
             self.assertEqual(candidates[0]["text"], "Figure overview text")
@@ -1571,6 +1589,18 @@ class StructureIRTests(unittest.TestCase):
                     "rejection_reason_counts": {"low_confidence": 1},
                 },
             },
+            ocr_candidate_qa={
+                "schema_version": "ocr-candidate-qa-v1",
+                "summary": {
+                    "candidate_count": 3,
+                    "promotable_candidate_count": 1,
+                    "needs_review_candidate_count": 1,
+                    "blocked_candidate_count": 1,
+                    "candidate_text_char_count": 180,
+                    "status_counts": {"candidate": 1, "needs_review": 1, "blocked": 1},
+                    "issue_counts": {"needs_table_structure_review": 1, "too_short": 1},
+                },
+            },
             repair_requests={
                 "schema_version": "repair-requests-v1",
                 "summary": {
@@ -1773,6 +1803,11 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_missing_result_task_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_block_writeback_count"], 2)
         self.assertEqual(metrics["quality"]["ocr_page_writeback_count"], 0)
+        self.assertEqual(metrics["quality"]["ocr_candidate_qa_count"], 3)
+        self.assertEqual(metrics["quality"]["ocr_candidate_promotable_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_candidate_needs_review_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_candidate_blocked_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_candidate_text_char_count"], 180)
         self.assertEqual(metrics["rates"]["vision_preview_page_rate"], 0.5)
         self.assertEqual(metrics["rates"]["vision_region_crop_per_routed_page"], 1.5)
         self.assertEqual(metrics["rates"]["ocr_task_per_routed_page"], 2.0)
@@ -1783,18 +1818,23 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["ocr_task_result_coverage_rate"], 0.75)
         self.assertEqual(metrics["rates"]["ocr_result_acceptance_rate"], 0.6667)
         self.assertEqual(metrics["rates"]["ocr_writeback_apply_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["ocr_candidate_promotable_rate"], 0.3333)
+        self.assertEqual(metrics["rates"]["ocr_candidate_blocked_rate"], 0.3333)
         self.assertEqual(metrics["breakdowns"]["vision_action_counts"]["local_ocr"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_task_engine_counts"]["local_table_ocr"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_result_payload_engine_counts"]["vlm_fallback"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_execution_status_counts"]["failed"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_writeback_engine_counts"]["local_table_ocr"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_writeback_rejection_counts"]["low_confidence"], 1)
+        self.assertEqual(metrics["breakdowns"]["ocr_candidate_status_counts"]["needs_review"], 1)
+        self.assertEqual(metrics["breakdowns"]["ocr_candidate_issue_counts"]["too_short"], 1)
         self.assertEqual(metrics["breakdowns"]["stage_elapsed_ms"]["document_ir"], 50)
         self.assertEqual(metrics["breakdowns"]["translator_counts"]["echo"], 2)
         self.assertEqual(metrics["evidence_files"]["translation_qa"], "output/qa_report.json")
         self.assertEqual(metrics["evidence_files"]["ocr_tasks"], "output/ocr_tasks.json")
         self.assertEqual(metrics["evidence_files"]["ocr_results"], "output/ocr_results.json")
         self.assertEqual(metrics["evidence_files"]["ocr_writeback"], "output/ocr_writeback.json")
+        self.assertEqual(metrics["evidence_files"]["ocr_candidate_qa"], "output/ocr_candidate_qa.json")
         self.assertEqual(metrics["evidence_files"]["document_ir_ocr"], "output/document_ir_ocr.json")
         self.assertEqual(metrics["evidence_files"]["repair_requests"], "output/repair_requests.json")
         self.assertEqual(metrics["evidence_files"]["repair_results"], "output/repair_results.json")
@@ -2174,6 +2214,8 @@ class StructureIRTests(unittest.TestCase):
             ocr_tasks_path = work_dir / "output" / "ocr_tasks.json"
             ocr_results_path = work_dir / "output" / "ocr_results.json"
             ocr_writeback_path = work_dir / "output" / "ocr_writeback.json"
+            ocr_candidate_qa_path = work_dir / "output" / "ocr_candidate_qa.json"
+            ocr_candidate_qa_md_path = work_dir / "output" / "ocr_candidate_qa.md"
             document_ir_ocr_path = work_dir / "output" / "document_ir_ocr.json"
             translation_qa_path = work_dir / "output" / "qa_report.json"
             translation_qa_md_path = work_dir / "output" / "qa_report.md"
@@ -2205,6 +2247,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(ocr_tasks_path.is_file())
             self.assertTrue(ocr_results_path.is_file())
             self.assertTrue(ocr_writeback_path.is_file())
+            self.assertTrue(ocr_candidate_qa_path.is_file())
+            self.assertTrue(ocr_candidate_qa_md_path.is_file())
             self.assertTrue(document_ir_ocr_path.is_file())
             self.assertTrue(translation_qa_path.is_file())
             self.assertTrue(translation_qa_md_path.is_file())
@@ -2236,6 +2280,7 @@ class StructureIRTests(unittest.TestCase):
             ocr_tasks = json.loads(ocr_tasks_path.read_text(encoding="utf-8"))
             ocr_results = json.loads(ocr_results_path.read_text(encoding="utf-8"))
             ocr_writeback = json.loads(ocr_writeback_path.read_text(encoding="utf-8"))
+            ocr_candidate_qa = json.loads(ocr_candidate_qa_path.read_text(encoding="utf-8"))
             document_ir_ocr = json.loads(document_ir_ocr_path.read_text(encoding="utf-8"))
             translation_qa = json.loads(translation_qa_path.read_text(encoding="utf-8"))
             repair_plan = json.loads(repair_plan_path.read_text(encoding="utf-8"))
@@ -2300,6 +2345,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(ocr_writeback["summary"]["result_count"], 1)
             self.assertEqual(ocr_writeback["summary"]["unknown_task_result_count"], 1)
             self.assertIn("pending_task_count", ocr_writeback["summary"])
+            self.assertEqual(ocr_candidate_qa["schema_version"], "ocr-candidate-qa-v1")
+            self.assertIn("candidate_count", ocr_candidate_qa["summary"])
             self.assertEqual(document_ir_ocr["schema_version"], "document-ir-v1")
             self.assertEqual(translation_qa["schema_version"], "translation-qa-v1")
             self.assertIn("issue_counts", translation_qa["summary"])
@@ -2349,6 +2396,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(metrics["evidence_files"]["ocr_results"], "output/ocr_results.json")
             self.assertIn("ocr_pending_task_count", metrics["quality"])
             self.assertEqual(metrics["evidence_files"]["ocr_writeback"], "output/ocr_writeback.json")
+            self.assertIn("ocr_candidate_qa_count", metrics["quality"])
+            self.assertEqual(metrics["evidence_files"]["ocr_candidate_qa"], "output/ocr_candidate_qa.json")
             self.assertEqual(metrics["evidence_files"]["document_ir_ocr"], "output/document_ir_ocr.json")
             self.assertIn("entity_missing_rate", metrics["rates"])
             self.assertIn("split_boundary_rate", metrics["rates"])
@@ -2407,6 +2456,8 @@ class StructureIRTests(unittest.TestCase):
                 "ocr_tasks.json",
                 "ocr_results.json",
                 "ocr_writeback.json",
+                "ocr_candidate_qa.json",
+                "ocr_candidate_qa.md",
                 "document_ir_ocr.json",
                 "qa_report.json",
                 "qa_report.md",
@@ -2448,6 +2499,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/ocr_tasks.json", rels)
             self.assertIn("output/ocr_results.json", rels)
             self.assertIn("output/ocr_writeback.json", rels)
+            self.assertIn("output/ocr_candidate_qa.json", rels)
+            self.assertIn("output/ocr_candidate_qa.md", rels)
             self.assertIn("output/document_ir_ocr.json", rels)
             self.assertIn("output/repaired_full.md", rels)
             self.assertIn("output/bilingual.html", rels)
@@ -2480,6 +2533,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(map_bundle_arcname("output/ocr_tasks.json"), "质量/OCR调度任务.json")
             self.assertEqual(map_bundle_arcname("output/ocr_results.json"), "质量/OCR识别结果.json")
             self.assertEqual(map_bundle_arcname("output/ocr_writeback.json"), "质量/OCR结果回写.json")
+            self.assertEqual(map_bundle_arcname("output/ocr_candidate_qa.json"), "质量/OCR候选文本QA.json")
+            self.assertEqual(map_bundle_arcname("output/ocr_candidate_qa.md"), "质量/OCR候选文本QA.md")
             self.assertEqual(map_bundle_arcname("output/document_ir_ocr.json"), "设置/OCR增强文档结构IR.json")
             self.assertEqual(map_bundle_arcname("output/structure_qa.json"), "质量/结构QA.json")
             self.assertEqual(map_bundle_arcname("output/table_reconstruction.json"), "质量/表格重建证据.json")

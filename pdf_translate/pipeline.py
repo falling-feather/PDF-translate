@@ -22,6 +22,7 @@ from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
 from pdf_translate.pipeline_merge import merge_chunks_markdown
 from pdf_translate.qa.chunk_boundary import write_chunk_boundary_qa, write_chunk_strategy_comparison
 from pdf_translate.qa.metrics import write_experiment_metrics
+from pdf_translate.qa.ocr_candidates import write_ocr_candidate_qa
 from pdf_translate.qa.repair import (
     write_repair_plan,
     write_repair_requests,
@@ -317,6 +318,14 @@ def run_translate(
             out_dir / "document_ir_ocr.json",
             ocr_results,
         )
+    with run_metrics.stage("ocr_candidate_qa"):
+        document_ir_ocr = json.loads((out_dir / "document_ir_ocr.json").read_text(encoding="utf-8"))
+        ocr_candidate_qa = write_ocr_candidate_qa(
+            document_ir_ocr,
+            ocr_writeback,
+            out_dir / "ocr_candidate_qa.json",
+            out_dir / "ocr_candidate_qa.md",
+        )
     with run_metrics.stage("structure_chunking"):
         structure_chunks = build_structure_chunks(
             doc_ir,
@@ -502,6 +511,7 @@ def run_translate(
             ocr_tasks=ocr_tasks,
             ocr_results=ocr_results,
             ocr_writeback=ocr_writeback,
+            ocr_candidate_qa=ocr_candidate_qa,
             repair_requests=repair_requests,
             repair_results=repair_results,
             repair_validation=repair_validation,
