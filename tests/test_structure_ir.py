@@ -10,6 +10,7 @@ import fitz
 from pdf_translate.chunking import TextChunk
 from pdf_translate.chunkers.structure import build_structure_chunks
 from pdf_translate.config import AppConfig
+from pdf_translate.costing import estimate_cost, normalize_cost_profile
 from pdf_translate.exporters.bilingual_html import write_bilingual_html
 from pdf_translate.extractors.document_ir import (
     BlockIR,
@@ -874,6 +875,54 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["breakdowns"]["translator_counts"]["echo"], 1)
         self.assertEqual(metrics["breakdowns"]["skip_reasons"]["resume_completed"], 1)
 
+    def test_cost_estimate_uses_configured_backend_profile(self) -> None:
+        run_metrics = build_run_metrics(
+            [
+                {
+                    "event_type": "chunk_translation",
+                    "phase": "translation",
+                    "chunk_id": "c0000",
+                    "translator": "openai_compatible",
+                    "elapsed_ms": 40,
+                    "source_char_count": 800,
+                    "context_char_count": 200,
+                    "request_char_count": 1000,
+                    "translated_char_count": 600,
+                    "estimated_request_token_count": 250,
+                    "estimated_translated_token_count": 150,
+                }
+            ],
+            doc_id="cost-run",
+            pipeline_variant="structure",
+            backend="deepseek",
+            translate_mode="serial",
+            chunk_count=1,
+            total_elapsed_ms=100,
+        )
+        profile = normalize_cost_profile(
+            {
+                "currency": "USD",
+                "backends": {
+                    "deepseek": {
+                        "input_per_1m_tokens": 1.0,
+                        "output_per_1m_tokens": 2.0,
+                        "per_request": 0.01,
+                    }
+                },
+            },
+            source="test",
+        )
+        estimate = estimate_cost(run_metrics, profile, backend="deepseek", model="deepseek-chat")
+        self.assertEqual(estimate["schema_version"], "cost-estimate-v1")
+        self.assertTrue(estimate["configured"])
+        self.assertEqual(estimate["profile_key"], "deepseek")
+        self.assertEqual(estimate["currency"], "USD")
+        self.assertEqual(estimate["usage"]["estimated_request_token_count"], 250)
+        self.assertEqual(estimate["summary"]["input_token_cost"], 0.00025)
+        self.assertEqual(estimate["summary"]["output_token_cost"], 0.0003)
+        self.assertEqual(estimate["summary"]["request_cost"], 0.01)
+        self.assertEqual(estimate["summary"]["estimated_total_cost"], 0.01055)
+
     def test_experiment_metrics_aggregates_quality_evidence(self) -> None:
         metrics = build_experiment_metrics(
             {
@@ -1054,6 +1103,21 @@ class StructureIRTests(unittest.TestCase):
                     "skip_reasons": {"resume_completed": 1},
                 },
             },
+            cost_estimate={
+                "schema_version": "cost-estimate-v1",
+                "configured": True,
+                "currency": "USD",
+                "profile_key": "deepseek",
+                "summary": {
+                    "input_token_cost": 0.00025,
+                    "output_token_cost": 0.0003,
+                    "input_char_cost": 0,
+                    "output_char_cost": 0,
+                    "request_cost": 0.01,
+                    "estimated_total_cost": 0.01055,
+                },
+                "warnings": [],
+            },
             pipeline_variant="structure",
         )
         self.assertEqual(metrics["schema_version"], "experiment-metrics-v1")
@@ -1063,8 +1127,13 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["performance"]["translation_request_count"], 2)
         self.assertEqual(metrics["performance"]["source_char_count"], 800)
         self.assertEqual(metrics["performance"]["estimated_total_token_count"], 400)
+        self.assertTrue(metrics["performance"]["cost_profile_configured"])
+        self.assertEqual(metrics["performance"]["cost_profile_key"], "deepseek")
+        self.assertEqual(metrics["performance"]["cost_currency"], "USD")
+        self.assertEqual(metrics["performance"]["estimated_total_cost"], 0.01055)
         self.assertEqual(metrics["rates"]["translation_request_per_chunk"], 1.0)
         self.assertEqual(metrics["rates"]["estimated_request_tokens_per_chunk"], 125.0)
+        self.assertEqual(metrics["rates"]["estimated_cost_per_chunk"], 0.0053)
         self.assertEqual(metrics["quality"]["ocr_candidate_page_count"], 2)
         self.assertEqual(metrics["quality"]["repair_item_count"], 4)
         self.assertEqual(metrics["quality"]["repair_request_count"], 4)
@@ -1127,6 +1196,7 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["evidence_files"]["repair_merge_qa"], "output/repair_merge_qa.json")
         self.assertEqual(metrics["evidence_files"]["run_metrics"], "output/run_metrics.json")
         self.assertEqual(metrics["evidence_files"]["run_log"], "output/run_log.jsonl")
+        self.assertEqual(metrics["evidence_files"]["cost_estimate"], "output/cost_estimate.json")
 
     def test_memory_store_records_glossary_conflicts_for_review(self) -> None:
         root = Path.cwd() / "test-output" / "glossary-conflict-memory"
@@ -1488,6 +1558,7 @@ class StructureIRTests(unittest.TestCase):
             metrics_path = work_dir / "output" / "experiment_metrics.json"
             run_metrics_path = work_dir / "output" / "run_metrics.json"
             run_log_path = work_dir / "output" / "run_log.jsonl"
+            cost_estimate_path = work_dir / "output" / "cost_estimate.json"
             bilingual_path = work_dir / "output" / "bilingual.html"
             self.assertTrue(ir_path.is_file())
             self.assertTrue(manifest_path.is_file())
@@ -1514,6 +1585,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(metrics_path.is_file())
             self.assertTrue(run_metrics_path.is_file())
             self.assertTrue(run_log_path.is_file())
+            self.assertTrue(cost_estimate_path.is_file())
             self.assertTrue(bilingual_path.is_file())
             ir = json.loads(ir_path.read_text(encoding="utf-8"))
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -1531,6 +1603,7 @@ class StructureIRTests(unittest.TestCase):
             repair_merge_qa = json.loads(repair_merge_qa_path.read_text(encoding="utf-8"))
             metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
             run_metrics = json.loads(run_metrics_path.read_text(encoding="utf-8"))
+            cost_estimate = json.loads(cost_estimate_path.read_text(encoding="utf-8"))
             run_log_lines = [
                 json.loads(line)
                 for line in run_log_path.read_text(encoding="utf-8").splitlines()
@@ -1594,11 +1667,16 @@ class StructureIRTests(unittest.TestCase):
             self.assertGreater(run_metrics["summary"]["request_char_count"], 0)
             self.assertIn("document_ir", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertTrue(any(event["event_type"] == "chunk_translation" for event in run_log_lines))
+            self.assertEqual(cost_estimate["schema_version"], "cost-estimate-v1")
+            self.assertTrue(cost_estimate["configured"])
+            self.assertEqual(cost_estimate["profile_key"], "echo")
+            self.assertEqual(cost_estimate["summary"]["estimated_total_cost"], 0)
             self.assertEqual(metrics["schema_version"], "experiment-metrics-v1")
             self.assertEqual(metrics["pipeline_variant"], "structure")
             self.assertEqual(metrics["quality"]["table_count"], qa["summary"]["table_count"])
             self.assertGreaterEqual(metrics["performance"]["translation_request_count"], 1)
             self.assertGreater(metrics["performance"]["estimated_total_token_count"], 0)
+            self.assertEqual(metrics["performance"]["estimated_total_cost"], 0)
             self.assertIn("reconstructable_table_count", metrics["quality"])
             self.assertIn("table_reconstruction_ready_rate", metrics["rates"])
             self.assertEqual(
@@ -1624,6 +1702,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(metrics["evidence_files"]["repair_merge_qa"], "output/repair_merge_qa.json")
             self.assertEqual(metrics["evidence_files"]["run_metrics"], "output/run_metrics.json")
             self.assertEqual(metrics["evidence_files"]["run_log"], "output/run_log.jsonl")
+            self.assertEqual(metrics["evidence_files"]["cost_estimate"], "output/cost_estimate.json")
             self.assertIn("双语对照译文", bilingual_path.read_text(encoding="utf-8"))
         finally:
             if root.exists():
@@ -1670,6 +1749,7 @@ class StructureIRTests(unittest.TestCase):
                 "repair_merge_qa.md",
                 "experiment_metrics.json",
                 "run_metrics.json",
+                "cost_estimate.json",
             ]:
                 (output / name).write_text("{}", encoding="utf-8")
             (repairs_dir / "rq0000.md").write_text("候选修复片段", encoding="utf-8")
@@ -1695,6 +1775,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/chunk_strategy_comparison.json", rels)
             self.assertIn("output/experiment_metrics.json", rels)
             self.assertIn("output/run_metrics.json", rels)
+            self.assertIn("output/cost_estimate.json", rels)
             self.assertEqual(map_bundle_arcname("output/bilingual.html"), "译文/双语对照.html")
             self.assertEqual(map_bundle_arcname("output/repaired_full.md"), "译文/局部修复合并译文.md")
             self.assertEqual(map_bundle_arcname("output/repair_plan.md"), "质量/局部修复计划.md")
@@ -1711,6 +1792,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(map_bundle_arcname("output/chunk_strategy_comparison.json"), "质量/分段策略对比.json")
             self.assertEqual(map_bundle_arcname("output/experiment_metrics.json"), "质量/实验指标.json")
             self.assertEqual(map_bundle_arcname("output/run_metrics.json"), "质量/运行性能指标.json")
+            self.assertEqual(map_bundle_arcname("output/cost_estimate.json"), "质量/成本估算.json")
         finally:
             if root.exists():
                 shutil.rmtree(root)

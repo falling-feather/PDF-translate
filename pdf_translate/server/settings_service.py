@@ -62,6 +62,9 @@ def effective_app_config() -> AppConfig:
         planner_api_key=_coalesce(database.kv_get("planner_api_key"), base.planner_api_key),
         planner_base_url=_coalesce_str(database.kv_get("planner_base_url"), base.planner_base_url),
         planner_model=_coalesce_str(database.kv_get("planner_model"), base.planner_model),
+        cost_profile_json=_coalesce_str(database.kv_get("cost_profile_json"), base.cost_profile_json),
+        cost_profile_path=_coalesce_str(database.kv_get("cost_profile_path"), base.cost_profile_path),
+        cost_default_currency=_coalesce_str(database.kv_get("cost_default_currency"), base.cost_default_currency),
     )
 
 
@@ -106,6 +109,9 @@ def admin_settings_snapshot() -> dict:
         "planner_api_key",
         "planner_base_url",
         "planner_model",
+        "cost_profile_json",
+        "cost_profile_path",
+        "cost_default_currency",
         "registration_open",
     ]
     out: dict = {}
@@ -152,6 +158,9 @@ def apply_admin_settings(patch: dict) -> None:
         "planner_api_key",
         "planner_base_url",
         "planner_model",
+        "cost_profile_json",
+        "cost_profile_path",
+        "cost_default_currency",
     ]
     # 空字符串不写入：避免管理端只改「启用后端」等选项时，把未在表单中显示的密钥整表覆盖成空
     for k in str_keys:

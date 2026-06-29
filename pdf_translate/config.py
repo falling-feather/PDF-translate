@@ -44,6 +44,10 @@ class AppConfig:
     planner_api_key: str | None
     planner_base_url: str
     planner_model: str
+    # 可选：成本估算画像。价格易变，默认只提供 echo/ollama 的零外部 API 成本画像。
+    cost_profile_json: str
+    cost_profile_path: str
+    cost_default_currency: str
 
     @classmethod
     def from_env(cls) -> AppConfig:
@@ -70,6 +74,9 @@ class AppConfig:
             planner_api_key=os.getenv("PDF_TRANSLATE_PLANNER_API_KEY"),
             planner_base_url=os.getenv("PDF_TRANSLATE_PLANNER_BASE_URL", "https://api.siliconflow.com/v1"),
             planner_model=os.getenv("PDF_TRANSLATE_PLANNER_MODEL", ""),
+            cost_profile_json=os.getenv("PDF_TRANSLATE_COST_PROFILE_JSON", ""),
+            cost_profile_path=os.getenv("PDF_TRANSLATE_COST_PROFILE_PATH", ""),
+            cost_default_currency=os.getenv("PDF_TRANSLATE_COST_CURRENCY", "USD"),
         )
 
 

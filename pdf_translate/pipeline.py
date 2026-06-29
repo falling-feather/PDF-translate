@@ -13,6 +13,7 @@ import fitz
 from pdf_translate.chunkers.structure import build_structure_chunks, write_structure_manifest
 from pdf_translate.chunking import TextChunk, build_text_chunks
 from pdf_translate.config import AppConfig
+from pdf_translate.costing import backend_model_name, load_cost_profile, write_cost_estimate
 from pdf_translate.exporters.bilingual_html import write_bilingual_html
 from pdf_translate.extractors.document_ir import extract_document_ir
 from pdf_translate.memory_store import MemoryStore
@@ -424,6 +425,13 @@ def run_translate(
             chunk_count=len(chunks),
             completed_chunk_count=len(done),
         )
+        cost_estimate = write_cost_estimate(
+            out_dir / "cost_estimate.json",
+            run_metrics_summary,
+            load_cost_profile(cfg),
+            backend=be,
+            model=backend_model_name(be, cfg),
+        )
         write_experiment_metrics(
             structure_qa,
             vision_route,
@@ -441,6 +449,7 @@ def run_translate(
             repair_merge=repair_merge,
             repair_merge_qa=repair_merge_qa,
             run_metrics=run_metrics_summary,
+            cost_estimate=cost_estimate,
         )
 
     if translate_mode == "parallel":

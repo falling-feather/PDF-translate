@@ -101,8 +101,11 @@ pdf-translate-web
 | `PDF_TRANSLATE_PLANNER_API_KEY` | 预留：收束所用 API Key |
 | `PDF_TRANSLATE_PLANNER_BASE_URL` | 预留：默认与硅基一致 |
 | `PDF_TRANSLATE_PLANNER_MODEL` | 预留：收束模型名 |
+| `PDF_TRANSLATE_COST_PROFILE_JSON` | 可选：成本画像 JSON；按后端或 `后端:模型` 配置每百万 token/字符单价与每请求固定价 |
+| `PDF_TRANSLATE_COST_PROFILE_PATH` | 可选：成本画像 JSON 文件路径；当 `PDF_TRANSLATE_COST_PROFILE_JSON` 为空时读取 |
+| `PDF_TRANSLATE_COST_CURRENCY` | 成本画像默认币种，默认 `USD` |
 
-管理端可在 KV 中覆盖 `survey_enabled`、`siliconflow_*`、`planner_*`（与上述环境变量同名键），逻辑见 `settings_service.effective_app_config`。
+管理端可在 KV 中覆盖 `survey_enabled`、`siliconflow_*`、`planner_*`、`cost_profile_*`（与上述环境变量同名键），逻辑见 `settings_service.effective_app_config`。
 
 **最小可运行（不调用外网）：**
 
@@ -130,6 +133,17 @@ OLLAMA_MODEL=llama3.2
 PDF_TRANSLATE_BACKEND=deepl
 DEEPL_API_KEY=你的密钥
 ```
+
+**成本画像示例：**
+
+价格经常变化，项目不会硬编码付费后端价格。需要做专利实验成本对比时，可按服务商当前价格自行配置：
+
+```env
+PDF_TRANSLATE_COST_CURRENCY=USD
+PDF_TRANSLATE_COST_PROFILE_JSON={"currency":"USD","backends":{"deepseek":{"input_per_1m_tokens":0,"output_per_1m_tokens":0},"openai:gpt-4o-mini":{"input_per_1m_tokens":0,"output_per_1m_tokens":0},"deepl":{"input_per_1m_chars":0}}}
+```
+
+将示例中的 `0` 替换为当前价格后，管线会生成 `output/cost_estimate.json`，并把 `estimated_total_cost` 写入 `output/experiment_metrics.json` 的 `performance` 区块。
 
 **Hybrid（DeepL 初稿 + OpenAI 兼容 API 中译校对）：**
 

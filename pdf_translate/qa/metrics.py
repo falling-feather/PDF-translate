@@ -21,6 +21,7 @@ DEFAULT_EVIDENCE_FILES = {
     "repair_merge_qa": "output/repair_merge_qa.json",
     "run_metrics": "output/run_metrics.json",
     "run_log": "output/run_log.jsonl",
+    "cost_estimate": "output/cost_estimate.json",
 }
 
 
@@ -57,6 +58,14 @@ def _as_float(value: Any) -> float:
     return 0.0
 
 
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
 def _counter_dict(raw: Any) -> dict[str, int]:
     if not isinstance(raw, dict):
         return {}
@@ -86,6 +95,7 @@ def build_experiment_metrics(
     repair_merge: dict[str, Any] | None = None,
     repair_merge_qa: dict[str, Any] | None = None,
     run_metrics: dict[str, Any] | None = None,
+    cost_estimate: dict[str, Any] | None = None,
     evidence_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Aggregate pipeline QA artifacts into a patent-facing experiment summary."""
@@ -102,6 +112,7 @@ def build_experiment_metrics(
     repair_merge_summary = _summary(repair_merge)
     repair_merge_qa_summary = _summary(repair_merge_qa)
     run_summary = _summary(run_metrics)
+    cost_summary = _summary(cost_estimate)
 
     block_counts = _counter_dict(structure_summary.get("block_counts"))
     entity_type_counts = _counter_dict(structure_summary.get("entity_type_counts"))
@@ -219,6 +230,16 @@ def build_experiment_metrics(
     max_chunk_elapsed_ms = _as_int(run_summary.get("max_chunk_elapsed_ms"))
     request_chars_per_second = _as_float(run_summary.get("request_chars_per_second"))
     translated_chars_per_second = _as_float(run_summary.get("translated_chars_per_second"))
+    estimated_total_cost = _as_float(cost_summary.get("estimated_total_cost"))
+    input_token_cost = _as_float(cost_summary.get("input_token_cost"))
+    output_token_cost = _as_float(cost_summary.get("output_token_cost"))
+    input_char_cost = _as_float(cost_summary.get("input_char_cost"))
+    output_char_cost = _as_float(cost_summary.get("output_char_cost"))
+    request_cost = _as_float(cost_summary.get("request_cost"))
+    cost_configured = _as_bool((cost_estimate or {}).get("configured")) if isinstance(cost_estimate, dict) else False
+    cost_currency = str((cost_estimate or {}).get("currency") or "")
+    cost_profile_key = str((cost_estimate or {}).get("profile_key") or "")
+    cost_warning_count = len((cost_estimate or {}).get("warnings") or []) if isinstance(cost_estimate, dict) else 0
 
     relationship_total = caption_count + footnote_count
     effective_entity_candidate_count = translation_entity_candidate_count or entity_candidate_count
@@ -320,6 +341,16 @@ def build_experiment_metrics(
             "max_chunk_elapsed_ms": max_chunk_elapsed_ms,
             "request_chars_per_second": request_chars_per_second,
             "translated_chars_per_second": translated_chars_per_second,
+            "cost_profile_configured": cost_configured,
+            "cost_profile_key": cost_profile_key,
+            "cost_currency": cost_currency,
+            "input_token_cost": input_token_cost,
+            "output_token_cost": output_token_cost,
+            "input_char_cost": input_char_cost,
+            "output_char_cost": output_char_cost,
+            "request_cost": request_cost,
+            "estimated_total_cost": estimated_total_cost,
+            "cost_warning_count": cost_warning_count,
         },
         "rates": {
             "relationship_warning_rate": _rate(relationship_warning_count, relationship_total),
@@ -369,6 +400,7 @@ def build_experiment_metrics(
                 estimated_request_token_count,
                 translation_request_count,
             ),
+            "estimated_cost_per_chunk": _rate(estimated_total_cost, chunk_count),
         },
         "breakdowns": {
             "block_counts": block_counts,
@@ -407,6 +439,7 @@ def write_experiment_metrics(
     repair_merge: dict[str, Any] | None = None,
     repair_merge_qa: dict[str, Any] | None = None,
     run_metrics: dict[str, Any] | None = None,
+    cost_estimate: dict[str, Any] | None = None,
     evidence_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     metrics = build_experiment_metrics(
@@ -425,6 +458,7 @@ def write_experiment_metrics(
         repair_merge=repair_merge,
         repair_merge_qa=repair_merge_qa,
         run_metrics=run_metrics,
+        cost_estimate=cost_estimate,
         evidence_files=evidence_files,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
