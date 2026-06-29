@@ -6,7 +6,7 @@ import typer
 
 from pdf_translate.config import AppConfig
 from pdf_translate import pipeline
-from pdf_translate.experiments import parse_variant_specs, run_batch_experiment
+from pdf_translate.experiments import load_sample_metadata, parse_variant_specs, run_batch_experiment
 
 app = typer.Typer(help="PDF 英文学术文献：拆分参考文献、按块翻译、记忆目录（见 README.md memory/ 说明）")
 
@@ -195,6 +195,13 @@ def cmd_experiment(
         "--variants",
         help="逗号分隔策略：page, structure, structure+ocr, structure+repair",
     ),
+    sample_manifest: Path | None = typer.Option(
+        None,
+        "--sample-manifest",
+        exists=True,
+        dir_okay=False,
+        help="可选样本元数据 JSON/CSV/TSV，字段可含 source_pdf/sample_id/pdf_type/tags/notes",
+    ),
     tail_fallback: bool = typer.Option(False, "--tail-fallback", help="未检测到参考文献标题时启用尾部兜底"),
     pages_per_chunk: int = typer.Option(3, "--pages", min=1, max=3, help="每块页数 1-3"),
     overlap: int = typer.Option(1, "--overlap", min=0, help="固定页分块的重叠页数"),
@@ -221,9 +228,11 @@ def cmd_experiment(
         parallel_workers=parallel_workers,
         resume=resume,
         stop_on_error=stop_on_error,
+        sample_metadata=load_sample_metadata(sample_manifest) if sample_manifest else None,
     )
     typer.echo(f"批量实验汇总: {(output_dir / 'batch_experiment_summary.json').resolve()}")
     typer.echo(f"Markdown 报告: {(output_dir / 'batch_experiment_summary.md').resolve()}")
+    typer.echo(f"人工评分表: {(output_dir / 'batch_experiment_review.csv').resolve()}")
     typer.echo(f"成功/总数: {report['succeeded_count']}/{report['run_count']}")
 
 

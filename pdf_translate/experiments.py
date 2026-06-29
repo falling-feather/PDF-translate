@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import re
 import traceback
@@ -71,6 +72,8 @@ COMPARISON_FIELDS = [
     ("performance", "estimated_total_cost"),
 ]
 
+ORDERED_SAMPLE_METADATA_KEY = "__ordered_samples__"
+
 
 @dataclass(frozen=True)
 class ExperimentVariant:
@@ -80,10 +83,141 @@ class ExperimentVariant:
     execute_repair_requests: bool = False
 
 
+@dataclass(frozen=True)
+class ExperimentSample:
+    source_pdf: Path
+    sample_id: str
+    pdf_type: str = ""
+    tags: tuple[str, ...] = ()
+    notes: str = ""
+
+
 def _safe_id(value: str) -> str:
     text = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "-", value.strip())
     text = re.sub(r"-{2,}", "-", text).strip("-._")
     return text or "item"
+
+
+def _split_tags(value: Any) -> tuple[str, ...]:
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    if not isinstance(value, str):
+        return ()
+    parts = re.split(r"[;,，；|]", value)
+    return tuple(part.strip() for part in parts if part.strip())
+
+
+def _metadata_key(value: str | Path) -> str:
+    return str(Path(value).expanduser()).replace("\\", "/").lower()
+
+
+def load_sample_metadata(path: Path) -> dict[str, Any]:
+    """Load sample metadata by path/name keys, with ordered fallback for pathless rows."""
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    base_dir = path.parent.resolve()
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            rows = raw.get("samples", raw.get("items", []))
+        else:
+            rows = raw
+        if not isinstance(rows, list):
+            raise ValueError("sample metadata JSON must be a list or contain samples/items")
+    elif suffix in (".csv", ".tsv"):
+        delimiter = "\t" if suffix == ".tsv" else ","
+        with path.open("r", encoding="utf-8-sig", newline="") as f:
+            rows = list(csv.DictReader(f, delimiter=delimiter))
+    else:
+        raise ValueError("sample metadata must be .json, .csv, or .tsv")
+
+    metadata: dict[str, Any] = {}
+    ordered_items: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        source_pdf = row.get("source_pdf") or row.get("pdf") or row.get("path") or row.get("file")
+        sample_id = str(row.get("sample_id") or "").strip()
+        source_text = str(source_pdf).strip() if source_pdf else ""
+        item = {
+            "sample_id": sample_id,
+            "pdf_type": str(row.get("pdf_type") or row.get("type") or "").strip(),
+            "tags": _split_tags(row.get("tags") or row.get("labels") or ""),
+            "notes": str(row.get("notes") or row.get("remark") or "").strip(),
+            "_has_source_pdf": bool(source_text),
+        }
+        ordered_items.append(item)
+        keys: set[str] = set()
+        if source_text:
+            source_path = Path(source_text)
+            source_for_resolution = source_path if source_path.is_absolute() else base_dir / source_path
+            keys.update(
+                {
+                    _metadata_key(source_text),
+                    source_path.name.lower(),
+                    source_path.stem.lower(),
+                    _metadata_key(source_for_resolution),
+                }
+            )
+            try:
+                keys.add(str(source_for_resolution.resolve()).replace("\\", "/").lower())
+            except OSError:
+                pass
+        if sample_id:
+            keys.add(sample_id.lower())
+        for key in keys:
+            if key:
+                metadata[key] = item
+    if ordered_items:
+        metadata[ORDERED_SAMPLE_METADATA_KEY] = {"items": ordered_items}
+    return metadata
+
+
+def _metadata_for_pdf(pdf: Path, metadata: dict[str, Any], index: int) -> dict[str, Any]:
+    keys = [
+        str(pdf.resolve()).replace("\\", "/").lower(),
+        _metadata_key(pdf),
+        pdf.name.lower(),
+        pdf.stem.lower(),
+    ]
+    for key in keys:
+        item = metadata.get(key)
+        if isinstance(item, dict):
+            return item
+    ordered = metadata.get(ORDERED_SAMPLE_METADATA_KEY)
+    if isinstance(ordered, dict):
+        items = ordered.get("items")
+        if isinstance(items, list) and index < len(items):
+            item = items[index]
+            if isinstance(item, dict) and not item.get("_has_source_pdf"):
+                return item
+    return {}
+
+
+def _build_samples(pdfs: list[Path], sample_metadata: dict[str, Any] | None = None) -> list[ExperimentSample]:
+    metadata = sample_metadata or {}
+    samples: list[ExperimentSample] = []
+    seen_ids: dict[str, int] = {}
+    for index, pdf in enumerate(pdfs, start=1):
+        item = _metadata_for_pdf(pdf, metadata, index - 1)
+        base_id = str(item.get("sample_id") or f"{index:03d}-{_safe_id(pdf.stem)}").strip()
+        sample_id = _safe_id(base_id)
+        if sample_id in seen_ids:
+            seen_ids[sample_id] += 1
+            sample_id = f"{sample_id}-{seen_ids[sample_id]}"
+        else:
+            seen_ids[sample_id] = 1
+        samples.append(
+            ExperimentSample(
+                source_pdf=pdf,
+                sample_id=sample_id,
+                pdf_type=str(item.get("pdf_type") or ""),
+                tags=tuple(item.get("tags") or ()),
+                notes=str(item.get("notes") or ""),
+            )
+        )
+    return samples
 
 
 def parse_variant_spec(spec: str) -> ExperimentVariant:
@@ -276,6 +410,7 @@ def write_batch_experiment_markdown(report: dict[str, Any], path: Path) -> Path:
         f"- 运行数：{report.get('run_count')}",
         f"- 成功数：{report.get('succeeded_count')}",
         f"- 失败数：{report.get('failed_count')}",
+        f"- 人工评分表：{report.get('review_file', '')}",
         "",
         "## 策略均值",
         "",
@@ -298,6 +433,29 @@ def write_batch_experiment_markdown(report: dict[str, Any], path: Path) -> Path:
                     _format_number(rates.get("protected_boundary_rate", 0)),
                     _format_number(performance.get("total_elapsed_ms", 0)),
                     _format_number(performance.get("estimated_total_cost", 0)),
+                ]
+            )
+            + " |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## 样本标签",
+            "",
+            "| 样本 | 类型 | 标签 | 备注 |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
+    for sample in report.get("samples", []):
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(sample.get("sample_id", "")),
+                    str(sample.get("pdf_type", "")),
+                    ", ".join(sample.get("tags", []) or []),
+                    str(sample.get("notes", "")),
                 ]
             )
             + " |"
@@ -363,6 +521,62 @@ def write_batch_experiment_markdown(report: dict[str, Any], path: Path) -> Path:
     return path
 
 
+def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Path:
+    fieldnames = [
+        "sample_id",
+        "source_pdf",
+        "pdf_type",
+        "tags",
+        "variant",
+        "status",
+        "translation_issue_count",
+        "table_shape_error_count",
+        "table_cell_token_error_count",
+        "split_boundary_rate",
+        "protected_boundary_rate",
+        "total_elapsed_ms",
+        "estimated_total_cost",
+        "translated_full",
+        "bilingual_html",
+        "human_score",
+        "reviewer",
+        "review_notes",
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for record in report.get("records", []):
+            metrics = record.get("metrics", {})
+            quality = metrics.get("quality", {}) if isinstance(metrics, dict) else {}
+            rates = metrics.get("rates", {}) if isinstance(metrics, dict) else {}
+            performance = metrics.get("performance", {}) if isinstance(metrics, dict) else {}
+            files = record.get("files", {})
+            writer.writerow(
+                {
+                    "sample_id": record.get("sample_id", ""),
+                    "source_pdf": record.get("source_pdf", ""),
+                    "pdf_type": record.get("pdf_type", ""),
+                    "tags": ";".join(record.get("tags", []) or []),
+                    "variant": record.get("variant", ""),
+                    "status": record.get("status", ""),
+                    "translation_issue_count": quality.get("translation_issue_count", ""),
+                    "table_shape_error_count": quality.get("table_shape_error_count", ""),
+                    "table_cell_token_error_count": quality.get("table_cell_token_error_count", ""),
+                    "split_boundary_rate": rates.get("split_boundary_rate", ""),
+                    "protected_boundary_rate": rates.get("protected_boundary_rate", ""),
+                    "total_elapsed_ms": performance.get("total_elapsed_ms", ""),
+                    "estimated_total_cost": performance.get("estimated_total_cost", ""),
+                    "translated_full": files.get("translated_full", ""),
+                    "bilingual_html": files.get("bilingual_html", ""),
+                    "human_score": "",
+                    "reviewer": "",
+                    "review_notes": "",
+                }
+            )
+    return path
+
+
 def run_batch_experiment(
     pdfs: list[Path],
     output_dir: Path,
@@ -378,12 +592,14 @@ def run_batch_experiment(
     parallel_workers: int = 4,
     resume: bool = False,
     stop_on_error: bool = False,
+    sample_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not pdfs:
         raise ValueError("at least one PDF is required")
     variants = variants or parse_variant_specs("page,structure")
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    samples = _build_samples(pdfs, sample_metadata)
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -398,10 +614,13 @@ def run_batch_experiment(
         "variants": [variant.__dict__ for variant in variants],
         "samples": [
             {
-                "sample_id": f"{index:03d}-{_safe_id(pdf.stem)}",
-                "source_pdf": str(pdf.resolve()),
+                "sample_id": sample.sample_id,
+                "source_pdf": str(sample.source_pdf.resolve()),
+                "pdf_type": sample.pdf_type,
+                "tags": list(sample.tags),
+                "notes": sample.notes,
             }
-            for index, pdf in enumerate(pdfs, start=1)
+            for sample in samples
         ],
     }
     (output_dir / "batch_experiment_manifest.json").write_text(
@@ -410,13 +629,17 @@ def run_batch_experiment(
     )
 
     records: list[dict[str, Any]] = []
-    for index, pdf in enumerate(pdfs, start=1):
-        sample_id = f"{index:03d}-{_safe_id(pdf.stem)}"
+    for sample in samples:
+        pdf = sample.source_pdf
+        sample_id = sample.sample_id
         for variant in variants:
             work_dir = output_dir / "runs" / sample_id / _safe_id(variant.name)
             record: dict[str, Any] = {
                 "sample_id": sample_id,
                 "source_pdf": str(pdf.resolve()),
+                "pdf_type": sample.pdf_type,
+                "tags": list(sample.tags),
+                "notes": sample.notes,
                 "variant": variant.name,
                 "chunk_strategy": variant.chunk_strategy,
                 "execute_ocr": variant.execute_ocr,
@@ -471,14 +694,17 @@ def run_batch_experiment(
         "succeeded_count": sum(1 for record in records if record.get("status") == "succeeded"),
         "failed_count": sum(1 for record in records if record.get("status") == "failed"),
         "baseline_variant": baseline_variant,
+        "samples": manifest["samples"],
         "records": records,
         "aggregates": aggregates,
         "comparisons": _compare_to_baseline(records, baseline_variant),
         "manifest_file": "batch_experiment_manifest.json",
+        "review_file": "batch_experiment_review.csv",
     }
     (output_dir / "batch_experiment_summary.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    write_batch_experiment_review_csv(report, output_dir / "batch_experiment_review.csv")
     write_batch_experiment_markdown(report, output_dir / "batch_experiment_summary.md")
     return report
