@@ -11,7 +11,12 @@ from pdf_translate.extractors.document_ir import DocumentIR, PageIR
 
 SCHEMA_VERSION = "vision-route-v1"
 PREVIEW_DIR_NAME = "vision_pages"
+CROP_DIR_NAME = "vision_crops"
 PREVIEW_MAX_WIDTH = 960
+CROP_MAX_WIDTH = 720
+CROP_MAX_PER_PAGE = 12
+CROP_PADDING_PT = 6.0
+CROP_BLOCK_TYPES = {"image", "table", "caption", "formula"}
 
 
 def _bbox_area(bbox: tuple[float, float, float, float]) -> float:
@@ -180,6 +185,8 @@ def build_vision_route(doc_ir: DocumentIR) -> dict[str, Any]:
                     "page_preview_width": 0,
                     "page_preview_height": 0,
                     "page_preview_scale": 0,
+                    "region_crop_count": 0,
+                    "region_crops": [],
                 },
             }
         )
@@ -193,6 +200,7 @@ def build_vision_route(doc_ir: DocumentIR) -> dict[str, Any]:
             "routed_page_count": routed_count,
             "high_risk_page_count": risk_counts.get("high", 0),
             "preview_page_count": 0,
+            "preview_crop_count": 0,
             "action_counts": dict(action_counts),
             "risk_counts": dict(risk_counts),
         },
@@ -205,6 +213,45 @@ def _render_scale(page: fitz.Page) -> float:
     return min(2.0, max(1.0, PREVIEW_MAX_WIDTH / width))
 
 
+def _render_crop_scale(rect: fitz.Rect) -> float:
+    width = max(1.0, float(rect.width))
+    return min(3.0, max(1.0, CROP_MAX_WIDTH / width))
+
+
+def _clip_rect(page_rect: fitz.Rect, bbox: tuple[float, float, float, float]) -> fitz.Rect | None:
+    x0, y0, x1, y1 = bbox
+    clipped = fitz.Rect(
+        max(float(page_rect.x0), float(x0) - CROP_PADDING_PT),
+        max(float(page_rect.y0), float(y0) - CROP_PADDING_PT),
+        min(float(page_rect.x1), float(x1) + CROP_PADDING_PT),
+        min(float(page_rect.y1), float(y1) + CROP_PADDING_PT),
+    )
+    if clipped.width < 2 or clipped.height < 2:
+        return None
+    return clipped
+
+
+def _crop_candidates(page: PageIR) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for block in page.blocks:
+        if block.type not in CROP_BLOCK_TYPES:
+            continue
+        area = _bbox_area(block.bbox)
+        if area < 16:
+            continue
+        candidates.append(
+            {
+                "block_id": block.block_id,
+                "block_type": block.type,
+                "bbox": block.bbox,
+                "order": block.order,
+                "area": area,
+            }
+        )
+    candidates.sort(key=lambda item: (int(item["order"]), -float(item["area"])))
+    return candidates[:CROP_MAX_PER_PAGE]
+
+
 def _attach_page_previews(route: dict[str, Any], doc_ir: DocumentIR, output_dir: Path) -> None:
     pages = route.get("pages")
     if not isinstance(pages, list):
@@ -212,7 +259,10 @@ def _attach_page_previews(route: dict[str, Any], doc_ir: DocumentIR, output_dir:
 
     source_pdf = Path(doc_ir.source_pdf)
     preview_dir = output_dir / PREVIEW_DIR_NAME
+    crop_dir = output_dir / CROP_DIR_NAME
+    doc_pages = {page.page_no: page for page in doc_ir.pages}
     rendered_count = 0
+    crop_count = 0
     missing_count = 0
 
     if not source_pdf.is_file():
@@ -228,8 +278,10 @@ def _attach_page_previews(route: dict[str, Any], doc_ir: DocumentIR, output_dir:
         summary = route.get("summary")
         if isinstance(summary, dict):
             summary["preview_page_count"] = rendered_count
+            summary["preview_crop_count"] = crop_count
             summary["preview_missing_count"] = missing_count
             summary["preview_dir"] = PREVIEW_DIR_NAME
+            summary["crop_dir"] = CROP_DIR_NAME
         return
 
     try:
@@ -247,8 +299,10 @@ def _attach_page_previews(route: dict[str, Any], doc_ir: DocumentIR, output_dir:
         summary = route.get("summary")
         if isinstance(summary, dict):
             summary["preview_page_count"] = rendered_count
+            summary["preview_crop_count"] = crop_count
             summary["preview_missing_count"] = missing_count
             summary["preview_dir"] = PREVIEW_DIR_NAME
+            summary["crop_dir"] = CROP_DIR_NAME
         return
 
     try:
@@ -281,14 +335,50 @@ def _attach_page_previews(route: dict[str, Any], doc_ir: DocumentIR, output_dir:
                 }
             )
             rendered_count += 1
+
+            page_ir = doc_pages.get(page_no)
+            region_crops: list[dict[str, Any]] = []
+            if page_ir is not None:
+                for candidate in _crop_candidates(page_ir):
+                    clipped = _clip_rect(pdf_page.rect, candidate["bbox"])
+                    if clipped is None:
+                        continue
+                    block_id = str(candidate["block_id"])
+                    block_type = str(candidate["block_type"])
+                    crop_page_dir = crop_dir / f"page-{page_no:04d}"
+                    crop_page_dir.mkdir(parents=True, exist_ok=True)
+                    crop_path = crop_page_dir / f"{block_id}-{block_type}.png"
+                    crop_scale = _render_crop_scale(clipped)
+                    crop_pix = pdf_page.get_pixmap(
+                        matrix=fitz.Matrix(crop_scale, crop_scale),
+                        clip=clipped,
+                        alpha=False,
+                    )
+                    crop_pix.save(crop_path)
+                    region_crops.append(
+                        {
+                            "block_id": block_id,
+                            "block_type": block_type,
+                            "crop_path": crop_path.relative_to(output_dir).as_posix(),
+                            "bbox": [round(float(value), 2) for value in candidate["bbox"]],
+                            "crop_width": crop_pix.width,
+                            "crop_height": crop_pix.height,
+                            "crop_scale": round(crop_scale, 3),
+                        }
+                    )
+                    crop_count += 1
+            evidence["region_crops"] = region_crops
+            evidence["region_crop_count"] = len(region_crops)
     finally:
         doc.close()
 
     summary = route.get("summary")
     if isinstance(summary, dict):
         summary["preview_page_count"] = rendered_count
+        summary["preview_crop_count"] = crop_count
         summary["preview_missing_count"] = missing_count
         summary["preview_dir"] = PREVIEW_DIR_NAME
+        summary["crop_dir"] = CROP_DIR_NAME
 
 
 def write_vision_route(doc_ir: DocumentIR, path: Path) -> dict[str, Any]:

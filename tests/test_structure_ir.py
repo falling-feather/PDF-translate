@@ -872,11 +872,18 @@ class StructureIRTests(unittest.TestCase):
 
             self.assertTrue(route_path.is_file())
             self.assertEqual(route["summary"]["preview_page_count"], 1)
+            self.assertEqual(route["summary"]["preview_crop_count"], 2)
             evidence = route["pages"][0]["evidence"]
             self.assertEqual(evidence["page_preview_status"], "rendered")
             self.assertEqual(evidence["page_preview_path"], "vision_pages/page-0001.png")
             self.assertGreater(evidence["page_preview_width"], 0)
             self.assertTrue((root / "output" / evidence["page_preview_path"]).is_file())
+            self.assertEqual(evidence["region_crop_count"], 2)
+            self.assertEqual(
+                evidence["region_crops"][0]["crop_path"],
+                "vision_crops/page-0001/p1-b0000-image.png",
+            )
+            self.assertTrue((root / "output" / evidence["region_crops"][0]["crop_path"]).is_file())
         finally:
             if root.exists():
                 shutil.rmtree(root)
@@ -1106,6 +1113,7 @@ class StructureIRTests(unittest.TestCase):
                     "page_count": 4,
                     "routed_page_count": 2,
                     "preview_page_count": 2,
+                    "preview_crop_count": 3,
                     "action_counts": {"text_only": 2, "local_ocr": 1, "vlm_review": 1},
                     "risk_counts": {"low": 2, "medium": 1, "high": 1},
                 },
@@ -1360,7 +1368,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["post_repair_issue_reduction_rate"], 0.25)
         self.assertEqual(metrics["rates"]["relationship_warning_rate"], 0.3333)
         self.assertEqual(metrics["quality"]["vision_preview_page_count"], 2)
+        self.assertEqual(metrics["quality"]["vision_region_crop_count"], 3)
         self.assertEqual(metrics["rates"]["vision_preview_page_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["vision_region_crop_per_routed_page"], 1.5)
         self.assertEqual(metrics["breakdowns"]["vision_action_counts"]["local_ocr"], 1)
         self.assertEqual(metrics["breakdowns"]["stage_elapsed_ms"]["document_ir"], 50)
         self.assertEqual(metrics["breakdowns"]["translator_counts"]["echo"], 2)
@@ -1903,6 +1913,8 @@ class StructureIRTests(unittest.TestCase):
         repaired_chunks_dir.mkdir(parents=True)
         vision_pages_dir = output / "vision_pages"
         vision_pages_dir.mkdir(parents=True)
+        vision_crops_dir = output / "vision_crops" / "page-0001"
+        vision_crops_dir.mkdir(parents=True)
         try:
             for name in [
                 "translated_full.md",
@@ -1937,6 +1949,7 @@ class StructureIRTests(unittest.TestCase):
             (repairs_dir / "rq0000.md").write_text("候选修复片段", encoding="utf-8")
             (repaired_chunks_dir / "c0000.md").write_text("修复合并分块", encoding="utf-8")
             (vision_pages_dir / "page-0001.png").write_bytes(b"fakepng")
+            (vision_crops_dir / "p1-b0000-image.png").write_bytes(b"fakecrop")
             rels = {
                 path.relative_to(root).as_posix()
                 for path in iter_bundle_files(root)
@@ -1950,6 +1963,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/repairs/rq0000.md", rels)
             self.assertIn("output/repaired_chunks/c0000.md", rels)
             self.assertIn("output/vision_pages/page-0001.png", rels)
+            self.assertIn("output/vision_crops/page-0001/p1-b0000-image.png", rels)
             self.assertIn("output/repaired_full.md", rels)
             self.assertIn("output/bilingual.html", rels)
             self.assertIn("output/qa_report.md", rels)
@@ -1973,6 +1987,10 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(
                 map_bundle_arcname("output/vision_pages/page-0001.png"),
                 "质量/图像OCR页面预览/page-0001.png",
+            )
+            self.assertEqual(
+                map_bundle_arcname("output/vision_crops/page-0001/p1-b0000-image.png"),
+                "质量/图像OCR区域裁剪/page-0001/p1-b0000-image.png",
             )
             self.assertEqual(map_bundle_arcname("output/structure_qa.json"), "质量/结构QA.json")
             self.assertEqual(map_bundle_arcname("output/table_reconstruction.json"), "质量/表格重建证据.json")

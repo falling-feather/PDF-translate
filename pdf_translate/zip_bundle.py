@@ -53,6 +53,11 @@ def map_bundle_arcname(rel_posix: str) -> str:
     if rel.startswith("output/vision_pages/"):
         name = rel.split("/")[-1]
         return f"质量/图像OCR页面预览/{name}"
+    if rel.startswith("output/vision_crops/"):
+        parts = rel.split("/")
+        name = parts[-1]
+        page_dir = parts[-2] if len(parts) >= 3 else "页面"
+        return f"质量/图像OCR区域裁剪/{page_dir}/{name}"
 
     split_map = {
         "split/manifest.json": "设置/拆分清单.json",
@@ -141,6 +146,11 @@ def iter_bundle_files(root: Path) -> list[Path]:
     vision_pages = root / "output" / "vision_pages"
     if vision_pages.is_dir():
         for p in vision_pages.rglob("*"):
+            if p.is_file():
+                out.append(p)
+    vision_crops = root / "output" / "vision_crops"
+    if vision_crops.is_dir():
+        for p in vision_crops.rglob("*"):
             if p.is_file():
                 out.append(p)
     return out
