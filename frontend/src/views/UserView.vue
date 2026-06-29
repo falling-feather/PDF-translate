@@ -105,6 +105,52 @@ function labelForBackend(b) {
   return (m && m[b]) || b;
 }
 
+function normalizeErrorPayload(payload) {
+  const root = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  const rawDetail = root.detail !== undefined ? root.detail : payload;
+  if (typeof rawDetail === "string") return { ...root, message: root.message || rawDetail };
+  if (rawDetail && typeof rawDetail === "object" && !Array.isArray(rawDetail)) return { ...root, ...rawDetail };
+  return root;
+}
+
+function formatErrorPayload(payload) {
+  const detail = normalizeErrorPayload(payload);
+  if (!detail || !Object.keys(detail).length) return "请求失败，请稍后重试";
+  const message =
+    detail.user_message ||
+    detail.message ||
+    (typeof detail.detail === "string" ? detail.detail : "") ||
+    detail.error ||
+    "请求失败";
+  const nextStep = detail.next_step || detail.error_next_step;
+  const codeValue = detail.code || detail.error_code;
+  const next = nextStep ? `建议：${nextStep}` : "";
+  const code = codeValue ? `错误码：${codeValue}` : "";
+  return [message, next, code].filter(Boolean).join(" · ");
+}
+
+function jobNextStep(j) {
+  return j?.error_next_step || j?.next_step || "";
+}
+
+function jobErrorMeta(j) {
+  if (!j) return "";
+  const parts = [];
+  if (j.error_code || j.code) parts.push(j.error_code || j.code);
+  if (j.error_category || j.category) parts.push(j.error_category || j.category);
+  if (j.error_http_status || j.http_status) parts.push(`HTTP ${j.error_http_status || j.http_status}`);
+  return parts.join(" · ");
+}
+
+function showJobIssue(j) {
+  if (!j) return false;
+  return j.status === "error" || (j.status === "cancelled" && (j.error || j.error_code || j.code || jobNextStep(j)));
+}
+
+function jobIssueTitle(j) {
+  return j?.status === "cancelled" ? "任务已终止" : "任务失败";
+}
+
 async function loadBackends() {
   const r = await fetch("/api/user/backends", { headers: authHeaders() });
   if (!r.ok) return;
@@ -159,7 +205,7 @@ async function favoriteJobRow(jobId) {
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
-    alert(typeof data.detail === "string" ? data.detail : JSON.stringify(data));
+    alert(formatErrorPayload(data));
     return;
   }
   await loadMyJobs();
@@ -172,7 +218,7 @@ async function unfavoriteJobRow(jobId) {
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
-    alert(typeof data.detail === "string" ? data.detail : JSON.stringify(data));
+    alert(formatErrorPayload(data));
     return;
   }
   await loadMyJobs();
@@ -263,7 +309,7 @@ async function createJobForFile(file) {
 
   const r = await fetch("/api/jobs", { method: "POST", headers: authHeaders(), body: fd });
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : JSON.stringify(data));
+  if (!r.ok) throw new Error(formatErrorPayload(data));
   const jid = data.job_id;
   ensureTaskTracked(jid);
   await pollJob(jid);
@@ -308,7 +354,7 @@ async function cancelJob(jid) {
   const r = await fetch(`/api/jobs/${jid}/cancel`, { method: "POST", headers: authHeaders() });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
-    alert(typeof data.detail === "string" ? data.detail : JSON.stringify(data));
+    alert(formatErrorPayload(data));
     return;
   }
   await pollJob(jid);
@@ -333,7 +379,17 @@ async function downloadFrom(url, fallbackName) {
   const r = await fetch(url, { headers: authHeaders() });
   if (!r.ok) {
     const t = await r.text();
-    alert(t || "暂无可下载内容");
+    if (!t) {
+      alert("暂无可下载内容");
+      return;
+    }
+    let payload = t;
+    try {
+      payload = JSON.parse(t);
+    } catch {
+      // Keep plain-text server responses readable.
+    }
+    alert(formatErrorPayload(payload));
     return;
   }
   const blob = await r.blob();
@@ -606,6 +662,13 @@ onUnmounted(() => {
               </p>
               <p class="muted small" v-if="elapsedText(taskMap[tid])">已运行/总用时 {{ elapsedText(taskMap[tid]) }}</p>
               <p class="muted msg">{{ taskMap[tid].message }}</p>
+
+              <div v-if="showJobIssue(taskMap[tid])" class="job-issue" :class="{ cancelled: taskMap[tid].status === 'cancelled' }">
+                <p class="job-issue-title">{{ jobIssueTitle(taskMap[tid]) }}</p>
+                <p v-if="taskMap[tid].error" class="job-issue-text">{{ taskMap[tid].error }}</p>
+                <p v-if="jobNextStep(taskMap[tid])" class="job-issue-text">建议：{{ jobNextStep(taskMap[tid]) }}</p>
+                <p v-if="jobErrorMeta(taskMap[tid])" class="job-issue-meta">{{ jobErrorMeta(taskMap[tid]) }}</p>
+              </div>
 
               <div class="bar-wrap" v-if="taskMap[tid].chunk_total || isActiveJob(taskMap[tid])">
                 <div class="bar" :style="{ width: progressForJob(taskMap[tid]) + '%' }"></div>
@@ -918,6 +981,34 @@ h2 {
 }
 .msg {
   font-size: 0.88rem;
+}
+.job-issue {
+  margin: 0.55rem 0 0.65rem;
+  padding: 0.65rem 0.7rem;
+  border: 1px solid rgba(255, 113, 113, 0.45);
+  border-left: 3px solid var(--err);
+  border-radius: 8px;
+  background: rgba(255, 113, 113, 0.08);
+}
+.job-issue.cancelled {
+  border-color: rgba(245, 170, 72, 0.45);
+  border-left-color: #f0a33b;
+  background: rgba(245, 170, 72, 0.08);
+}
+.job-issue-title {
+  margin: 0 0 0.3rem;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+.job-issue-text,
+.job-issue-meta {
+  margin: 0.18rem 0;
+  font-size: 0.84rem;
+  overflow-wrap: anywhere;
+}
+.job-issue-meta {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .bar-wrap {
   height: 8px;
