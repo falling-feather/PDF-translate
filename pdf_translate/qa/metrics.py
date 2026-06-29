@@ -19,6 +19,8 @@ DEFAULT_EVIDENCE_FILES = {
     "repair_validation": "output/repair_validation.json",
     "repair_merge": "output/repair_merge.json",
     "repair_merge_qa": "output/repair_merge_qa.json",
+    "run_metrics": "output/run_metrics.json",
+    "run_log": "output/run_log.jsonl",
 }
 
 
@@ -83,6 +85,7 @@ def build_experiment_metrics(
     repair_validation: dict[str, Any] | None = None,
     repair_merge: dict[str, Any] | None = None,
     repair_merge_qa: dict[str, Any] | None = None,
+    run_metrics: dict[str, Any] | None = None,
     evidence_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Aggregate pipeline QA artifacts into a patent-facing experiment summary."""
@@ -98,6 +101,7 @@ def build_experiment_metrics(
     repair_validation_summary = _summary(repair_validation)
     repair_merge_summary = _summary(repair_merge)
     repair_merge_qa_summary = _summary(repair_merge_qa)
+    run_summary = _summary(run_metrics)
 
     block_counts = _counter_dict(structure_summary.get("block_counts"))
     entity_type_counts = _counter_dict(structure_summary.get("entity_type_counts"))
@@ -108,6 +112,11 @@ def build_experiment_metrics(
     repair_action_counts = _counter_dict(repair_summary.get("action_counts"))
     repair_priority_counts = _counter_dict(repair_summary.get("priority_counts"))
     repair_scope_counts = _counter_dict(repair_summary.get("scope_counts"))
+    run_breakdowns = run_metrics.get("breakdowns") if isinstance(run_metrics, dict) else {}
+    stage_elapsed_ms = _counter_dict(run_summary.get("stage_elapsed_ms"))
+    stage_counts = _counter_dict((run_breakdowns or {}).get("stage_counts"))
+    translator_counts = _counter_dict((run_breakdowns or {}).get("translator_counts"))
+    skip_reasons = _counter_dict((run_breakdowns or {}).get("skip_reasons"))
 
     page_count = _as_int(structure_summary.get("page_count")) or _as_int(vision_summary.get("page_count"))
     table_count = _as_int(structure_summary.get("table_count")) or _as_int(
@@ -193,6 +202,23 @@ def build_experiment_metrics(
         repair_merge_qa_summary.get("missing_table_locked_token_count")
     )
     max_english_residual_ratio = _as_float(translation_summary.get("max_english_residual_ratio"))
+    total_elapsed_ms = _as_int(run_summary.get("total_elapsed_ms"))
+    translation_elapsed_ms = _as_int(run_summary.get("translation_elapsed_ms"))
+    translation_request_count = _as_int(run_summary.get("translation_request_count"))
+    skipped_chunk_count = _as_int(run_summary.get("skipped_chunk_count"))
+    source_char_count = _as_int(run_summary.get("source_char_count"))
+    context_char_count = _as_int(run_summary.get("context_char_count"))
+    request_char_count = _as_int(run_summary.get("request_char_count"))
+    translated_char_count = _as_int(run_summary.get("translated_char_count"))
+    estimated_source_token_count = _as_int(run_summary.get("estimated_source_token_count"))
+    estimated_context_token_count = _as_int(run_summary.get("estimated_context_token_count"))
+    estimated_request_token_count = _as_int(run_summary.get("estimated_request_token_count"))
+    estimated_translated_token_count = _as_int(run_summary.get("estimated_translated_token_count"))
+    estimated_total_token_count = _as_int(run_summary.get("estimated_total_token_count"))
+    avg_chunk_elapsed_ms = _as_float(run_summary.get("avg_chunk_elapsed_ms"))
+    max_chunk_elapsed_ms = _as_int(run_summary.get("max_chunk_elapsed_ms"))
+    request_chars_per_second = _as_float(run_summary.get("request_chars_per_second"))
+    translated_chars_per_second = _as_float(run_summary.get("translated_chars_per_second"))
 
     relationship_total = caption_count + footnote_count
     effective_entity_candidate_count = translation_entity_candidate_count or entity_candidate_count
@@ -276,6 +302,25 @@ def build_experiment_metrics(
             "post_repair_missing_table_locked_token_count": post_repair_missing_table_locked_token_count,
             "max_english_residual_ratio": max_english_residual_ratio,
         },
+        "performance": {
+            "total_elapsed_ms": total_elapsed_ms,
+            "translation_elapsed_ms": translation_elapsed_ms,
+            "translation_request_count": translation_request_count,
+            "skipped_chunk_count": skipped_chunk_count,
+            "source_char_count": source_char_count,
+            "context_char_count": context_char_count,
+            "request_char_count": request_char_count,
+            "translated_char_count": translated_char_count,
+            "estimated_source_token_count": estimated_source_token_count,
+            "estimated_context_token_count": estimated_context_token_count,
+            "estimated_request_token_count": estimated_request_token_count,
+            "estimated_translated_token_count": estimated_translated_token_count,
+            "estimated_total_token_count": estimated_total_token_count,
+            "avg_chunk_elapsed_ms": avg_chunk_elapsed_ms,
+            "max_chunk_elapsed_ms": max_chunk_elapsed_ms,
+            "request_chars_per_second": request_chars_per_second,
+            "translated_chars_per_second": translated_chars_per_second,
+        },
         "rates": {
             "relationship_warning_rate": _rate(relationship_warning_count, relationship_total),
             "caption_orphan_rate": _rate(caption_orphan_count, caption_count),
@@ -319,6 +364,11 @@ def build_experiment_metrics(
             "ocr_candidate_page_rate": _rate(ocr_candidate_page_count, page_count),
             "routed_page_rate": _rate(routed_page_count, page_count),
             "qa_issue_per_chunk": _rate(translation_issue_count, chunk_count),
+            "translation_request_per_chunk": _rate(translation_request_count, chunk_count),
+            "estimated_request_tokens_per_chunk": _rate(
+                estimated_request_token_count,
+                translation_request_count,
+            ),
         },
         "breakdowns": {
             "block_counts": block_counts,
@@ -330,6 +380,10 @@ def build_experiment_metrics(
             "repair_action_counts": repair_action_counts,
             "repair_priority_counts": repair_priority_counts,
             "repair_scope_counts": repair_scope_counts,
+            "stage_elapsed_ms": stage_elapsed_ms,
+            "stage_counts": stage_counts,
+            "translator_counts": translator_counts,
+            "skip_reasons": skip_reasons,
         },
         "evidence_files": dict(evidence_files or DEFAULT_EVIDENCE_FILES),
     }
@@ -352,6 +406,7 @@ def write_experiment_metrics(
     repair_validation: dict[str, Any] | None = None,
     repair_merge: dict[str, Any] | None = None,
     repair_merge_qa: dict[str, Any] | None = None,
+    run_metrics: dict[str, Any] | None = None,
     evidence_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     metrics = build_experiment_metrics(
@@ -369,6 +424,7 @@ def write_experiment_metrics(
         repair_validation=repair_validation,
         repair_merge=repair_merge,
         repair_merge_qa=repair_merge_qa,
+        run_metrics=run_metrics,
         evidence_files=evidence_files,
     )
     path.parent.mkdir(parents=True, exist_ok=True)

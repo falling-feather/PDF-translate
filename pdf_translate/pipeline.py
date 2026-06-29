@@ -5,6 +5,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
+from time import perf_counter
 from typing import Literal
 
 import fitz
@@ -31,6 +32,7 @@ from pdf_translate.qa.structure import write_structure_qa
 from pdf_translate.qa.table_reconstruction import build_table_translation_hints, write_table_reconstruction_report
 from pdf_translate.qa.translation import write_translation_qa
 from pdf_translate.rich_content import extract_page_rich_meta
+from pdf_translate.run_metrics import RunMetricsRecorder, elapsed_ms_since
 from pdf_translate.continuation_extract import translation_tail_for_next_chunk
 from pdf_translate.deferral_markers import (
     parse_model_output_with_deferral,
@@ -160,7 +162,7 @@ def _parallel_translate_one(
     style_text: str,
     ch: TextChunk,
     table_reconstruction: dict | None = None,
-) -> tuple[TextChunk, str, str]:
+) -> tuple[TextChunk, str, str, dict]:
     if is_cancel_requested(work_dir):
         raise JobCancelled()
     translator = build_translator(backend, cfg)
@@ -170,16 +172,33 @@ def _parallel_translate_one(
     mem = MemoryStore(work_dir / "memory")
     _write_survey_and_merge_glossary(work_dir, cfg, mem, ch, text)
     gloss = mem.glossary_snippet_for_pages(p0, p1)
+    structure_hints = build_table_translation_hints(ch, table_reconstruction)
     req = TranslationRequest(
         source_text=text,
         glossary_excerpt=gloss,
         prior_summaries="",
         style_notes=style_text,
-        structure_hints=build_table_translation_hints(ch, table_reconstruction),
+        structure_hints=structure_hints,
     )
+    translate_started = perf_counter()
     zh = translator.translate(req)
+    translate_elapsed_ms = elapsed_ms_since(translate_started)
     tname = getattr(translator, "name", type(translator).__name__)
-    return ch, zh, tname
+    context_char_count = len(gloss) + len(style_text) + len(structure_hints)
+    return (
+        ch,
+        zh,
+        tname,
+        {
+            "elapsed_ms": translate_elapsed_ms,
+            "source_char_count": len(text),
+            "context_char_count": context_char_count,
+            "request_char_count": len(text) + context_char_count,
+            "translated_char_count": len(zh),
+            "raw_translated_char_count": len(zh),
+            "deferred_char_count": 0,
+        },
+    )
 
 
 def run_translate(
@@ -215,26 +234,45 @@ def run_translate(
     out_dir.mkdir(parents=True, exist_ok=True)
     chunk_dir.mkdir(parents=True, exist_ok=True)
 
-    doc_ir = extract_document_ir(main_pdf)
-    doc_ir.write_json(out_dir / "document_ir.json")
-    structure_qa = write_structure_qa(doc_ir, out_dir / "structure_qa.json")
-    table_reconstruction = write_table_reconstruction_report(
-        doc_ir,
-        structure_qa,
-        out_dir / "table_reconstruction.json",
+    be = backend or cfg.default_translator
+    nw = max(1, int(parallel_workers))
+    log_path = out_dir / "run_log.jsonl"
+    run_metrics = RunMetricsRecorder(log_path)
+    run_metrics.record(
+        "run_start",
+        "run",
+        backend=be,
+        pipeline_variant=chunk_strategy,
+        translate_mode=translate_mode,
+        parallel_workers=nw,
     )
-    vision_route = write_vision_route(doc_ir, out_dir / "vision_route.json")
-    structure_chunks = build_structure_chunks(
-        doc_ir,
-        max_pages_per_chunk=pages_per_chunk,
-    )
-    write_structure_manifest(structure_chunks, out_dir / "structure_chunks_manifest.json")
-    page_rows = _page_rows_for_main(main_pdf)
-    page_chunks = build_text_chunks(
-        page_rows,
-        pages_per_chunk=pages_per_chunk,
-        overlap_pages=overlap_pages,
-    )
+
+    with run_metrics.stage("document_ir"):
+        doc_ir = extract_document_ir(main_pdf)
+        doc_ir.write_json(out_dir / "document_ir.json")
+    with run_metrics.stage("structure_qa"):
+        structure_qa = write_structure_qa(doc_ir, out_dir / "structure_qa.json")
+    with run_metrics.stage("table_reconstruction"):
+        table_reconstruction = write_table_reconstruction_report(
+            doc_ir,
+            structure_qa,
+            out_dir / "table_reconstruction.json",
+        )
+    with run_metrics.stage("vision_route"):
+        vision_route = write_vision_route(doc_ir, out_dir / "vision_route.json")
+    with run_metrics.stage("structure_chunking"):
+        structure_chunks = build_structure_chunks(
+            doc_ir,
+            max_pages_per_chunk=pages_per_chunk,
+        )
+        write_structure_manifest(structure_chunks, out_dir / "structure_chunks_manifest.json")
+    with run_metrics.stage("page_chunking"):
+        page_rows = _page_rows_for_main(main_pdf)
+        page_chunks = build_text_chunks(
+            page_rows,
+            pages_per_chunk=pages_per_chunk,
+            overlap_pages=overlap_pages,
+        )
 
     if chunk_strategy == "structure":
         chunks = structure_chunks
@@ -243,38 +281,41 @@ def run_translate(
     else:
         raise ValueError("chunk_strategy must be 'page' or 'structure'")
 
-    chunk_manifest = [
-        {
-            "chunk_id": c.chunk_id,
-            "pages_1based": [c.pages_0based[0] + 1, c.pages_0based[-1] + 1],
-            "link_count": c.link_count,
-            "image_count": c.image_count,
-            "strategy": chunk_strategy,
-            "block_ids": getattr(c, "block_ids", []),
-            "block_types": getattr(c, "block_types", {}),
-            "warnings": getattr(c, "warnings", []),
-            "boundary_fragment_ids": getattr(c, "boundary_fragment_ids", []),
-        }
-        for c in chunks
-    ]
-    (out_dir / "chunks_manifest.json").write_text(
-        json.dumps(chunk_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    chunk_boundary_qa = write_chunk_boundary_qa(
-        chunks,
-        structure_qa,
-        out_dir / "chunk_boundary_qa.json",
-        pipeline_variant=chunk_strategy,
-    )
-    chunk_strategy_comparison = write_chunk_strategy_comparison(
-        {
-            "page": page_chunks,
-            "structure": structure_chunks,
-        },
-        structure_qa,
-        out_dir / "chunk_strategy_comparison.json",
-        active_strategy=chunk_strategy,
-    )
+    with run_metrics.stage("chunk_manifest"):
+        chunk_manifest = [
+            {
+                "chunk_id": c.chunk_id,
+                "pages_1based": [c.pages_0based[0] + 1, c.pages_0based[-1] + 1],
+                "link_count": c.link_count,
+                "image_count": c.image_count,
+                "strategy": chunk_strategy,
+                "block_ids": getattr(c, "block_ids", []),
+                "block_types": getattr(c, "block_types", {}),
+                "warnings": getattr(c, "warnings", []),
+                "boundary_fragment_ids": getattr(c, "boundary_fragment_ids", []),
+            }
+            for c in chunks
+        ]
+        (out_dir / "chunks_manifest.json").write_text(
+            json.dumps(chunk_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    with run_metrics.stage("chunk_boundary_qa"):
+        chunk_boundary_qa = write_chunk_boundary_qa(
+            chunks,
+            structure_qa,
+            out_dir / "chunk_boundary_qa.json",
+            pipeline_variant=chunk_strategy,
+        )
+    with run_metrics.stage("chunk_strategy_comparison"):
+        chunk_strategy_comparison = write_chunk_strategy_comparison(
+            {
+                "page": page_chunks,
+                "structure": structure_chunks,
+            },
+            structure_qa,
+            out_dir / "chunk_strategy_comparison.json",
+            active_strategy=chunk_strategy,
+        )
 
     state_path = out_dir / "state.json"
     state: dict = {"completed": [], "prompt_version": SYSTEM_PROMPT_VERSION, "prompt_hash": prompt_fingerprint()}
@@ -286,13 +327,10 @@ def run_translate(
     if progress_callback:
         progress_callback({"event": "translate_start", "chunk_total": len(chunks)})
 
-    be = backend or cfg.default_translator
     style_text = mem.style_path.read_text(encoding="utf-8").strip()
-    log_path = out_dir / "run_log.jsonl"
     merged_path = out_dir / "translated_full.md"
-    merge_chunks_markdown(chunk_dir, merged_path, chunks)
-
-    nw = max(1, int(parallel_workers))
+    with run_metrics.stage("initial_merge"):
+        merge_chunks_markdown(chunk_dir, merged_path, chunks)
 
     def _maybe_clear_carry_when_fully_done() -> None:
         st = json.loads(state_path.read_text(encoding="utf-8"))
@@ -301,63 +339,90 @@ def run_translate(
             mem.save_deferred_carry("")
 
     def _write_translation_qa_report() -> None:
-        qa_report = write_translation_qa(
-            chunks,
-            chunk_dir,
-            out_dir / "qa_report.json",
-            out_dir / "qa_report.md",
-            glossary=mem.load_glossary(),
-            pending_review=mem.load_pending_review(),
-            document_ir=doc_ir,
-            table_reconstruction=table_reconstruction,
-        )
-        repair_plan = write_repair_plan(
-            qa_report,
-            out_dir / "repair_plan.json",
-            out_dir / "repair_plan.md",
-        )
-        repair_requests = write_repair_requests(
-            repair_plan,
-            chunks,
-            chunk_dir,
-            out_dir / "repair_requests.json",
-            out_dir / "repair_requests.md",
-        )
+        with run_metrics.stage("translation_qa"):
+            qa_report = write_translation_qa(
+                chunks,
+                chunk_dir,
+                out_dir / "qa_report.json",
+                out_dir / "qa_report.md",
+                glossary=mem.load_glossary(),
+                pending_review=mem.load_pending_review(),
+                document_ir=doc_ir,
+                table_reconstruction=table_reconstruction,
+            )
+        with run_metrics.stage("repair_plan"):
+            repair_plan = write_repair_plan(
+                qa_report,
+                out_dir / "repair_plan.json",
+                out_dir / "repair_plan.md",
+            )
+        with run_metrics.stage("repair_requests"):
+            repair_requests = write_repair_requests(
+                repair_plan,
+                chunks,
+                chunk_dir,
+                out_dir / "repair_requests.json",
+                out_dir / "repair_requests.md",
+            )
         repair_translator = build_translator(be, cfg) if execute_repair_requests else None
-        repair_results = write_repair_results(
-            repair_requests,
-            out_dir / "repair_results.json",
-            out_dir / "repair_results.md",
-            translator=repair_translator,
-            execute=execute_repair_requests,
-            max_requests=max_repair_requests,
-        )
-        repair_validation = write_repair_validation(
-            repair_requests,
-            repair_results,
-            out_dir / "repair_validation.json",
-            out_dir / "repair_validation.md",
-        )
-        repair_merge = write_repair_merge(
-            repair_requests,
-            repair_results,
-            repair_validation,
-            chunks,
-            chunk_dir,
-            out_dir / "repair_merge.json",
-            out_dir / "repair_merge.md",
-            repaired_chunk_dir=out_dir / "repaired_chunks",
-            repaired_full_path=out_dir / "repaired_full.md",
-        )
-        repair_merge_qa = write_translation_qa(
-            chunks,
-            out_dir / "repaired_chunks",
-            out_dir / "repair_merge_qa.json",
-            out_dir / "repair_merge_qa.md",
-            glossary=mem.load_glossary(),
-            pending_review=mem.load_pending_review(),
-            document_ir=doc_ir,
-            table_reconstruction=table_reconstruction,
+        with run_metrics.stage("repair_results", execute=execute_repair_requests):
+            repair_results = write_repair_results(
+                repair_requests,
+                out_dir / "repair_results.json",
+                out_dir / "repair_results.md",
+                translator=repair_translator,
+                execute=execute_repair_requests,
+                max_requests=max_repair_requests,
+            )
+        with run_metrics.stage("repair_validation"):
+            repair_validation = write_repair_validation(
+                repair_requests,
+                repair_results,
+                out_dir / "repair_validation.json",
+                out_dir / "repair_validation.md",
+            )
+        with run_metrics.stage("repair_merge"):
+            repair_merge = write_repair_merge(
+                repair_requests,
+                repair_results,
+                repair_validation,
+                chunks,
+                chunk_dir,
+                out_dir / "repair_merge.json",
+                out_dir / "repair_merge.md",
+                repaired_chunk_dir=out_dir / "repaired_chunks",
+                repaired_full_path=out_dir / "repaired_full.md",
+            )
+        with run_metrics.stage("repair_merge_qa"):
+            repair_merge_qa = write_translation_qa(
+                chunks,
+                out_dir / "repaired_chunks",
+                out_dir / "repair_merge_qa.json",
+                out_dir / "repair_merge_qa.md",
+                glossary=mem.load_glossary(),
+                pending_review=mem.load_pending_review(),
+                document_ir=doc_ir,
+                table_reconstruction=table_reconstruction,
+            )
+        with run_metrics.stage("bilingual_html"):
+            write_bilingual_html(
+                chunks,
+                chunk_dir,
+                out_dir / "bilingual.html",
+                qa_report=qa_report,
+                repair_plan=repair_plan,
+                title=f"{main_pdf.stem} 双语对照译文",
+            )
+        run_metrics_summary = run_metrics.write_summary(
+            out_dir / "run_metrics.json",
+            doc_id=doc_ir.doc_id,
+            pipeline_variant=chunk_strategy,
+            backend=be,
+            translate_mode=translate_mode,
+            parallel_workers=nw,
+            page_count=len(doc_ir.pages),
+            chunk_count=len(chunks),
+            completed_chunk_count=len(done),
         )
         write_experiment_metrics(
             structure_qa,
@@ -375,14 +440,7 @@ def run_translate(
             repair_validation=repair_validation,
             repair_merge=repair_merge,
             repair_merge_qa=repair_merge_qa,
-        )
-        write_bilingual_html(
-            chunks,
-            chunk_dir,
-            out_dir / "bilingual.html",
-            qa_report=qa_report,
-            repair_plan=repair_plan,
-            title=f"{main_pdf.stem} 双语对照译文",
+            run_metrics=run_metrics_summary,
         )
 
     if translate_mode == "parallel":
@@ -393,6 +451,14 @@ def run_translate(
             if max_chunks is not None and n_sched >= max_chunks:
                 break
             if resume and ch.chunk_id in done:
+                run_metrics.record_chunk_skipped(
+                    chunk_id=ch.chunk_id,
+                    pages_1based=[ch.pages_0based[0] + 1, ch.pages_0based[-1] + 1],
+                    reason="resume_completed",
+                    chunk_index=idx + 1,
+                    chunk_total=len(chunks),
+                    mode=translate_mode,
+                )
                 continue
             pending.append((idx, ch))
             n_sched += 1
@@ -421,7 +487,7 @@ def run_translate(
                     ex.submit(_parallel_translate_one, work_dir, cfg, be, style_text, ch, table_reconstruction)
                     for _idx, ch in batch
                 ]
-                got: list[tuple[TextChunk, str, str]] = []
+                got: list[tuple[TextChunk, str, str, dict]] = []
                 for fu in as_completed(futs):
                     if is_cancel_requested(work_dir):
                         merge_chunks_markdown(chunk_dir, merged_path, chunks)
@@ -429,7 +495,7 @@ def run_translate(
                     got.append(fu.result())
             batch_idx = {ch.chunk_id: i for i, (_i, ch) in enumerate(batch)}
             got.sort(key=lambda t: batch_idx[t[0].chunk_id])
-            for ch, zh, tname in got:
+            for ch, zh, tname, translation_metrics in got:
                 body, meta = _chunk_body_and_meta(ch, zh, tname)
                 (chunk_dir / f"{ch.chunk_id}.md").write_text(body, encoding="utf-8")
                 summary = zh.strip().replace("\n", " ")[:400]
@@ -442,16 +508,26 @@ def run_translate(
                 done.add(ch.chunk_id)
                 state["completed"] = sorted(done)
                 state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-                log_line = {
-                    "chunk_id": ch.chunk_id,
-                    "pages_1based": meta["pages_1based"],
-                    "translator": meta["translator"],
-                    "prompt_version": SYSTEM_PROMPT_VERSION,
-                }
-                with log_path.open("a", encoding="utf-8") as lf:
-                    lf.write(json.dumps(log_line, ensure_ascii=False) + "\n")
-                merge_chunks_markdown(chunk_dir, merged_path, chunks)
                 chunk_index = next(i for i, c in enumerate(chunks, start=1) if c.chunk_id == ch.chunk_id)
+                run_metrics.record_chunk_translation(
+                    chunk_id=ch.chunk_id,
+                    pages_1based=meta["pages_1based"],
+                    translator=meta["translator"],
+                    elapsed_ms=translation_metrics["elapsed_ms"],
+                    source_char_count=translation_metrics["source_char_count"],
+                    context_char_count=translation_metrics["context_char_count"],
+                    request_char_count=translation_metrics["request_char_count"],
+                    translated_char_count=translation_metrics["translated_char_count"],
+                    raw_translated_char_count=translation_metrics["raw_translated_char_count"],
+                    deferred_char_count=translation_metrics["deferred_char_count"],
+                    chunk_index=chunk_index,
+                    chunk_total=len(chunks),
+                    prompt_version=SYSTEM_PROMPT_VERSION,
+                    prompt_fingerprint=prompt_fingerprint(),
+                    mode=translate_mode,
+                )
+                with run_metrics.stage("incremental_merge", chunk_id=ch.chunk_id):
+                    merge_chunks_markdown(chunk_dir, merged_path, chunks)
                 if progress_callback:
                     progress_callback(
                         {
@@ -461,7 +537,8 @@ def run_translate(
                             "chunk_id": ch.chunk_id,
                         }
                     )
-        merge_chunks_markdown(chunk_dir, merged_path, chunks)
+        with run_metrics.stage("final_merge"):
+            merge_chunks_markdown(chunk_dir, merged_path, chunks)
         _maybe_clear_carry_when_fully_done()
         _write_translation_qa_report()
         return merged_path
@@ -480,6 +557,14 @@ def run_translate(
             merge_chunks_markdown(chunk_dir, merged_path, chunks)
             raise JobCancelled()
         if resume and ch.chunk_id in done:
+            run_metrics.record_chunk_skipped(
+                chunk_id=ch.chunk_id,
+                pages_1based=[ch.pages_0based[0] + 1, ch.pages_0based[-1] + 1],
+                reason="resume_completed",
+                chunk_index=idx + 1,
+                chunk_total=len(chunks),
+                mode=translate_mode,
+            )
             if progress_callback:
                 progress_callback(
                     {
@@ -509,17 +594,27 @@ def run_translate(
 
         is_doc_last = idx == len(chunks) - 1
         use_defer = defer_protocol and not is_doc_last
+        structure_hints = build_table_translation_hints(ch, table_reconstruction)
 
         req = TranslationRequest(
             source_text=text,
             glossary_excerpt=gloss,
             prior_summaries=priors,
             style_notes=style_text,
-            structure_hints=build_table_translation_hints(ch, table_reconstruction),
+            structure_hints=structure_hints,
             prior_tail_zh=prior_tail,
             continuation_hint=cont_hint,
             prior_untranslated_continuation=carry,
             defer_source_tail_protocol=use_defer,
+        )
+        context_char_count = (
+            len(gloss)
+            + len(priors)
+            + len(style_text)
+            + len(structure_hints)
+            + len(prior_tail)
+            + len(cont_hint)
+            + len(carry)
         )
         approx_n = len(text) + len(carry)
         if progress_callback:
@@ -532,7 +627,9 @@ def run_translate(
                     "approx_chars": approx_n,
                 }
             )
+        translate_started = perf_counter()
         raw_zh = translator.translate(req)
+        translate_elapsed_ms = elapsed_ms_since(translate_started)
         published, deferred_en = parse_model_output_with_deferral(
             raw_zh,
             use_deferral=use_defer,
@@ -540,7 +637,8 @@ def run_translate(
 
         body, meta = _chunk_body_and_meta(ch, published, tname)
         (chunk_dir / f"{ch.chunk_id}.md").write_text(body, encoding="utf-8")
-        merge_chunks_markdown(chunk_dir, merged_path, chunks)
+        with run_metrics.stage("incremental_merge", chunk_id=ch.chunk_id):
+            merge_chunks_markdown(chunk_dir, merged_path, chunks)
 
         plain_for_mem = strip_markers_from_plain_text(published)
         summary = plain_for_mem.replace("\n", " ")[:400]
@@ -557,14 +655,23 @@ def run_translate(
         state["completed"] = sorted(done)
         state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        log_line = {
-            "chunk_id": ch.chunk_id,
-            "pages_1based": [p0, p1],
-            "translator": meta["translator"],
-            "prompt_version": SYSTEM_PROMPT_VERSION,
-        }
-        with log_path.open("a", encoding="utf-8") as lf:
-            lf.write(json.dumps(log_line, ensure_ascii=False) + "\n")
+        run_metrics.record_chunk_translation(
+            chunk_id=ch.chunk_id,
+            pages_1based=[p0, p1],
+            translator=meta["translator"],
+            elapsed_ms=translate_elapsed_ms,
+            source_char_count=len(text),
+            context_char_count=context_char_count,
+            request_char_count=len(text) + context_char_count,
+            translated_char_count=len(published),
+            raw_translated_char_count=len(raw_zh),
+            deferred_char_count=len(deferred_en),
+            chunk_index=idx + 1,
+            chunk_total=len(chunks),
+            prompt_version=SYSTEM_PROMPT_VERSION,
+            prompt_fingerprint=prompt_fingerprint(),
+            mode=translate_mode,
+        )
 
         if progress_callback:
             progress_callback(
@@ -578,7 +685,8 @@ def run_translate(
 
         n_done += 1
 
-    merge_chunks_markdown(chunk_dir, merged_path, chunks)
+    with run_metrics.stage("final_merge"):
+        merge_chunks_markdown(chunk_dir, merged_path, chunks)
     _maybe_clear_carry_when_fully_done()
     _write_translation_qa_report()
     return merged_path
