@@ -123,6 +123,9 @@ def build_experiment_metrics(
     missing_entity_token_count = _as_int(translation_summary.get("missing_entity_token_count"))
     source_table_count = _as_int(translation_summary.get("source_table_count")) or table_count
     table_shape_error_count = _as_int(translation_summary.get("table_shape_error_count"))
+    source_table_locked_token_count = _as_int(translation_summary.get("source_table_locked_token_count"))
+    table_cell_token_error_count = _as_int(translation_summary.get("table_cell_token_error_count"))
+    missing_table_locked_token_count = _as_int(translation_summary.get("missing_table_locked_token_count"))
     page_boundary_fragment_count = _as_int(structure_summary.get("page_boundary_fragment_count"))
     page_boundary_fragment_rate = _as_float(structure_summary.get("page_boundary_fragment_rate"))
     split_boundary_count = _as_int(chunk_boundary_summary.get("split_boundary_count"))
@@ -181,6 +184,9 @@ def build_experiment_metrics(
             "missing_entity_token_count": missing_entity_token_count,
             "source_table_count": source_table_count,
             "table_shape_error_count": table_shape_error_count,
+            "source_table_locked_token_count": source_table_locked_token_count,
+            "table_cell_token_error_count": table_cell_token_error_count,
+            "missing_table_locked_token_count": missing_table_locked_token_count,
             "page_boundary_fragment_count": page_boundary_fragment_count,
             "page_boundary_fragment_rate": page_boundary_fragment_rate,
             "split_boundary_count": split_boundary_count,
@@ -206,6 +212,11 @@ def build_experiment_metrics(
             "table_footnote_binding_rate": _rate(table_footnote_linked_count, table_count),
             "table_continuation_rate": _rate(table_continuation_count, table_count),
             "table_shape_error_rate": _rate(table_shape_error_count, source_table_count),
+            "table_cell_token_error_rate": _rate(table_cell_token_error_count, table_numeric_cell_count),
+            "table_locked_token_missing_rate": _rate(
+                missing_table_locked_token_count,
+                source_table_locked_token_count,
+            ),
             "split_boundary_rate": _rate(split_boundary_count, page_boundary_fragment_count),
             "protected_boundary_rate": _rate(protected_boundary_count, page_boundary_fragment_count),
             "co_located_boundary_rate": _rate(co_located_boundary_count, page_boundary_fragment_count),

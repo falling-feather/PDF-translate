@@ -301,6 +301,7 @@ def run_translate(
             glossary=mem.load_glossary(),
             pending_review=mem.load_pending_review(),
             document_ir=doc_ir,
+            table_reconstruction=table_reconstruction,
         )
         repair_plan = write_repair_plan(
             qa_report,

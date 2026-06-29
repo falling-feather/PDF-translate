@@ -75,25 +75,27 @@ def _has_table_figure_token(target: str, token: dict[str, str]) -> bool:
     return bool(re.search(rf"图\s*{num}\b", target))
 
 
-def _markdown_table_shapes(text: str) -> list[dict[str, int]]:
-    shapes: list[dict[str, int]] = []
+def _markdown_separator_row(row: list[str]) -> bool:
+    return bool(row) and all(cell.replace("-", "").replace(":", "").strip() == "" for cell in row)
+
+
+def _markdown_tables(text: str) -> list[dict[str, Any]]:
+    tables: list[dict[str, Any]] = []
     current_rows: list[list[str]] = []
 
     def flush() -> None:
         nonlocal current_rows
         if not current_rows:
             return
-        data_rows = [
-            row
-            for row in current_rows
-            if not row
-            or not all(cell.replace("-", "").replace(":", "").strip() == "" for cell in row)
-        ]
+        data_rows = [row for row in current_rows if not _markdown_separator_row(row)]
         if data_rows:
-            shapes.append(
+            column_count = max(len(row) for row in data_rows)
+            rows = [row + [""] * max(0, column_count - len(row)) for row in data_rows]
+            tables.append(
                 {
-                    "row_count": len(data_rows),
-                    "column_count": max(len(row) for row in data_rows),
+                    "rows": rows,
+                    "row_count": len(rows),
+                    "column_count": column_count,
                 }
             )
         current_rows = []
@@ -106,6 +108,18 @@ def _markdown_table_shapes(text: str) -> list[dict[str, int]]:
             continue
         flush()
     flush()
+    return tables
+
+
+def _markdown_table_shapes(text: str) -> list[dict[str, int]]:
+    shapes: list[dict[str, int]] = []
+    for table in _markdown_tables(text):
+        shapes.append(
+            {
+                "row_count": int(table.get("row_count") or 0),
+                "column_count": int(table.get("column_count") or 0),
+            }
+        )
     return shapes
 
 
@@ -172,6 +186,101 @@ def _document_table_shape_errors(
                 "confidence": table.get("confidence") or "low",
             }
         )
+    return errors
+
+
+def _table_reconstruction_tables(
+    table_reconstruction: dict[str, Any] | None,
+    chunk: TextChunk,
+) -> list[dict[str, Any]]:
+    if not isinstance(table_reconstruction, dict):
+        return []
+    block_ids = set(str(block_id) for block_id in getattr(chunk, "block_ids", []) if str(block_id))
+    pages = {page + 1 for page in chunk.pages_0based}
+    out: list[dict[str, Any]] = []
+    for table in table_reconstruction.get("tables") or []:
+        if not isinstance(table, dict):
+            continue
+        table_id = str(table.get("block_id") or table.get("table_id") or "")
+        page_no = int(table.get("page_no") or 0)
+        if block_ids:
+            if table_id not in block_ids:
+                continue
+        elif page_no not in pages:
+            continue
+        row_count = int(table.get("row_count") or 0)
+        column_count = int(table.get("column_count") or 0)
+        if row_count < 2 or column_count < 2:
+            continue
+        out.append(table)
+    return out
+
+
+def _table_locked_token_count(tables: list[dict[str, Any]]) -> int:
+    count = 0
+    for table in tables:
+        for cell in table.get("cells") or []:
+            if not isinstance(cell, dict):
+                continue
+            count += len([token for token in cell.get("locked_tokens") or [] if str(token)])
+    return count
+
+
+def _target_cell_text(target_table: dict[str, Any], row_index: int, column_index: int) -> str | None:
+    rows = target_table.get("rows") or []
+    if row_index < 0 or column_index < 0:
+        return None
+    if row_index >= len(rows):
+        return None
+    row = rows[row_index]
+    if not isinstance(row, list) or column_index >= len(row):
+        return None
+    return str(row[column_index])
+
+
+def _table_cell_token_errors(
+    source_tables: list[dict[str, Any]],
+    target_tables: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    for table_index, table in enumerate(source_tables):
+        target_table = target_tables[table_index] if table_index < len(target_tables) else None
+        if not target_table:
+            continue
+        table_id = str(table.get("table_id") or table.get("block_id") or "")
+        for cell in table.get("cells") or []:
+            if not isinstance(cell, dict):
+                continue
+            locked_tokens = [str(token).strip() for token in cell.get("locked_tokens") or [] if str(token).strip()]
+            if not locked_tokens:
+                continue
+            row_index = int(cell.get("row_index") or 0)
+            column_index = int(cell.get("column_index") or 0)
+            target_text = _target_cell_text(target_table, row_index, column_index)
+            missing_tokens = (
+                locked_tokens
+                if target_text is None
+                else [token for token in locked_tokens if token not in target_text]
+            )
+            if not missing_tokens:
+                continue
+            errors.append(
+                {
+                    "table_index": table_index,
+                    "table_id": table_id,
+                    "block_id": table.get("block_id") or table_id,
+                    "page_no": table.get("page_no"),
+                    "row_index": row_index,
+                    "column_index": column_index,
+                    "role": cell.get("role") or "data",
+                    "column_header": cell.get("column_header") or "",
+                    "row_header": cell.get("row_header") or "",
+                    "source_cell_text": cell.get("text") or "",
+                    "target_cell_text": target_text,
+                    "missing_tokens": missing_tokens[:20],
+                    "reason": "missing_target_cell" if target_text is None else "missing_locked_tokens",
+                }
+            )
     return errors
 
 
@@ -352,6 +461,7 @@ def _chunk_report(
     glossary_terms: list[dict[str, Any]],
     glossary_conflicts: list[dict[str, Any]],
     table_invariants: list[dict[str, Any]] | None = None,
+    table_reconstruction_tables: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     source = _source_text_for_qa(chunk.text)
     pages_1based = [p + 1 for p in chunk.pages_0based]
@@ -381,7 +491,11 @@ def _chunk_report(
     source_symbols = _math_symbols(source)
     missing_symbols = [token for token in source_symbols if token not in target_text]
     source_tables = _markdown_table_shapes(source)
-    target_tables = _markdown_table_shapes(target_text)
+    target_markdown_tables = _markdown_tables(target_text)
+    target_tables = [
+        {"row_count": int(table.get("row_count") or 0), "column_count": int(table.get("column_count") or 0)}
+        for table in target_markdown_tables
+    ]
     table_shape_errors: list[dict[str, Any]] = []
     for idx, source_shape in enumerate(source_tables):
         target_shape = target_tables[idx] if idx < len(target_tables) else None
@@ -395,6 +509,13 @@ def _chunk_report(
             )
     if not source_tables:
         table_shape_errors.extend(_document_table_shape_errors(table_invariants or [], target_tables))
+    table_cell_token_errors = _table_cell_token_errors(
+        table_reconstruction_tables or [],
+        target_markdown_tables,
+    )
+    missing_table_locked_token_count = sum(
+        len(error.get("missing_tokens") or []) for error in table_cell_token_errors
+    )
 
     duplicates = _duplicate_paragraphs(target_text)
     english_ratio = _english_residual_ratio(target_text)
@@ -424,6 +545,14 @@ def _chunk_report(
         issues.append({"type": "missing_math_symbols", "severity": "medium", "tokens": missing_symbols[:80]})
     if table_shape_errors:
         issues.append({"type": "table_shape_mismatch", "severity": "high", "tables": table_shape_errors})
+    if table_cell_token_errors:
+        issues.append(
+            {
+                "type": "table_cell_token_mismatch",
+                "severity": "high",
+                "cells": table_cell_token_errors[:80],
+            }
+        )
     if duplicates:
         issues.append({"type": "duplicate_paragraphs", "severity": "medium", "samples": duplicates[:5]})
     if english_ratio >= 0.45:
@@ -473,8 +602,16 @@ def _chunk_report(
                 str(table.get("block_id"))
                 for table in (table_invariants or [])
                 if str(table.get("block_id") or "")
+            ]
+            or [
+                str(table.get("block_id") or table.get("table_id"))
+                for table in (table_reconstruction_tables or [])
+                if str(table.get("block_id") or table.get("table_id") or "")
             ],
             "table_shape_error_count": len(table_shape_errors),
+            "source_table_locked_token_count": _table_locked_token_count(table_reconstruction_tables or []),
+            "table_cell_token_error_count": len(table_cell_token_errors),
+            "missing_table_locked_token_count": missing_table_locked_token_count,
             "english_residual_ratio": english_ratio,
             "duplicate_paragraph_count": len(duplicates),
             "missing_glossary_term_count": len(missing_glossary),
@@ -492,6 +629,7 @@ def build_translation_qa(
     glossary: dict[str, Any] | None = None,
     pending_review: dict[str, Any] | None = None,
     document_ir: DocumentIR | None = None,
+    table_reconstruction: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     terms = _glossary_terms(glossary)
     conflicts = _glossary_conflicts(glossary, pending_review)
@@ -502,6 +640,7 @@ def build_translation_qa(
             terms,
             conflicts,
             table_invariants=_document_table_invariants(document_ir, chunk),
+            table_reconstruction_tables=_table_reconstruction_tables(table_reconstruction, chunk),
         )
         for chunk in chunks
     ]
@@ -513,6 +652,9 @@ def build_translation_qa(
     source_table_count_without_ids = 0
     source_table_ids: set[str] = set()
     table_shape_error_count = 0
+    source_table_locked_token_count = 0
+    table_cell_token_error_count = 0
+    missing_table_locked_token_count = 0
     for report in reports:
         if report["status"] != "missing_translation":
             translated_count += 1
@@ -525,6 +667,9 @@ def build_translation_qa(
         else:
             source_table_count_without_ids += int(metrics.get("source_table_count") or 0)
         table_shape_error_count += int(metrics.get("table_shape_error_count") or 0)
+        source_table_locked_token_count += int(metrics.get("source_table_locked_token_count") or 0)
+        table_cell_token_error_count += int(metrics.get("table_cell_token_error_count") or 0)
+        missing_table_locked_token_count += int(metrics.get("missing_table_locked_token_count") or 0)
         for issue in report["issues"]:
             issue_counts[issue["type"]] += 1
             severity_counts[issue["severity"]] += 1
@@ -544,6 +689,9 @@ def build_translation_qa(
             "missing_entity_token_count": missing_entity_count,
             "source_table_count": len(source_table_ids) + source_table_count_without_ids,
             "table_shape_error_count": table_shape_error_count,
+            "source_table_locked_token_count": source_table_locked_token_count,
+            "table_cell_token_error_count": table_cell_token_error_count,
+            "missing_table_locked_token_count": missing_table_locked_token_count,
             "issue_count": sum(issue_counts.values()),
             "issue_counts": dict(issue_counts),
             "severity_counts": dict(severity_counts),
@@ -567,9 +715,11 @@ def translation_qa_to_markdown(report: dict[str, Any]) -> str:
         f"| 术语冲突 | {summary.get('glossary_conflict_count', 0)} |",
         f"| 实体候选 | {summary.get('entity_candidate_count', 0)} |",
         f"| 缺失实体 | {summary.get('missing_entity_token_count', 0)} |",
-        f"| 源表格 | {summary.get('source_table_count', 0)} |",
-        f"| 表格形状异常 | {summary.get('table_shape_error_count', 0)} |",
-        f"| 问题总数 | {summary.get('issue_count', 0)} |",
+            f"| 源表格 | {summary.get('source_table_count', 0)} |",
+            f"| 表格形状异常 | {summary.get('table_shape_error_count', 0)} |",
+            f"| 表格单元格 token 异常 | {summary.get('table_cell_token_error_count', 0)} |",
+            f"| 缺失表格锁定 token | {summary.get('missing_table_locked_token_count', 0)} |",
+            f"| 问题总数 | {summary.get('issue_count', 0)} |",
         f"| 最高英文残留比例 | {summary.get('max_english_residual_ratio', 0)} |",
         "",
         "## 问题分布",
@@ -624,6 +774,8 @@ def translation_qa_to_markdown(report: dict[str, Any]) -> str:
                 lines.append(f"- `{severity}` `{issue_type}`：{issue.get('ratio')}")
             elif "tables" in issue:
                 lines.append(f"- `{severity}` `{issue_type}`：{json.dumps(issue.get('tables'), ensure_ascii=False)}")
+            elif "cells" in issue:
+                lines.append(f"- `{severity}` `{issue_type}`：{json.dumps(issue.get('cells'), ensure_ascii=False)}")
             elif "samples" in issue:
                 lines.append(f"- `{severity}` `{issue_type}`：{json.dumps(issue.get('samples'), ensure_ascii=False)}")
             else:
@@ -642,6 +794,7 @@ def write_translation_qa(
     glossary: dict[str, Any] | None = None,
     pending_review: dict[str, Any] | None = None,
     document_ir: DocumentIR | None = None,
+    table_reconstruction: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     report = build_translation_qa(
         chunks,
@@ -649,6 +802,7 @@ def write_translation_qa(
         glossary=glossary,
         pending_review=pending_review,
         document_ir=document_ir,
+        table_reconstruction=table_reconstruction,
     )
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

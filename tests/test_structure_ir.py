@@ -434,6 +434,92 @@ class StructureIRTests(unittest.TestCase):
         self.assertIn("锁定 token：91.2%", message)
         self.assertLess(message.index("【结构保护提示】"), message.index("【待译正文】"))
 
+    def test_translation_qa_reports_table_cell_token_mismatch(self) -> None:
+        root = Path.cwd() / "test-output" / "table-cell-token-qa"
+        if root.exists():
+            shutil.rmtree(root)
+        chunk_dir = root / "chunks"
+        chunk_dir.mkdir(parents=True)
+        try:
+            table = BlockIR(
+                "p1-b0000",
+                1,
+                "table",
+                "Model Acc p\nBERT 91.2% p<0.05",
+                (40, 110, 520, 180),
+                0,
+                meta={
+                    "table": {
+                        "rows": [["Model", "Acc", "p"], ["BERT", "91.2%", "p<0.05"]],
+                        "row_count": 2,
+                        "column_count": 3,
+                        "header": ["Model", "Acc", "p"],
+                        "confidence": "medium",
+                    }
+                },
+            )
+            doc_ir = DocumentIR(
+                doc_id="table-cell-token-qa",
+                source_pdf="sample.pdf",
+                pages=[PageIR(1, 600, 800, table.text, [table])],
+            )
+            table_reconstruction = build_table_reconstruction_report(doc_ir, build_structure_qa(doc_ir))
+            chunks = [
+                TextChunk(
+                    "c0000",
+                    [0],
+                    "Model Acc p\nBERT 91.2% p<0.05",
+                    0,
+                    0,
+                )
+            ]
+            (chunk_dir / "c0000.md").write_text(
+                (
+                    "---\n{}\n---\n\n"
+                    "| 模型 | 准确率 | p |\n"
+                    "| --- | --- | --- |\n"
+                    "| BERT | 91.2 | p<0.05 |\n\n"
+                    "注：91.2% 为原始准确率。\n"
+                ),
+                encoding="utf-8",
+            )
+
+            report = build_translation_qa(
+                chunks,
+                chunk_dir,
+                table_reconstruction=table_reconstruction,
+            )
+
+            issue = next(
+                issue
+                for issue in report["chunks"][0]["issues"]
+                if issue["type"] == "table_cell_token_mismatch"
+            )
+            cell = issue["cells"][0]
+            self.assertEqual(report["summary"]["source_table_count"], 1)
+            self.assertEqual(report["summary"]["source_table_locked_token_count"], 4)
+            self.assertEqual(report["summary"]["table_cell_token_error_count"], 1)
+            self.assertEqual(report["summary"]["missing_table_locked_token_count"], 2)
+            self.assertEqual(cell["table_id"], "p1-b0000")
+            self.assertEqual(cell["row_index"], 1)
+            self.assertEqual(cell["column_index"], 1)
+            self.assertEqual(cell["column_header"], "Acc")
+            self.assertIn("91.2%", cell["missing_tokens"])
+            self.assertIn("%", cell["missing_tokens"])
+
+            plan = build_repair_plan(report)
+            repair = next(item for item in plan["items"] if item["issue_type"] == "table_cell_token_mismatch")
+            self.assertEqual(repair["action"], "repair_table_cell_tokens")
+            self.assertEqual(repair["scope"], "table_cell")
+            self.assertEqual(repair["priority"], "P0")
+            self.assertIn("cells", repair["evidence"])
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
     def test_structure_qa_reports_page_boundary_fragments(self) -> None:
         doc_ir = DocumentIR(
             doc_id="boundary-sample",
@@ -707,9 +793,16 @@ class StructureIRTests(unittest.TestCase):
                     "missing_entity_token_count": 1,
                     "source_table_count": 2,
                     "table_shape_error_count": 1,
-                    "issue_count": 3,
-                    "issue_counts": {"missing_numbers": 1, "missing_entity_tokens": 2},
-                    "severity_counts": {"high": 1, "medium": 2},
+                    "source_table_locked_token_count": 6,
+                    "table_cell_token_error_count": 2,
+                    "missing_table_locked_token_count": 3,
+                    "issue_count": 4,
+                    "issue_counts": {
+                        "missing_numbers": 1,
+                        "missing_entity_tokens": 2,
+                        "table_cell_token_mismatch": 1,
+                    },
+                    "severity_counts": {"high": 2, "medium": 2},
                     "max_english_residual_ratio": 0.125,
                 },
             },
@@ -717,10 +810,14 @@ class StructureIRTests(unittest.TestCase):
                 "schema_version": "repair-plan-v1",
                 "summary": {
                     "chunk_count": 2,
-                    "repair_item_count": 3,
-                    "action_counts": {"rewrite_with_locked_tokens": 1, "rewrite_with_entity_tokens": 2},
-                    "priority_counts": {"P0": 1, "P1": 2},
-                    "scope_counts": {"chunk": 3},
+                    "repair_item_count": 4,
+                    "action_counts": {
+                        "rewrite_with_locked_tokens": 1,
+                        "rewrite_with_entity_tokens": 2,
+                        "repair_table_cell_tokens": 1,
+                    },
+                    "priority_counts": {"P0": 2, "P1": 2},
+                    "scope_counts": {"chunk": 3, "table_cell": 1},
                 },
             },
             chunk_boundary_qa={
@@ -763,8 +860,10 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["doc_id"], "metrics-sample")
         self.assertEqual(metrics["pipeline_variant"], "structure")
         self.assertEqual(metrics["quality"]["ocr_candidate_page_count"], 2)
-        self.assertEqual(metrics["quality"]["repair_item_count"], 3)
+        self.assertEqual(metrics["quality"]["repair_item_count"], 4)
         self.assertEqual(metrics["quality"]["table_shape_error_count"], 1)
+        self.assertEqual(metrics["quality"]["table_cell_token_error_count"], 2)
+        self.assertEqual(metrics["quality"]["missing_table_locked_token_count"], 3)
         self.assertEqual(metrics["quality"]["split_boundary_count"], 1)
         self.assertEqual(metrics["quality"]["protected_boundary_count"], 1)
         self.assertEqual(metrics["quality"]["baseline_split_boundary_count"], 2)
@@ -773,6 +872,8 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["table_cell_count"], 8)
         self.assertEqual(metrics["quality"]["table_significance_token_count"], 2)
         self.assertEqual(metrics["rates"]["table_shape_error_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["table_cell_token_error_rate"], 0.6667)
+        self.assertEqual(metrics["rates"]["table_locked_token_missing_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_reconstruction_ready_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_numeric_cell_rate"], 0.375)
         self.assertEqual(metrics["rates"]["table_caption_link_rate"], 0.5)
@@ -781,7 +882,7 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["protected_boundary_rate"], 0.5)
         self.assertEqual(metrics["rates"]["active_split_reduction_rate_vs_baseline"], 0.5)
         self.assertEqual(metrics["rates"]["entity_missing_rate"], 0.25)
-        self.assertEqual(metrics["rates"]["repair_item_per_chunk"], 1.5)
+        self.assertEqual(metrics["rates"]["repair_item_per_chunk"], 2.0)
         self.assertEqual(metrics["rates"]["relationship_warning_rate"], 0.3333)
         self.assertEqual(metrics["breakdowns"]["vision_action_counts"]["local_ocr"], 1)
         self.assertEqual(metrics["evidence_files"]["translation_qa"], "output/qa_report.json")

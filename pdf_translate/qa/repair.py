@@ -62,6 +62,12 @@ _ISSUE_RULES = {
         "executor": "translation_backend",
         "reason": "译文表格形状与源表格不一致，需要按源表格维度重构。",
     },
+    "table_cell_token_mismatch": {
+        "action": "repair_table_cell_tokens",
+        "scope": "table_cell",
+        "executor": "translation_backend",
+        "reason": "译文表格单元格缺失源表格锁定 token，需要按单元格上下文局部重译或重构。",
+    },
     "duplicate_paragraphs": {
         "action": "deduplicate_overlap",
         "scope": "paragraph",
@@ -78,7 +84,7 @@ _ISSUE_RULES = {
 
 
 def _priority(severity: str, issue_type: str) -> str:
-    if issue_type in {"missing_translation", "table_shape_mismatch"}:
+    if issue_type in {"missing_translation", "table_shape_mismatch", "table_cell_token_mismatch"}:
         return "P0"
     if severity == "high":
         return "P0"
@@ -89,7 +95,7 @@ def _priority(severity: str, issue_type: str) -> str:
 
 def _issue_evidence(issue: dict[str, Any]) -> dict[str, Any]:
     evidence: dict[str, Any] = {}
-    for key in ("tokens", "terms", "entities", "conflicts", "tables", "samples", "ratio", "detail"):
+    for key in ("tokens", "terms", "entities", "conflicts", "tables", "cells", "samples", "ratio", "detail"):
         if key in issue:
             evidence[key] = issue[key]
     return evidence
