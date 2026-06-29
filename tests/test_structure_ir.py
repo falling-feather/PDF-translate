@@ -613,15 +613,36 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(report["summary"]["significance_token_count"], 2)
         self.assertEqual(report["summary"]["caption_linked_table_count"], 1)
         self.assertEqual(report["summary"]["footnote_linked_table_count"], 1)
+        self.assertEqual(report["summary"]["table_footnote_binding_count"], 1)
+        self.assertEqual(report["summary"]["table_footnote_cell_binding_count"], 1)
+        self.assertEqual(report["summary"]["table_footnote_bound_cell_count"], 1)
+        self.assertEqual(report["summary"]["table_footnote_unbound_count"], 0)
         self.assertEqual(report["summary"]["table_reconstruction_ready_rate"], 1.0)
         table_report = report["tables"][0]
         self.assertEqual(table_report["caption_blocks"][0]["block_id"], "p1-b0000")
         self.assertEqual(table_report["footnote_blocks"][0]["block_id"], "p1-b0002")
+        binding = table_report["footnote_bindings"][0]
+        self.assertEqual(binding["status"], "bound_to_cells")
+        self.assertEqual(binding["footnote_block_id"], "p1-b0002")
+        self.assertEqual(binding["matched_cell_count"], 1)
+        self.assertEqual(binding["matched_row_indices"], [1])
+        self.assertEqual(binding["matched_column_indices"], [2])
+        self.assertIn("*", binding["markers"])
+        self.assertIn("p<0.05", binding["markers"])
+        self.assertEqual(binding["matched_cells"][0]["row_index"], 1)
+        self.assertEqual(binding["matched_cells"][0]["column_index"], 2)
         acc_cell = next(cell for cell in table_report["cells"] if cell["row_index"] == 1 and cell["column_index"] == 1)
         self.assertEqual(acc_cell["column_header"], "Acc")
         self.assertEqual(acc_cell["row_header"], "BERT")
         self.assertIn("91.2%", acc_cell["locked_tokens"])
         self.assertIn("%", acc_cell["locked_tokens"])
+        hints = build_table_translation_hints(
+            TextChunk("c0000", [0], table.text, 0, 0),
+            report,
+        )
+        self.assertIn("footnote-cell bindings", hints)
+        self.assertIn("p1-b0002", hints)
+        self.assertIn("r1c2", hints)
 
     def test_table_reconstruction_builds_continued_table_groups(self) -> None:
         page1_table = BlockIR(
@@ -2030,6 +2051,11 @@ class StructureIRTests(unittest.TestCase):
                     "significance_token_count": 2,
                     "caption_linked_table_count": 1,
                     "footnote_linked_table_count": 1,
+                    "table_footnote_binding_count": 2,
+                    "table_footnote_cell_binding_count": 1,
+                    "table_footnote_bound_cell_count": 2,
+                    "table_footnote_unbound_count": 1,
+                    "table_footnote_table_level_count": 0,
                     "continued_table_group_count": 2,
                     "continued_table_segment_count": 2,
                     "continued_table_reconstructable_group_count": 1,
@@ -2299,6 +2325,11 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["reconstructable_table_count"], 1)
         self.assertEqual(metrics["quality"]["table_cell_count"], 8)
         self.assertEqual(metrics["quality"]["table_significance_token_count"], 2)
+        self.assertEqual(metrics["quality"]["table_footnote_binding_count"], 2)
+        self.assertEqual(metrics["quality"]["table_footnote_cell_binding_count"], 1)
+        self.assertEqual(metrics["quality"]["table_footnote_bound_cell_count"], 2)
+        self.assertEqual(metrics["quality"]["table_footnote_unbound_count"], 1)
+        self.assertEqual(metrics["quality"]["table_footnote_table_level_count"], 0)
         self.assertEqual(metrics["quality"]["continued_table_group_count"], 2)
         self.assertEqual(metrics["quality"]["continued_table_segment_count"], 2)
         self.assertEqual(metrics["quality"]["continued_table_reconstructable_group_count"], 1)
@@ -2318,6 +2349,8 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["table_numeric_cell_rate"], 0.375)
         self.assertEqual(metrics["rates"]["table_caption_link_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_footnote_binding_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["table_footnote_cell_binding_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["table_footnote_unbound_rate"], 0.5)
         self.assertEqual(metrics["rates"]["split_boundary_rate"], 0.5)
         self.assertEqual(metrics["rates"]["protected_boundary_rate"], 0.5)
         self.assertEqual(metrics["rates"]["budget_overflow_chunk_rate"], 0.5)
@@ -2913,6 +2946,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertGreaterEqual(table_reconstruction["summary"]["table_count"], 1)
             self.assertIn("table_reconstruction_ready_rate", table_reconstruction["summary"])
             self.assertIn("continued_table_group_count", table_reconstruction["summary"])
+            self.assertIn("table_footnote_cell_binding_count", table_reconstruction["summary"])
+            self.assertIn("table_footnote_unbound_count", table_reconstruction["summary"])
             self.assertIn("continued_table_groups", table_reconstruction)
             self.assertEqual(chunk_boundary_qa["schema_version"], "chunk-boundary-qa-v1")
             self.assertEqual(chunk_boundary_qa["pipeline_variant"], "structure")
@@ -2979,6 +3014,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(metrics["performance"]["estimated_total_cost"], 0)
             self.assertIn("reconstructable_table_count", metrics["quality"])
             self.assertIn("continued_table_group_count", metrics["quality"])
+            self.assertIn("table_footnote_cell_binding_count", metrics["quality"])
+            self.assertIn("table_footnote_cell_binding_rate", metrics["rates"])
             self.assertIn("table_reconstruction_ready_rate", metrics["rates"])
             self.assertIn("continued_table_reconstruction_rate", metrics["rates"])
             self.assertEqual(

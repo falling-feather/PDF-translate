@@ -185,6 +185,15 @@ def build_experiment_metrics(
     table_significance_token_count = _as_int(table_reconstruction_summary.get("significance_token_count"))
     table_caption_linked_count = _as_int(table_reconstruction_summary.get("caption_linked_table_count"))
     table_footnote_linked_count = _as_int(table_reconstruction_summary.get("footnote_linked_table_count"))
+    table_footnote_binding_count = _as_int(table_reconstruction_summary.get("table_footnote_binding_count"))
+    table_footnote_cell_binding_count = _as_int(
+        table_reconstruction_summary.get("table_footnote_cell_binding_count")
+    )
+    table_footnote_bound_cell_count = _as_int(table_reconstruction_summary.get("table_footnote_bound_cell_count"))
+    table_footnote_unbound_count = _as_int(table_reconstruction_summary.get("table_footnote_unbound_count"))
+    table_footnote_table_level_count = _as_int(
+        table_reconstruction_summary.get("table_footnote_table_level_count")
+    )
     continued_table_group_count = _as_int(table_reconstruction_summary.get("continued_table_group_count"))
     continued_table_segment_count = _as_int(table_reconstruction_summary.get("continued_table_segment_count"))
     continued_table_reconstructable_group_count = _as_int(
@@ -385,6 +394,11 @@ def build_experiment_metrics(
             "table_significance_token_count": table_significance_token_count,
             "table_caption_linked_count": table_caption_linked_count,
             "table_footnote_linked_count": table_footnote_linked_count,
+            "table_footnote_binding_count": table_footnote_binding_count,
+            "table_footnote_cell_binding_count": table_footnote_cell_binding_count,
+            "table_footnote_bound_cell_count": table_footnote_bound_cell_count,
+            "table_footnote_unbound_count": table_footnote_unbound_count,
+            "table_footnote_table_level_count": table_footnote_table_level_count,
             "continued_table_group_count": continued_table_group_count,
             "continued_table_segment_count": continued_table_segment_count,
             "continued_table_reconstructable_group_count": continued_table_reconstructable_group_count,
@@ -544,6 +558,11 @@ def build_experiment_metrics(
             "table_numeric_cell_rate": _rate(table_numeric_cell_count, table_cell_count),
             "table_caption_link_rate": _rate(table_caption_linked_count, table_count),
             "table_footnote_binding_rate": _rate(table_footnote_linked_count, table_count),
+            "table_footnote_cell_binding_rate": _rate(
+                table_footnote_cell_binding_count,
+                table_footnote_binding_count,
+            ),
+            "table_footnote_unbound_rate": _rate(table_footnote_unbound_count, table_footnote_binding_count),
             "table_continuation_rate": _rate(table_continuation_count, table_count),
             "continued_table_reconstruction_rate": _rate(
                 continued_table_reconstructable_group_count,

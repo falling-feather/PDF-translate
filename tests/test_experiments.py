@@ -85,6 +85,8 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertEqual(loaded["records"][0]["pdf_type"], "table-heavy")
             self.assertIn("metrics", loaded["records"][0])
             self.assertIn("translation_issue_count", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("table_footnote_cell_binding_count", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("table_footnote_cell_binding_rate", loaded["records"][0]["metrics"]["rates"])
             self.assertIn("total_elapsed_ms", loaded["records"][0]["metrics"]["performance"])
             self.assertIn("runs/sample-table/page/output/experiment_metrics.json", summary_json.read_text(encoding="utf-8"))
             self.assertIn("批量实验汇总", summary_md.read_text(encoding="utf-8"))

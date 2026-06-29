@@ -23,6 +23,8 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "table_shape_error_count",
         "table_cell_token_error_count",
         "missing_table_locked_token_count",
+        "table_footnote_cell_binding_count",
+        "table_footnote_unbound_count",
         "page_boundary_fragment_count",
         "split_boundary_count",
         "protected_boundary_count",
@@ -34,6 +36,8 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
     ],
     "rates": [
         "table_reconstruction_ready_rate",
+        "table_footnote_cell_binding_rate",
+        "table_footnote_unbound_rate",
         "table_cell_token_error_rate",
         "table_locked_token_missing_rate",
         "split_boundary_rate",

@@ -16,6 +16,16 @@ _UNIT_RE = re.compile(
     r"(%|(?:ms|s|sec|seconds?|m|cm|mm|nm|um|µm|kg|g|mg|kb|mb|gb|hz|khz|mhz|ghz)\b)"
 )
 _SIGNIFICANCE_RE = re.compile(r"(\*{1,3}|†|‡|§|p\s*[<=>]\s*0?\.\d+)", re.I)
+_FOOTNOTE_MARKER_TOKEN = r"\*{1,3}|[A-Za-z]|\d{1,3}|[\u2020\u2021\u00a7\u00b6#]"
+_FOOTNOTE_PREFIX_RE = re.compile(
+    rf"^\s*(?:note\s*[:：]?\s*)?[\[\(]?({_FOOTNOTE_MARKER_TOKEN})[\]\)]?(?=$|[\s\.\):：、])",
+    re.I,
+)
+_FOOTNOTE_EXPLICIT_MARKER_RE = re.compile(
+    rf"(?:\[({_FOOTNOTE_MARKER_TOKEN})\]|\(({_FOOTNOTE_MARKER_TOKEN})\)|\^({_FOOTNOTE_MARKER_TOKEN}))(?!\w)",
+    re.I,
+)
+_FOOTNOTE_SYMBOL_MARKER_RE = re.compile(r"(\*{1,3}|[\u2020\u2021\u00a7\u00b6#])")
 
 
 def _unique(items: list[str]) -> list[str]:
@@ -114,6 +124,127 @@ def _cell_role(row_index: int, column_index: int, header: list[str]) -> str:
     return "data"
 
 
+def _normalise_marker(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or "")).casefold()
+
+
+def _marker_is_numeric(marker: str) -> bool:
+    return bool(re.fullmatch(r"\d{1,3}", str(marker or "")))
+
+
+def _marker_is_alpha(marker: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z]", str(marker or "")))
+
+
+def _footnote_markers(text: str) -> list[str]:
+    markers: list[str] = []
+    prefix = _FOOTNOTE_PREFIX_RE.search(text or "")
+    if prefix:
+        markers.append(prefix.group(1))
+    for match in _FOOTNOTE_EXPLICIT_MARKER_RE.finditer(text or ""):
+        marker = next((group for group in match.groups() if group), "")
+        if marker:
+            markers.append(marker)
+    markers.extend(match.group(1) for match in _FOOTNOTE_SYMBOL_MARKER_RE.finditer(text or ""))
+    markers.extend(match.group(0) for match in _SIGNIFICANCE_RE.finditer(text or ""))
+    return _unique(markers)
+
+
+def _contains_explicit_cell_marker(text: str, marker: str) -> bool:
+    escaped = re.escape(marker)
+    explicit = re.compile(rf"(?:\[{escaped}\]|\({escaped}\)|\^{escaped})(?!\w)", re.I)
+    return bool(explicit.search(text or ""))
+
+
+def _cell_marker_hits(cell: dict[str, Any], markers: list[str]) -> list[str]:
+    text = str(cell.get("text") or "")
+    text_norm = _normalise_marker(text)
+    searchable_tokens = [
+        str(item)
+        for key in ("significance", "locked_tokens")
+        for item in cell.get(key) or []
+        if str(item)
+    ]
+    token_norms = {_normalise_marker(item) for item in searchable_tokens}
+    hits: list[str] = []
+    for marker in markers:
+        marker_text = str(marker or "").strip()
+        if not marker_text:
+            continue
+        marker_norm = _normalise_marker(marker_text)
+        if marker_norm in token_norms and not _marker_is_numeric(marker_text):
+            hits.append(marker_text)
+            continue
+        if marker_text.startswith("*") or marker_text in {"\u2020", "\u2021", "\u00a7", "\u00b6", "#"}:
+            if marker_text in text:
+                hits.append(marker_text)
+            continue
+        if marker_norm.startswith("p") and marker_norm in text_norm:
+            hits.append(marker_text)
+            continue
+        if (_marker_is_numeric(marker_text) or _marker_is_alpha(marker_text)) and _contains_explicit_cell_marker(
+            text,
+            marker_text,
+        ):
+            hits.append(marker_text)
+    return _unique(hits)
+
+
+def _binding_cell(cell: dict[str, Any], matched_markers: list[str]) -> dict[str, Any]:
+    return {
+        "row_index": int(cell.get("row_index") or 0),
+        "column_index": int(cell.get("column_index") or 0),
+        "role": str(cell.get("role") or "data"),
+        "column_header": str(cell.get("column_header") or ""),
+        "row_header": str(cell.get("row_header") or ""),
+        "text": str(cell.get("text") or ""),
+        "matched_markers": matched_markers,
+    }
+
+
+def _footnote_bindings(
+    footnotes: list[dict[str, Any]],
+    cells: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    bindings: list[dict[str, Any]] = []
+    for footnote in footnotes:
+        if not isinstance(footnote, dict):
+            continue
+        text = str(footnote.get("text") or "")
+        markers = _footnote_markers(text)
+        matched_cells: list[dict[str, Any]] = []
+        for cell in cells:
+            if not isinstance(cell, dict) or cell.get("empty"):
+                continue
+            hits = _cell_marker_hits(cell, markers)
+            if hits:
+                matched_cells.append(_binding_cell(cell, hits))
+        warnings: list[str] = []
+        if matched_cells:
+            status = "bound_to_cells"
+        elif markers:
+            status = "unbound"
+            warnings.append("cell_marker_not_found")
+        else:
+            status = "table_level_only"
+            warnings.append("no_cell_marker_detected")
+        bindings.append(
+            {
+                "footnote_block_id": str(footnote.get("block_id") or ""),
+                "page_no": int(footnote.get("page_no") or 0),
+                "text": _clip(text),
+                "markers": markers,
+                "status": status,
+                "matched_cell_count": len(matched_cells),
+                "matched_row_indices": sorted({cell["row_index"] for cell in matched_cells}),
+                "matched_column_indices": sorted({cell["column_index"] for cell in matched_cells}),
+                "matched_cells": matched_cells,
+                "warnings": warnings,
+            }
+        )
+    return bindings
+
+
 def _table_cells(rows: list[list[str]], header: list[str]) -> list[dict[str, Any]]:
     cells: list[dict[str, Any]] = []
     for row_index, row in enumerate(rows):
@@ -186,6 +317,7 @@ def _table_entry(
     )
     structure_table = structure_tables.get(block.block_id, {})
     children = linked_children.get(block.block_id, {"captions": [], "footnotes": []})
+    footnote_bindings = _footnote_bindings(children.get("footnotes", []), cells)
     reconstructable = bool(rows and row_count >= 2 and column_count >= 2)
     return {
         "table_id": block.block_id,
@@ -200,6 +332,7 @@ def _table_entry(
         "rows": rows,
         "caption_blocks": children.get("captions", []),
         "footnote_blocks": children.get("footnotes", []),
+        "footnote_bindings": footnote_bindings,
         "continued_from_block_id": structure_table.get("continued_from_block_id"),
         "continued_to_block_id": structure_table.get("continued_to_block_id"),
         "numeric_tokens": _unique([token for cell in cells for token in cell["numbers"]]),
@@ -387,6 +520,12 @@ def _continued_table_group(
     continuation_ids = _continuation_ids_for_chain(chain, structure_qa)
     first_segment_row_count = int(source_tables[0].get("row_count") or 0) if source_tables else 0
     merged_row_gain = max(0, len(merged_rows) - first_segment_row_count) if reconstructable else 0
+    footnote_blocks = [
+        footnote
+        for table in source_tables
+        for footnote in table.get("footnote_blocks") or []
+        if isinstance(footnote, dict)
+    ]
     return {
         "group_id": "continued:" + "->".join(table_ids),
         "continuation_ids": continuation_ids,
@@ -427,12 +566,8 @@ def _continued_table_group(
             for caption in table.get("caption_blocks") or []
             if isinstance(caption, dict)
         ],
-        "footnote_blocks": [
-            footnote
-            for table in source_tables
-            for footnote in table.get("footnote_blocks") or []
-            if isinstance(footnote, dict)
-        ],
+        "footnote_blocks": footnote_blocks,
+        "footnote_bindings": _footnote_bindings(footnote_blocks, cells),
         "warnings": warnings,
         "cells": cells,
     }
@@ -516,6 +651,23 @@ def build_table_reconstruction_report(
     )
     caption_linked_table_count = sum(1 for table in tables if table.get("caption_blocks"))
     footnote_linked_table_count = sum(1 for table in tables if table.get("footnote_blocks"))
+    footnote_bindings = [
+        binding
+        for table in tables
+        for binding in table.get("footnote_bindings") or []
+        if isinstance(binding, dict)
+    ]
+    table_footnote_binding_count = len(footnote_bindings)
+    table_footnote_cell_binding_count = sum(
+        1 for binding in footnote_bindings if binding.get("status") == "bound_to_cells"
+    )
+    table_footnote_bound_cell_count = sum(
+        int(binding.get("matched_cell_count") or 0) for binding in footnote_bindings
+    )
+    table_footnote_unbound_count = sum(1 for binding in footnote_bindings if binding.get("status") == "unbound")
+    table_footnote_table_level_count = sum(
+        1 for binding in footnote_bindings if binding.get("status") == "table_level_only"
+    )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -532,6 +684,11 @@ def build_table_reconstruction_report(
             "significance_token_count": sum(len(table.get("significance_tokens") or []) for table in tables),
             "caption_linked_table_count": caption_linked_table_count,
             "footnote_linked_table_count": footnote_linked_table_count,
+            "table_footnote_binding_count": table_footnote_binding_count,
+            "table_footnote_cell_binding_count": table_footnote_cell_binding_count,
+            "table_footnote_bound_cell_count": table_footnote_bound_cell_count,
+            "table_footnote_unbound_count": table_footnote_unbound_count,
+            "table_footnote_table_level_count": table_footnote_table_level_count,
             "continuation_table_count": continuation_table_count,
             "continuation_group_count": continuation_group_count,
             "continued_table_group_count": continued_table_group_count,
@@ -603,6 +760,19 @@ def _cell_hint(cell: dict[str, Any]) -> str:
     if locked:
         parts.append("锁定=" + ", ".join(locked[:8]))
     return "；".join(parts)
+
+
+def _footnote_binding_hint(binding: dict[str, Any]) -> str:
+    markers = [str(item) for item in binding.get("markers") or [] if str(item)]
+    cells = [
+        f"r{int(cell.get('row_index') or 0)}c{int(cell.get('column_index') or 0)}"
+        for cell in binding.get("matched_cells") or []
+        if isinstance(cell, dict)
+    ]
+    block_id = str(binding.get("footnote_block_id") or "")
+    marker_text = ",".join(markers[:6]) if markers else "no-marker"
+    cell_text = ",".join(cells[:12]) if cells else str(binding.get("status") or "unbound")
+    return f"{block_id}:{marker_text}->{cell_text}"
 
 
 def build_table_translation_hints(
@@ -679,6 +849,16 @@ def build_table_translation_hints(
             footnote_texts = [_clip(item.get("text"), 100) for item in footnotes[:2] if isinstance(item, dict)]
             if footnote_texts:
                 lines.append("  表格脚注：" + " / ".join(footnote_texts))
+        bindings = [
+            binding
+            for binding in table.get("footnote_bindings") or []
+            if isinstance(binding, dict)
+        ]
+        if bindings:
+            lines.append(
+                "  footnote-cell bindings: "
+                + " / ".join(_footnote_binding_hint(binding) for binding in bindings[:6])
+            )
         continuation = [
             str(table.get("continued_from_block_id") or "").strip(),
             str(table.get("continued_to_block_id") or "").strip(),
