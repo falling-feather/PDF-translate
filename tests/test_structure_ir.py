@@ -389,6 +389,147 @@ class StructureIRTests(unittest.TestCase):
         self.assertIn("91.2%", acc_cell["locked_tokens"])
         self.assertIn("%", acc_cell["locked_tokens"])
 
+    def test_table_reconstruction_builds_continued_table_groups(self) -> None:
+        page1_table = BlockIR(
+            "p1-b0000",
+            1,
+            "table",
+            "Model Acc\nA 91\nB 92",
+            (40, 640, 540, 760),
+            0,
+            meta={
+                "table": {
+                    "rows": [["Model", "Acc"], ["A", "91"], ["B", "92"]],
+                    "row_count": 3,
+                    "column_count": 2,
+                    "header": ["Model", "Acc"],
+                    "confidence": "medium",
+                }
+            },
+        )
+        page2_table = BlockIR(
+            "p2-b0000",
+            2,
+            "table",
+            "Model Acc\nC 93\nD 94",
+            (40, 80, 540, 180),
+            0,
+            meta={
+                "table": {
+                    "rows": [["Model", "Acc"], ["C", "93"], ["D", "94"]],
+                    "row_count": 3,
+                    "column_count": 2,
+                    "header": ["Model", "Acc"],
+                    "confidence": "medium",
+                }
+            },
+        )
+        doc_ir = DocumentIR(
+            doc_id="continued-table-group",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(1, 600, 800, page1_table.text, [page1_table]),
+                PageIR(2, 600, 800, page2_table.text, [page2_table]),
+            ],
+        )
+        structure_qa = build_structure_qa(doc_ir)
+
+        report = build_table_reconstruction_report(doc_ir, structure_qa)
+
+        self.assertEqual(report["summary"]["continuation_group_count"], 1)
+        self.assertEqual(report["summary"]["continued_table_group_count"], 1)
+        self.assertEqual(report["summary"]["continued_table_segment_count"], 2)
+        self.assertEqual(report["summary"]["continued_table_reconstructable_group_count"], 1)
+        self.assertEqual(report["summary"]["continued_table_merged_row_count"], 5)
+        self.assertEqual(report["summary"]["table_chain_candidate_count"], 1)
+        self.assertEqual(report["summary"]["table_chain_merged_count"], 1)
+        self.assertEqual(report["summary"]["table_chain_reject_count"], 0)
+        self.assertEqual(report["summary"]["table_chain_row_gain"], 2)
+        self.assertEqual(report["summary"]["table_chain_warning_count"], 0)
+        group = report["continued_table_groups"][0]
+        self.assertEqual(group["table_ids"], ["p1-b0000", "p2-b0000"])
+        self.assertEqual(group["pages_1based"], [1, 2])
+        self.assertEqual(group["merge_status"], "merged")
+        self.assertEqual(group["chain_confidence"], "high")
+        self.assertEqual(group["merged_row_gain"], 2)
+        self.assertEqual(group["merged_row_count"], 5)
+        self.assertEqual(group["merged_column_count"], 2)
+        self.assertEqual(group["skipped_repeated_header_count"], 1)
+        self.assertEqual(group["header"], ["Model", "Acc"])
+        self.assertEqual(group["rows"][0], ["Model", "Acc"])
+        self.assertEqual(group["rows"][-1], ["D", "94"])
+        self.assertIn("continued_table_group", group["warnings"])
+
+        chunk = TextChunk("c0000", [0, 1], page1_table.text + "\n" + page2_table.text, 0, 0)
+        hints = build_table_translation_hints(chunk, report)
+        self.assertIn("续表合并组", hints)
+        self.assertIn("p1-b0000 -> p2-b0000", hints)
+        self.assertIn("合并后 5 行 x 2 列", hints)
+
+    def test_table_reconstruction_rejects_incompatible_continued_table_groups(self) -> None:
+        page1_table = BlockIR(
+            "p1-b0000",
+            1,
+            "table",
+            "Model Acc\nA 91\nB 92",
+            (40, 640, 540, 760),
+            0,
+            meta={
+                "table": {
+                    "rows": [["Model", "Acc"], ["A", "91"], ["B", "92"]],
+                    "row_count": 3,
+                    "column_count": 2,
+                    "header": ["Model", "Acc"],
+                    "confidence": "medium",
+                }
+            },
+        )
+        page2_table = BlockIR(
+            "p2-b0000",
+            2,
+            "table",
+            "Dataset F1\nCOCO 88.1\nGLUE 89.0",
+            (40, 80, 540, 180),
+            0,
+            meta={
+                "table": {
+                    "rows": [["Dataset", "F1"], ["COCO", "88.1"], ["GLUE", "89.0"]],
+                    "row_count": 3,
+                    "column_count": 2,
+                    "header": ["Dataset", "F1"],
+                    "confidence": "medium",
+                }
+            },
+        )
+        doc_ir = DocumentIR(
+            doc_id="rejected-table-group",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(1, 600, 800, page1_table.text, [page1_table]),
+                PageIR(2, 600, 800, page2_table.text, [page2_table]),
+            ],
+        )
+
+        report = build_table_reconstruction_report(doc_ir, build_structure_qa(doc_ir))
+
+        self.assertEqual(report["summary"]["table_chain_candidate_count"], 1)
+        self.assertEqual(report["summary"]["table_chain_merged_count"], 0)
+        self.assertEqual(report["summary"]["table_chain_reject_count"], 1)
+        self.assertEqual(report["summary"]["table_chain_row_gain"], 0)
+        self.assertEqual(report["summary"]["continued_table_reconstructable_group_count"], 0)
+        group = report["continued_table_groups"][0]
+        self.assertEqual(group["merge_status"], "rejected")
+        self.assertEqual(group["chain_confidence"], "low")
+        self.assertFalse(group["reconstructable"])
+        self.assertEqual(group["rows"], [])
+        self.assertIn("header_mismatch_segment_1", group["compatibility"]["reject_reasons"])
+
+        chunk = TextChunk("c0000", [0, 1], page1_table.text + "\n" + page2_table.text, 0, 0)
+        hints = build_table_translation_hints(chunk, report)
+        self.assertIn("续表候选", hints)
+        self.assertIn("当前未安全合并", hints)
+        self.assertIn("header_mismatch_segment_1", hints)
+
     def test_table_translation_hints_are_chunk_scoped(self) -> None:
         page1_table = BlockIR(
             "p1-b0000",
@@ -1562,6 +1703,15 @@ class StructureIRTests(unittest.TestCase):
                     "significance_token_count": 2,
                     "caption_linked_table_count": 1,
                     "footnote_linked_table_count": 1,
+                    "continued_table_group_count": 2,
+                    "continued_table_segment_count": 2,
+                    "continued_table_reconstructable_group_count": 1,
+                    "continued_table_merged_row_count": 5,
+                    "table_chain_candidate_count": 2,
+                    "table_chain_merged_count": 1,
+                    "table_chain_reject_count": 1,
+                    "table_chain_row_gain": 2,
+                    "table_chain_warning_count": 1,
                     "table_reconstruction_ready_rate": 0.5,
                 },
             },
@@ -1808,10 +1958,22 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["reconstructable_table_count"], 1)
         self.assertEqual(metrics["quality"]["table_cell_count"], 8)
         self.assertEqual(metrics["quality"]["table_significance_token_count"], 2)
+        self.assertEqual(metrics["quality"]["continued_table_group_count"], 2)
+        self.assertEqual(metrics["quality"]["continued_table_segment_count"], 2)
+        self.assertEqual(metrics["quality"]["continued_table_reconstructable_group_count"], 1)
+        self.assertEqual(metrics["quality"]["continued_table_merged_row_count"], 5)
+        self.assertEqual(metrics["quality"]["table_chain_candidate_count"], 2)
+        self.assertEqual(metrics["quality"]["table_chain_merged_count"], 1)
+        self.assertEqual(metrics["quality"]["table_chain_reject_count"], 1)
+        self.assertEqual(metrics["quality"]["table_chain_row_gain"], 2)
+        self.assertEqual(metrics["quality"]["table_chain_warning_count"], 1)
         self.assertEqual(metrics["rates"]["table_shape_error_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_cell_token_error_rate"], 0.6667)
         self.assertEqual(metrics["rates"]["table_locked_token_missing_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_reconstruction_ready_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["continued_table_reconstruction_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["table_chain_merge_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["table_chain_reject_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_numeric_cell_rate"], 0.375)
         self.assertEqual(metrics["rates"]["table_caption_link_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_footnote_binding_rate"], 0.5)
@@ -2393,6 +2555,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(table_reconstruction["schema_version"], "table-reconstruction-v1")
             self.assertGreaterEqual(table_reconstruction["summary"]["table_count"], 1)
             self.assertIn("table_reconstruction_ready_rate", table_reconstruction["summary"])
+            self.assertIn("continued_table_group_count", table_reconstruction["summary"])
+            self.assertIn("continued_table_groups", table_reconstruction)
             self.assertEqual(chunk_boundary_qa["schema_version"], "chunk-boundary-qa-v1")
             self.assertEqual(chunk_boundary_qa["pipeline_variant"], "structure")
             self.assertIn("split_boundary_count", chunk_boundary_qa["summary"])
@@ -2455,7 +2619,9 @@ class StructureIRTests(unittest.TestCase):
             self.assertGreater(metrics["performance"]["estimated_total_token_count"], 0)
             self.assertEqual(metrics["performance"]["estimated_total_cost"], 0)
             self.assertIn("reconstructable_table_count", metrics["quality"])
+            self.assertIn("continued_table_group_count", metrics["quality"])
             self.assertIn("table_reconstruction_ready_rate", metrics["rates"])
+            self.assertIn("continued_table_reconstruction_rate", metrics["rates"])
             self.assertEqual(
                 metrics["breakdowns"]["vision_action_counts"],
                 vision["summary"]["action_counts"],

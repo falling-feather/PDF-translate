@@ -54,6 +54,10 @@ def _normalise_rows(rows: list[list[str]], column_count: int) -> list[list[str]]
     return [row + [""] * max(0, column_count - len(row)) for row in rows]
 
 
+def _row_signature(row: list[str]) -> tuple[str, ...]:
+    return tuple(re.sub(r"\s+", " ", str(cell or "")).strip().casefold() for cell in row)
+
+
 def _linked_children(doc_ir: DocumentIR) -> dict[str, dict[str, list[dict[str, Any]]]]:
     out: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for page in doc_ir.pages:
@@ -193,6 +197,7 @@ def _table_entry(
         "row_count": row_count,
         "column_count": column_count,
         "header": header,
+        "rows": rows,
         "caption_blocks": children.get("captions", []),
         "footnote_blocks": children.get("footnotes", []),
         "continued_from_block_id": structure_table.get("continued_from_block_id"),
@@ -203,6 +208,245 @@ def _table_entry(
         "warnings": warnings,
         "cells": cells,
     }
+
+
+def _continuation_chains(
+    structure_qa: dict[str, Any] | None,
+    tables_by_id: dict[str, dict[str, Any]],
+) -> list[list[str]]:
+    if not isinstance(structure_qa, dict):
+        return []
+    next_by_previous: dict[str, str] = {}
+    previous_ids: set[str] = set()
+    next_ids: set[str] = set()
+    for item in structure_qa.get("table_continuations") or []:
+        if not isinstance(item, dict):
+            continue
+        previous_id = str(item.get("previous_table_block_id") or "")
+        next_id = str(item.get("next_table_block_id") or "")
+        if previous_id not in tables_by_id or next_id not in tables_by_id:
+            continue
+        next_by_previous[previous_id] = next_id
+        previous_ids.add(previous_id)
+        next_ids.add(next_id)
+
+    starts = list(previous_ids - next_ids) or list(previous_ids)
+    starts.sort(key=lambda table_id: (int(tables_by_id[table_id].get("page_no") or 0), table_id))
+    chains: list[list[str]] = []
+    globally_seen: set[str] = set()
+    for start in starts:
+        if start in globally_seen:
+            continue
+        chain = [start]
+        locally_seen = {start}
+        current = start
+        while current in next_by_previous:
+            nxt = next_by_previous[current]
+            if nxt in locally_seen:
+                break
+            chain.append(nxt)
+            locally_seen.add(nxt)
+            current = nxt
+        if len(chain) >= 2:
+            chains.append(chain)
+            globally_seen.update(chain)
+    return chains
+
+
+def _continuation_ids_for_chain(chain: list[str], structure_qa: dict[str, Any] | None) -> list[str]:
+    if not isinstance(structure_qa, dict):
+        return []
+    ids: list[str] = []
+    pairs = {(chain[index], chain[index + 1]) for index in range(len(chain) - 1)}
+    for item in structure_qa.get("table_continuations") or []:
+        if not isinstance(item, dict):
+            continue
+        pair = (
+            str(item.get("previous_table_block_id") or ""),
+            str(item.get("next_table_block_id") or ""),
+        )
+        if pair in pairs:
+            ids.append(str(item.get("continuation_id") or f"{pair[0]}->{pair[1]}"))
+    return _unique(ids)
+
+
+def _header_similarity(left: list[str], right: list[str]) -> float:
+    left_tokens = {item for item in _row_signature(left) if item}
+    right_tokens = {item for item in _row_signature(right) if item}
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return round(len(left_tokens & right_tokens) / len(left_tokens | right_tokens), 4)
+
+
+def _chain_compatibility(source_tables: list[dict[str, Any]], header: list[str]) -> dict[str, Any]:
+    column_counts = [int(table.get("column_count") or 0) for table in source_tables]
+    row_counts = [int(table.get("row_count") or 0) for table in source_tables]
+    header_similarities: list[float] = []
+    warnings: list[str] = []
+    reject_reasons: list[str] = []
+
+    nonzero_columns = [count for count in column_counts if count > 0]
+    if len(nonzero_columns) != len(column_counts):
+        reject_reasons.append("missing_column_count")
+    elif nonzero_columns and max(nonzero_columns) - min(nonzero_columns) >= 2:
+        reject_reasons.append("column_count_drift")
+
+    if any(count < 2 for count in row_counts) or any(count < 2 for count in column_counts):
+        reject_reasons.append("not_reconstructable_segment")
+
+    for table_index, table in enumerate(source_tables[1:], start=1):
+        table_header = [str(cell).strip() for cell in table.get("header") or [] if str(cell).strip()]
+        if not header or not table_header:
+            warnings.append(f"missing_header_for_segment_{table_index}")
+            continue
+        similarity = _header_similarity(header, table_header)
+        header_similarities.append(similarity)
+        if similarity < 0.5:
+            reject_reasons.append(f"header_mismatch_segment_{table_index}")
+
+    for table in source_tables:
+        table_warnings = [str(item) for item in table.get("warnings") or [] if str(item)]
+        if "ragged_table_rows" in table_warnings:
+            warnings.append("ragged_table_rows_in_chain")
+        if "low_confidence_table_structure" in table_warnings:
+            warnings.append("low_confidence_table_structure_in_chain")
+
+    warnings = _unique(warnings)
+    reject_reasons = _unique(reject_reasons)
+    if reject_reasons:
+        confidence = "low"
+        merge_status = "rejected"
+    elif warnings or any(score < 0.8 for score in header_similarities):
+        confidence = "medium"
+        merge_status = "merged"
+    else:
+        confidence = "high"
+        merge_status = "merged"
+
+    return {
+        "merge_status": merge_status,
+        "chain_confidence": confidence,
+        "column_counts": column_counts,
+        "row_counts": row_counts,
+        "header_similarities": header_similarities,
+        "warnings": warnings,
+        "reject_reasons": reject_reasons,
+    }
+
+
+def _continued_table_group(
+    chain: list[str],
+    *,
+    tables_by_id: dict[str, dict[str, Any]],
+    structure_qa: dict[str, Any] | None,
+) -> dict[str, Any]:
+    source_tables = [tables_by_id[table_id] for table_id in chain]
+    column_count = max((int(table.get("column_count") or 0) for table in source_tables), default=0)
+    header: list[str] = []
+    for table in source_tables:
+        table_header = [str(cell).strip() for cell in table.get("header") or [] if str(cell).strip()]
+        if table_header:
+            header = table_header
+            break
+    compatibility = _chain_compatibility(source_tables, header)
+
+    merged_rows: list[list[str]] = []
+    skipped_repeated_header_count = 0
+    if compatibility["merge_status"] == "merged":
+        for table_index, table in enumerate(source_tables):
+            rows = _as_rows(table.get("rows"))
+            if not rows:
+                continue
+            if table_index > 0 and header and _row_signature(rows[0][: len(header)]) == _row_signature(header):
+                rows = rows[1:]
+                skipped_repeated_header_count += 1
+            merged_rows.extend(rows)
+
+    column_count = max(column_count, max((len(row) for row in merged_rows), default=0), len(header))
+    merged_rows = _normalise_rows(merged_rows, column_count)
+    cells = _table_cells(merged_rows, header)
+    warnings = _unique(
+        ["continued_table_group"]
+        + [
+            str(warning)
+            for table in source_tables
+            for warning in table.get("warnings") or []
+            if str(warning)
+        ]
+        + [str(warning) for warning in compatibility.get("warnings") or [] if str(warning)]
+        + [str(reason) for reason in compatibility.get("reject_reasons") or [] if str(reason)]
+    )
+    reconstructable = bool(
+        compatibility["merge_status"] == "merged"
+        and merged_rows
+        and len(merged_rows) >= 2
+        and column_count >= 2
+    )
+    table_ids = [str(table.get("table_id") or table.get("block_id") or "") for table in source_tables]
+    pages = sorted({int(table.get("page_no") or 0) for table in source_tables if int(table.get("page_no") or 0)})
+    continuation_ids = _continuation_ids_for_chain(chain, structure_qa)
+    first_segment_row_count = int(source_tables[0].get("row_count") or 0) if source_tables else 0
+    merged_row_gain = max(0, len(merged_rows) - first_segment_row_count) if reconstructable else 0
+    return {
+        "group_id": "continued:" + "->".join(table_ids),
+        "continuation_ids": continuation_ids,
+        "table_ids": table_ids,
+        "pages_1based": pages,
+        "source_tables": [
+            {
+                "table_id": str(table.get("table_id") or table.get("block_id") or ""),
+                "page_no": int(table.get("page_no") or 0),
+                "row_count": int(table.get("row_count") or 0),
+                "column_count": int(table.get("column_count") or 0),
+            }
+            for table in source_tables
+        ],
+        "merge_status": compatibility["merge_status"],
+        "chain_confidence": compatibility["chain_confidence"],
+        "compatibility": {
+            "column_counts": compatibility["column_counts"],
+            "row_counts": compatibility["row_counts"],
+            "header_similarities": compatibility["header_similarities"],
+            "warnings": compatibility["warnings"],
+            "reject_reasons": compatibility["reject_reasons"],
+        },
+        "reconstructable": reconstructable,
+        "segment_count": len(source_tables),
+        "merged_row_count": len(merged_rows),
+        "merged_column_count": column_count,
+        "merged_row_gain": merged_row_gain,
+        "skipped_repeated_header_count": skipped_repeated_header_count,
+        "header": header,
+        "rows": merged_rows,
+        "numeric_tokens": _unique([token for cell in cells for token in cell["numbers"]]),
+        "unit_tokens": _unique([token for cell in cells for token in cell["units"]]),
+        "significance_tokens": _unique([token for cell in cells for token in cell["significance"]]),
+        "caption_blocks": [
+            caption
+            for table in source_tables
+            for caption in table.get("caption_blocks") or []
+            if isinstance(caption, dict)
+        ],
+        "footnote_blocks": [
+            footnote
+            for table in source_tables
+            for footnote in table.get("footnote_blocks") or []
+            if isinstance(footnote, dict)
+        ],
+        "warnings": warnings,
+        "cells": cells,
+    }
+
+
+def _continued_table_groups(
+    tables: list[dict[str, Any]],
+    structure_qa: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    tables_by_id = {str(table.get("table_id") or table.get("block_id") or ""): table for table in tables}
+    return [
+        _continued_table_group(chain, tables_by_id=tables_by_id, structure_qa=structure_qa)
+        for chain in _continuation_chains(structure_qa, tables_by_id)
+    ]
 
 
 def build_table_reconstruction_report(
@@ -224,6 +468,7 @@ def build_table_reconstruction_report(
                 )
 
     table_count = len(tables)
+    continued_table_groups = _continued_table_groups(tables, structure_qa)
     reconstructable_table_count = sum(1 for table in tables if table.get("reconstructable"))
     low_confidence_table_count = sum(1 for table in tables if table.get("confidence") == "low")
     cell_count = sum(len(table.get("cells") or []) for table in tables)
@@ -245,6 +490,30 @@ def build_table_reconstruction_report(
         if table.get("continued_from_block_id") or table.get("continued_to_block_id")
     )
     continuation_group_count = len((structure_qa or {}).get("table_continuations") or []) if isinstance(structure_qa, dict) else 0
+    continued_table_group_count = len(continued_table_groups)
+    continued_table_segment_count = sum(int(group.get("segment_count") or 0) for group in continued_table_groups)
+    continued_table_reconstructable_group_count = sum(
+        1 for group in continued_table_groups if group.get("reconstructable")
+    )
+    continued_table_merged_row_count = sum(
+        int(group.get("merged_row_count") or 0)
+        for group in continued_table_groups
+        if group.get("merge_status") == "merged"
+    )
+    table_chain_candidate_count = continued_table_group_count
+    table_chain_merged_count = sum(
+        1 for group in continued_table_groups if group.get("merge_status") == "merged"
+    )
+    table_chain_reject_count = sum(
+        1 for group in continued_table_groups if group.get("merge_status") == "rejected"
+    )
+    table_chain_row_gain = sum(int(group.get("merged_row_gain") or 0) for group in continued_table_groups)
+    table_chain_warning_count = sum(
+        len(group.get("compatibility", {}).get("warnings") or [])
+        + len(group.get("compatibility", {}).get("reject_reasons") or [])
+        for group in continued_table_groups
+        if isinstance(group.get("compatibility"), dict)
+    )
     caption_linked_table_count = sum(1 for table in tables if table.get("caption_blocks"))
     footnote_linked_table_count = sum(1 for table in tables if table.get("footnote_blocks"))
 
@@ -265,11 +534,21 @@ def build_table_reconstruction_report(
             "footnote_linked_table_count": footnote_linked_table_count,
             "continuation_table_count": continuation_table_count,
             "continuation_group_count": continuation_group_count,
+            "continued_table_group_count": continued_table_group_count,
+            "continued_table_segment_count": continued_table_segment_count,
+            "continued_table_reconstructable_group_count": continued_table_reconstructable_group_count,
+            "continued_table_merged_row_count": continued_table_merged_row_count,
+            "table_chain_candidate_count": table_chain_candidate_count,
+            "table_chain_merged_count": table_chain_merged_count,
+            "table_chain_reject_count": table_chain_reject_count,
+            "table_chain_row_gain": table_chain_row_gain,
+            "table_chain_warning_count": table_chain_warning_count,
             "table_reconstruction_ready_rate": round(reconstructable_table_count / table_count, 4)
             if table_count
             else 0.0,
         },
         "tables": tables,
+        "continued_table_groups": continued_table_groups,
     }
 
 
@@ -347,6 +626,37 @@ def build_table_translation_hints(
     lines = [
         "以下表格结构来自本地 DocumentIR。翻译时请保留相同行列数，输出 Markdown 表格；不要把表格线性化为普通段落；锁定 token 必须原样保留。",
     ]
+    selected_table_ids = {str(table.get("table_id") or table.get("block_id") or "") for table in selected}
+    for group in table_reconstruction.get("continued_table_groups") or []:
+        if not isinstance(group, dict):
+            continue
+        group_table_ids = [str(table_id) for table_id in group.get("table_ids") or [] if str(table_id)]
+        if not selected_table_ids.intersection(group_table_ids):
+            continue
+        merge_status = str(group.get("merge_status") or "")
+        if merge_status == "merged":
+            lines.append(
+                "- 续表合并组 "
+                + str(group.get("group_id") or "")
+                + f"：覆盖 {' -> '.join(group_table_ids)}，合并后 {int(group.get('merged_row_count') or 0)} 行 x {int(group.get('merged_column_count') or 0)} 列。"
+            )
+        else:
+            compatibility = group.get("compatibility") if isinstance(group.get("compatibility"), dict) else {}
+            reasons = [
+                str(item)
+                for item in (compatibility.get("reject_reasons") or compatibility.get("warnings") or [])
+                if str(item)
+            ]
+            lines.append(
+                "- 续表候选 "
+                + str(group.get("group_id") or "")
+                + f"：覆盖 {' -> '.join(group_table_ids)}，当前未安全合并；请分别保留原表格形状。"
+            )
+            if reasons:
+                lines.append("  未合并原因：" + ", ".join(reasons[:6]))
+        header = [str(item).strip() for item in group.get("header") or [] if str(item).strip()]
+        if merge_status == "merged" and header:
+            lines.append("  合并表头：" + " | ".join(_clip(item, 40) for item in header[:12]))
     for table in selected[:max_tables]:
         table_id = str(table.get("table_id") or table.get("block_id") or "unknown")
         row_count = int(table.get("row_count") or 0)

@@ -178,6 +178,17 @@ def build_experiment_metrics(
     table_significance_token_count = _as_int(table_reconstruction_summary.get("significance_token_count"))
     table_caption_linked_count = _as_int(table_reconstruction_summary.get("caption_linked_table_count"))
     table_footnote_linked_count = _as_int(table_reconstruction_summary.get("footnote_linked_table_count"))
+    continued_table_group_count = _as_int(table_reconstruction_summary.get("continued_table_group_count"))
+    continued_table_segment_count = _as_int(table_reconstruction_summary.get("continued_table_segment_count"))
+    continued_table_reconstructable_group_count = _as_int(
+        table_reconstruction_summary.get("continued_table_reconstructable_group_count")
+    )
+    continued_table_merged_row_count = _as_int(table_reconstruction_summary.get("continued_table_merged_row_count"))
+    table_chain_candidate_count = _as_int(table_reconstruction_summary.get("table_chain_candidate_count"))
+    table_chain_merged_count = _as_int(table_reconstruction_summary.get("table_chain_merged_count"))
+    table_chain_reject_count = _as_int(table_reconstruction_summary.get("table_chain_reject_count"))
+    table_chain_row_gain = _as_int(table_reconstruction_summary.get("table_chain_row_gain"))
+    table_chain_warning_count = _as_int(table_reconstruction_summary.get("table_chain_warning_count"))
     table_reconstruction_ready_rate = _as_float(
         table_reconstruction_summary.get("table_reconstruction_ready_rate")
     )
@@ -348,6 +359,15 @@ def build_experiment_metrics(
             "table_significance_token_count": table_significance_token_count,
             "table_caption_linked_count": table_caption_linked_count,
             "table_footnote_linked_count": table_footnote_linked_count,
+            "continued_table_group_count": continued_table_group_count,
+            "continued_table_segment_count": continued_table_segment_count,
+            "continued_table_reconstructable_group_count": continued_table_reconstructable_group_count,
+            "continued_table_merged_row_count": continued_table_merged_row_count,
+            "table_chain_candidate_count": table_chain_candidate_count,
+            "table_chain_merged_count": table_chain_merged_count,
+            "table_chain_reject_count": table_chain_reject_count,
+            "table_chain_row_gain": table_chain_row_gain,
+            "table_chain_warning_count": table_chain_warning_count,
             "table_continuation_count": table_continuation_count,
             "table_footnote_count": table_footnote_count,
             "caption_orphan_count": caption_orphan_count,
@@ -482,6 +502,12 @@ def build_experiment_metrics(
             "table_caption_link_rate": _rate(table_caption_linked_count, table_count),
             "table_footnote_binding_rate": _rate(table_footnote_linked_count, table_count),
             "table_continuation_rate": _rate(table_continuation_count, table_count),
+            "continued_table_reconstruction_rate": _rate(
+                continued_table_reconstructable_group_count,
+                continued_table_group_count,
+            ),
+            "table_chain_merge_rate": _rate(table_chain_merged_count, table_chain_candidate_count),
+            "table_chain_reject_rate": _rate(table_chain_reject_count, table_chain_candidate_count),
             "table_shape_error_rate": _rate(table_shape_error_count, source_table_count),
             "table_cell_token_error_rate": _rate(table_cell_token_error_count, table_numeric_cell_count),
             "table_locked_token_missing_rate": _rate(
