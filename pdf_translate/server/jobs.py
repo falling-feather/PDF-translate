@@ -5,7 +5,7 @@ import os
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -16,6 +16,7 @@ from pdf_translate.pipeline import export_links, init_workdir, run_split, run_tr
 from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
 
 JOB_STATUS_SCHEMA_VERSION = "web-job-status-v1"
+JOB_HYDRATION_REPORT_SCHEMA_VERSION = "web-job-hydration-report-v1"
 VALID_JOB_STATUSES = {"queued", "running", "done", "error", "cancelled"}
 
 
@@ -47,6 +48,7 @@ class JobPublic:
     parallel_max_workers: int | None = None
     duration_seconds: float | None = None
     run_started_at: str | None = None
+    recovered_from_disk: bool = False
 
 
 @dataclass
@@ -77,6 +79,7 @@ class JobRecord:
     parallel_max_workers: int | None = None
     duration_seconds: float | None = None
     run_started_at: str | None = None
+    recovered_from_disk: bool = False
 
     def touch(self) -> None:
         self.updated_at = _utc_now_iso()
@@ -105,6 +108,7 @@ class JobRecord:
             parallel_max_workers=self.parallel_max_workers,
             duration_seconds=self.duration_seconds,
             run_started_at=self.run_started_at,
+            recovered_from_disk=self.recovered_from_disk,
         )
 
     def to_status_dict(self) -> dict[str, Any]:
@@ -171,6 +175,7 @@ class JobRecord:
             parallel_max_workers=raw.get("parallel_max_workers"),
             duration_seconds=raw.get("duration_seconds"),
             run_started_at=raw.get("run_started_at"),
+            recovered_from_disk=True,
         )
 
 
@@ -180,6 +185,20 @@ class JobRegistry:
         self.data_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._jobs: dict[str, JobRecord] = {}
+        self._last_hydration_report: dict[str, Any] = self._empty_hydration_report()
+
+    def _empty_hydration_report(self) -> dict[str, Any]:
+        return {
+            "schema_version": JOB_HYDRATION_REPORT_SCHEMA_VERSION,
+            "data_root": str(self.data_root),
+            "scanned_dir_count": 0,
+            "restored_count": 0,
+            "missing_status_count": 0,
+            "invalid_json_count": 0,
+            "job_id_mismatch_count": 0,
+            "restored_job_ids": [],
+            "warnings": [],
+        }
 
     def _job_dir(self, job_id: str) -> Path | None:
         raw = str(job_id or "").strip()
@@ -233,25 +252,51 @@ class JobRegistry:
 
     def hydrate_from_disk(self) -> None:
         """服务重启后从 web_status.json 恢复内存中的任务状态。"""
+        report = self._empty_hydration_report()
         if not self.data_root.is_dir():
+            report["warnings"].append("data_root_missing")
+            self._last_hydration_report = report
             return
         with self._lock:
             for sub in self.data_root.iterdir():
                 if not sub.is_dir():
                     continue
+                report["scanned_dir_count"] += 1
                 st = sub / "web_status.json"
                 if not st.is_file():
+                    report["missing_status_count"] += 1
                     continue
                 try:
                     raw = json.loads(st.read_text(encoding="utf-8"))
                 except json.JSONDecodeError:
+                    report["invalid_json_count"] += 1
                     continue
+                raw_job_id = str(raw.get("job_id") or "").strip()
+                if raw_job_id and raw_job_id != sub.name:
+                    report["job_id_mismatch_count"] += 1
+                    raw = dict(raw)
+                    raw["job_id"] = sub.name
                 rec = JobRecord.from_status_dict(raw, fallback_work_dir=sub)
                 self._jobs[rec.job_id] = rec
+                report["restored_count"] += 1
+                report["restored_job_ids"].append(rec.job_id)
+            self._last_hydration_report = report
+
+    def hydration_report(self) -> dict[str, Any]:
+        with self._lock:
+            return json.loads(json.dumps(self._last_hydration_report, ensure_ascii=False))
 
     def get(self, job_id: str) -> JobRecord | None:
         with self._lock:
             return self._jobs.get(job_id)
+
+    def list_records(self) -> list[JobRecord]:
+        with self._lock:
+            return sorted(
+                self._jobs.values(),
+                key=lambda rec: rec.updated_at or rec.created_at,
+                reverse=True,
+            )
 
     def remove_job(self, job_id: str) -> bool:
         import shutil
@@ -361,6 +406,129 @@ class JobRegistry:
             "bundle_zip_ready": rec.status in ("done", "cancelled") and translated_bytes > 0,
         }
 
+    @staticmethod
+    def _load_json_file(path: Path) -> Any:
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def pipeline_state_fields_for_record(self, rec: JobRecord) -> dict[str, Any]:
+        out_dir = rec.work_dir / "output"
+        state_path = out_dir / "state.json"
+        manifest_path = out_dir / "chunks_manifest.json"
+        chunk_dir = out_dir / "chunks"
+        warnings: list[str] = []
+        completed: list[str] = []
+        manifest_chunk_ids: list[str] = []
+        state_available = False
+        state_status = "missing"
+
+        if state_path.is_file():
+            try:
+                raw_state = self._load_json_file(state_path)
+                completed = [
+                    str(item)
+                    for item in (raw_state.get("completed") or [])
+                    if str(item or "").strip()
+                ]
+                state_available = True
+            except (json.JSONDecodeError, OSError, AttributeError):
+                warnings.append("pipeline_state_invalid")
+                state_status = "invalid"
+        elif out_dir.exists():
+            warnings.append("pipeline_state_missing")
+
+        if manifest_path.is_file():
+            try:
+                raw_manifest = self._load_json_file(manifest_path)
+                if isinstance(raw_manifest, list):
+                    manifest_chunk_ids = [
+                        str(item.get("chunk_id"))
+                        for item in raw_manifest
+                        if isinstance(item, dict) and str(item.get("chunk_id") or "").strip()
+                    ]
+            except (json.JSONDecodeError, OSError):
+                warnings.append("chunks_manifest_invalid")
+
+        completed_set = set(completed)
+        total = len(manifest_chunk_ids) if manifest_chunk_ids else None
+        completed_count = len(completed_set)
+        pending_chunk_ids = [
+            chunk_id for chunk_id in manifest_chunk_ids if chunk_id not in completed_set
+        ]
+        missing_chunk_files = [
+            chunk_id
+            for chunk_id in completed
+            if not (chunk_dir / f"{chunk_id}.md").is_file()
+        ]
+        if missing_chunk_files:
+            warnings.append("completed_chunk_file_missing")
+
+        if state_available:
+            if total is not None:
+                if total > 0 and not pending_chunk_ids and completed_count >= total:
+                    state_status = "complete"
+                elif completed_count > 0:
+                    state_status = "partial"
+                else:
+                    state_status = "empty"
+            elif completed_count > 0:
+                state_status = "partial_unknown_total"
+            else:
+                state_status = "empty_unknown_total"
+
+        if rec.status == "done" and state_status not in {"complete", "partial_unknown_total"}:
+            warnings.append("runtime_done_pipeline_incomplete")
+        if rec.status in {"queued", "running"} and rec.recovered_from_disk:
+            warnings.append("recovered_active_without_worker")
+        if rec.status in {"queued", "running"} and state_status == "complete":
+            warnings.append("runtime_active_pipeline_complete")
+
+        ratio: float | None = None
+        if total and total > 0:
+            ratio = round(min(completed_count, total) / total, 4)
+
+        resume_ready = completed_count > 0 and state_status not in {"complete", "invalid"}
+        if "recovered_active_without_worker" in warnings:
+            recovery_status = "needs_manual_resume_or_cancel"
+        elif resume_ready:
+            recovery_status = "resume_available"
+        elif state_status == "complete":
+            recovery_status = "complete"
+        elif state_status in {"missing", "invalid"}:
+            recovery_status = "not_ready"
+        else:
+            recovery_status = "not_started"
+
+        return {
+            "pipeline_state_available": state_available,
+            "pipeline_state_status": state_status,
+            "pipeline_state_path": str(state_path),
+            "pipeline_chunks_manifest_available": bool(manifest_chunk_ids),
+            "pipeline_completed_chunk_count": completed_count,
+            "pipeline_chunk_total": total,
+            "pipeline_pending_chunk_count": len(pending_chunk_ids) if total is not None else None,
+            "pipeline_completion_ratio": ratio,
+            "pipeline_completed_chunk_ids": sorted(completed_set),
+            "pipeline_pending_chunk_ids": pending_chunk_ids,
+            "pipeline_missing_chunk_files": missing_chunk_files,
+            "pipeline_resume_ready": resume_ready,
+            "job_recovered_from_disk": rec.recovered_from_disk,
+            "job_recovery_status": recovery_status,
+            "job_diagnostic_warnings": warnings,
+        }
+
+    def diagnostic_summary_for_record(self, rec: JobRecord) -> dict[str, Any]:
+        data = asdict(rec.to_public())
+        data.update(
+            {
+                "owner_user_id": rec.owner_user_id,
+                "owner_username": rec.owner_username,
+                "original_filename": rec.original_filename,
+            }
+        )
+        data.update(self.artifact_fields_for_record(rec))
+        data.update(self.pipeline_state_fields_for_record(rec))
+        return data
+
     def status_fields_for_job(self, job_id: str) -> dict[str, Any]:
         rec = self.get(job_id)
         if not rec:
@@ -405,6 +573,7 @@ class JobRegistry:
             "run_started_at": pub.run_started_at,
         }
         fields.update(self.artifact_fields_for_record(rec))
+        fields.update(self.pipeline_state_fields_for_record(rec))
         return fields
 
     def merge_status_into_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -371,7 +371,6 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         return {"job_id": rec.job_id}
 
     def _job_dict(rec: JobRecord) -> dict:
-        pub = rec.to_public()
         complete = rec.status == "done"
         suggested_name = suggest_md_download_name(
             original_filename=rec.original_filename,
@@ -383,36 +382,9 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             work_dir=rec.work_dir,
             complete=complete,
         )
-        d = {
-            "job_id": pub.job_id,
-            "status": pub.status,
-            "phase": pub.phase,
-            "message": pub.message,
-            "chunk_total": pub.chunk_total,
-            "chunk_index": pub.chunk_index,
-            "chunk_id": pub.chunk_id,
-            "error": pub.error,
-            "error_code": pub.error_code,
-            "error_category": pub.error_category,
-            "error_retryable": pub.error_retryable,
-            "error_next_step": pub.error_next_step,
-            "error_source": pub.error_source,
-            "error_http_status": pub.error_http_status,
-            "created_at": pub.created_at,
-            "updated_at": pub.updated_at,
-            "main_pages": pub.main_pages,
-            "reference_pages": pub.reference_pages,
-            "owner_user_id": rec.owner_user_id,
-            "owner_username": rec.owner_username,
-            "original_filename": rec.original_filename,
-            "translate_mode": rec.translate_mode,
-            "parallel_max_workers": rec.parallel_max_workers,
-            "duration_seconds": rec.duration_seconds,
-            "run_started_at": rec.run_started_at,
-            "suggested_download_filename": suggested_name,
-            "suggested_zip_filename": suggested_zip,
-        }
-        d.update(app_registry.artifact_fields_for_record(rec))
+        d = app_registry.diagnostic_summary_for_record(rec)
+        d["suggested_download_filename"] = suggested_name
+        d["suggested_zip_filename"] = suggested_zip
         return d
 
     @api.get("/jobs/{job_id}")
@@ -533,6 +505,13 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
     @admin.get("/jobs")
     def admin_jobs(_: Principal = Depends(require_admin), limit: int = 500) -> dict:
         return {"jobs": app_registry.merge_status_into_rows(database.list_all_jobs(limit=limit))}
+
+    @admin.get("/jobs/hydration-report")
+    def admin_jobs_hydration_report(_: Principal = Depends(require_admin)) -> dict:
+        return {
+            "hydration": app_registry.hydration_report(),
+            "drift": app_registry.storage_drift(set(database.list_all_job_ids())),
+        }
 
     @admin.post("/jobs/reconcile")
     def admin_jobs_reconcile(

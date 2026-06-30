@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 
 import typer
@@ -7,9 +9,15 @@ import typer
 from pdf_translate.config import AppConfig
 from pdf_translate import pipeline
 from pdf_translate.experiments import load_sample_metadata, parse_variant_specs, run_batch_experiment
+from pdf_translate.server.jobs import JobRegistry
 from pdf_translate.translators.registry import backend_choice_text
 
 app = typer.Typer(help="PDF 英文学术文献：拆分参考文献、按块翻译、记忆目录（见 README.md memory/ 说明）")
+
+
+def _default_web_data_root() -> Path:
+    data_base = Path(os.getenv("PDF_TRANSLATE_DATA", Path.cwd() / "data")).resolve()
+    return Path(os.getenv("PDF_TRANSLATE_WEB_DATA", data_base / "web_jobs")).resolve()
 
 
 @app.command("init")
@@ -117,6 +125,43 @@ def cmd_links(
 ) -> None:
     p = pipeline.export_links(work_dir)
     typer.echo(f"链接索引: {p}")
+
+
+@app.command("web-status")
+def cmd_web_status(
+    job_id: str | None = typer.Option(None, "--job-id", "-j", help="只查看单个 Web 任务"),
+    data_root: Path | None = typer.Option(
+        None,
+        "--data-root",
+        help="Web 任务目录；默认读取 PDF_TRANSLATE_WEB_DATA 或 data/web_jobs",
+    ),
+    limit: int = typer.Option(20, "--limit", min=1, help="未指定 job-id 时最多输出任务数"),
+) -> None:
+    root = (data_root or _default_web_data_root()).resolve()
+    registry = JobRegistry(root)
+    registry.hydrate_from_disk()
+    if job_id:
+        rec = registry.get(job_id)
+        if not rec:
+            typer.echo(f"未找到 Web 任务: {job_id}", err=True)
+            raise typer.Exit(1)
+        payload = {
+            "data_root": str(root),
+            "hydration": registry.hydration_report(),
+            "job": registry.diagnostic_summary_for_record(rec),
+        }
+    else:
+        records = registry.list_records()
+        payload = {
+            "data_root": str(root),
+            "hydration": registry.hydration_report(),
+            "job_count": len(records),
+            "jobs": [
+                registry.diagnostic_summary_for_record(rec)
+                for rec in records[:limit]
+            ],
+        }
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 @app.command("run")

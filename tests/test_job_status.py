@@ -5,6 +5,9 @@ import shutil
 import unittest
 from pathlib import Path
 
+from typer.testing import CliRunner
+
+from pdf_translate.cli import app
 from pdf_translate.server.jobs import JOB_STATUS_SCHEMA_VERSION, JobRegistry
 
 
@@ -75,6 +78,68 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertIsNotNone(restored_rec)
         assert restored_rec is not None
         self.assertEqual(restored_rec.work_dir, (root / rec.job_id).resolve())
+
+    def test_hydrate_report_records_mismatched_snapshot_job_id(self) -> None:
+        root = self._case_root("hydrate-job-id-mismatch")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        status_path = root / rec.job_id / "web_status.json"
+        raw = json.loads(status_path.read_text(encoding="utf-8"))
+        raw["job_id"] = "wrong-job-id"
+        status_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        restored = JobRegistry(root)
+        restored.hydrate_from_disk()
+        report = restored.hydration_report()
+        restored_rec = restored.get(rec.job_id)
+
+        self.assertEqual(report["restored_count"], 1)
+        self.assertEqual(report["job_id_mismatch_count"], 1)
+        self.assertIn(rec.job_id, report["restored_job_ids"])
+        self.assertIsNotNone(restored_rec)
+        self.assertIsNone(restored.get("wrong-job-id"))
+        assert restored_rec is not None
+        self.assertTrue(restored_rec.recovered_from_disk)
+        self.assertEqual(restored_rec.work_dir, (root / rec.job_id).resolve())
+
+    def test_pipeline_state_diagnostic_reports_resume_boundary(self) -> None:
+        root = self._case_root("pipeline-state-diagnostic")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        out = rec.work_dir / "output"
+        chunks = out / "chunks"
+        chunks.mkdir(parents=True)
+        (out / "chunks_manifest.json").write_text(
+            json.dumps(
+                [
+                    {"chunk_id": "c0001"},
+                    {"chunk_id": "c0002"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (out / "state.json").write_text(
+            json.dumps({"completed": ["c0001"]}),
+            encoding="utf-8",
+        )
+        (chunks / "c0001.md").write_text("translated", encoding="utf-8")
+        registry.update(rec.job_id, status="running", phase="translate", chunk_total=2)
+
+        restored = JobRegistry(root)
+        restored.hydrate_from_disk()
+        restored_rec = restored.get(rec.job_id)
+
+        self.assertIsNotNone(restored_rec)
+        assert restored_rec is not None
+        summary = restored.diagnostic_summary_for_record(restored_rec)
+        self.assertEqual(summary["pipeline_state_status"], "partial")
+        self.assertEqual(summary["pipeline_completed_chunk_count"], 1)
+        self.assertEqual(summary["pipeline_chunk_total"], 2)
+        self.assertEqual(summary["pipeline_pending_chunk_ids"], ["c0002"])
+        self.assertTrue(summary["pipeline_resume_ready"])
+        self.assertEqual(summary["job_recovery_status"], "needs_manual_resume_or_cancel")
+        self.assertIn("recovered_active_without_worker", summary["job_diagnostic_warnings"])
 
     def test_merge_status_into_rows_preserves_database_created_at(self) -> None:
         root = self._case_root("merge-preserves-db-created-at")
@@ -165,6 +230,40 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(merged[0]["artifact_consistency_status"], "missing_status")
         self.assertIn("status_snapshot_missing", merged[0]["artifact_warnings"])
         self.assertNotIn("status", merged[0])
+
+    def test_cli_web_status_reads_same_diagnostic_summary(self) -> None:
+        root = self._case_root("cli-web-status")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        out = rec.work_dir / "output"
+        chunks = out / "chunks"
+        chunks.mkdir(parents=True)
+        (out / "chunks_manifest.json").write_text(
+            json.dumps([{"chunk_id": "c0001"}]),
+            encoding="utf-8",
+        )
+        (out / "state.json").write_text(
+            json.dumps({"completed": ["c0001"]}),
+            encoding="utf-8",
+        )
+        (chunks / "c0001.md").write_text("translated", encoding="utf-8")
+        (out / "translated_full.md").write_text("translated", encoding="utf-8")
+        registry.update(rec.job_id, status="done", phase="done")
+
+        result = CliRunner().invoke(
+            app,
+            ["web-status", "--data-root", str(root), "--job-id", rec.job_id],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["hydration"]["restored_count"], 1)
+        self.assertEqual(payload["job"]["job_id"], rec.job_id)
+        self.assertEqual(payload["job"]["status"], "done")
+        self.assertEqual(payload["job"]["pipeline_state_status"], "complete")
+        self.assertEqual(payload["job"]["pipeline_completion_ratio"], 1.0)
+        self.assertEqual(payload["job"]["artifact_consistency_status"], "ready")
 
 
 if __name__ == "__main__":
