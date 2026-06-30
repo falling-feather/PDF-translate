@@ -1050,6 +1050,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(cell["row_index"], 1)
             self.assertEqual(cell["column_index"], 1)
             self.assertEqual(cell["column_header"], "Acc")
+            self.assertEqual(cell["source_table_shape"], {"row_count": 2, "column_count": 3})
             self.assertIn("91.2%", cell["missing_tokens"])
             self.assertIn("%", cell["missing_tokens"])
 
@@ -1068,6 +1069,11 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(request["action"], "repair_table_cell_tokens")
             self.assertEqual(request["status"], "ready_for_translation_backend")
             self.assertIn("91.2%", request["locked_tokens"])
+            self.assertEqual(request["merge_target"]["table_index"], 0)
+            self.assertEqual(request["merge_target"]["table_id"], "p1-b0000")
+            self.assertEqual(request["merge_target"]["cell_count"], 1)
+            self.assertEqual(request["merge_target"]["cells"][0]["row_index"], 1)
+            self.assertEqual(request["merge_target"]["cells"][0]["column_index"], 1)
             self.assertIn("对应单元格", request["instruction"])
             self.assertIn("【QA 证据】", request["backend_payload"]["user_message"])
             self.assertIn("只输出修复后的中文译文或 Markdown 表格", request["backend_payload"]["user_message"])
@@ -1106,7 +1112,11 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(validation["summary"]["passed_count"], 1)
             self.assertEqual(validation["summary"]["missing_locked_token_count"], 0)
             self.assertEqual(validation["summary"]["locked_token_pass_rate"], 1.0)
+            self.assertEqual(validation["summary"]["table_shape_check_count"], 1)
+            self.assertEqual(validation["summary"]["table_shape_passed_count"], 1)
             self.assertEqual(validation["validations"][0]["status"], "passed")
+            self.assertEqual(validation["validations"][0]["expected_table_shape_count"], 1)
+            self.assertEqual(validation["validations"][0]["merge_target"]["table_index"], 0)
             merge = build_repair_merge(
                 requests,
                 executed_results,
@@ -1120,10 +1130,119 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(merge["summary"]["merge_candidate_count"], 1)
             self.assertEqual(merge["summary"]["applied_count"], 1)
             self.assertEqual(merge["summary"]["patched_chunk_count"], 1)
-            self.assertEqual(merge["patches"][0]["strategy"], "replace_first_markdown_table")
+            self.assertEqual(merge["summary"]["table_targeted_patch_count"], 1)
+            self.assertEqual(merge["patches"][0]["strategy"], "replace_markdown_table_by_evidence")
+            self.assertEqual(merge["patches"][0]["merge_target"]["table_index"], 0)
             repaired_chunk = (root / "repaired_chunks" / "c0000.md").read_text(encoding="utf-8")
             self.assertIn("| BERT | 91.2% | p<0.05 |", repaired_chunk)
             self.assertTrue((root / "repaired_full.md").is_file())
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
+    def test_repair_merge_targets_markdown_table_from_cell_evidence(self) -> None:
+        root = Path.cwd() / "test-output" / "targeted-table-repair-merge"
+        if root.exists():
+            shutil.rmtree(root)
+        chunk_dir = root / "chunks"
+        chunk_dir.mkdir(parents=True)
+        try:
+            chunks = [
+                TextChunk(
+                    "c0000",
+                    [0],
+                    "First table\nA 10\n\nSecond table\nB 99%",
+                    0,
+                    0,
+                )
+            ]
+            (chunk_dir / "c0000.md").write_text(
+                (
+                    "---\n{}\n---\n\n"
+                    "| 名称 | 值 |\n"
+                    "| --- | --- |\n"
+                    "| A | 10 |\n\n"
+                    "| 名称 | 值 |\n"
+                    "| --- | --- |\n"
+                    "| B | 99 |\n"
+                ),
+                encoding="utf-8",
+            )
+            repair_requests = {
+                "schema_version": "repair-requests-v1",
+                "summary": {"repair_request_count": 1},
+                "requests": [
+                    {
+                        "request_id": "rq0000",
+                        "repair_id": "r0000",
+                        "chunk_id": "c0000",
+                        "pages_1based": [1, 1],
+                        "priority": "P0",
+                        "issue_type": "table_cell_token_mismatch",
+                        "action": "repair_table_cell_tokens",
+                        "scope": "table_cell",
+                        "executor": "translation_backend",
+                        "locked_tokens": ["99%"],
+                        "merge_target": {
+                            "table_index": 1,
+                            "table_id": "p1-b0001",
+                            "cell_count": 1,
+                            "cells": [{"row_index": 1, "column_index": 1, "missing_tokens": ["99%"]}],
+                        },
+                        "evidence": {
+                            "cells": [
+                                {
+                                    "table_index": 1,
+                                    "table_id": "p1-b0001",
+                                    "row_index": 1,
+                                    "column_index": 1,
+                                    "missing_tokens": ["99%"],
+                                    "source_table_shape": {"row_count": 2, "column_count": 2},
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+            repair_results = {
+                "schema_version": "repair-results-v1",
+                "summary": {"repair_request_count": 1, "succeeded_count": 1},
+                "results": [
+                    {
+                        "request_id": "rq0000",
+                        "chunk_id": "c0000",
+                        "status": "succeeded",
+                        "action": "repair_table_cell_tokens",
+                        "scope": "table_cell",
+                        "result_excerpt": "| 名称 | 值 |\n| --- | --- |\n| B | 99% |",
+                    }
+                ],
+            }
+
+            validation = build_repair_validation(repair_requests, repair_results)
+            self.assertEqual(validation["summary"]["passed_count"], 1)
+            self.assertEqual(validation["summary"]["table_shape_check_count"], 1)
+            self.assertEqual(validation["validations"][0]["merge_target"]["table_index"], 1)
+            merge = build_repair_merge(
+                repair_requests,
+                repair_results,
+                validation,
+                chunks,
+                chunk_dir,
+                repaired_chunk_dir=root / "repaired_chunks",
+                repaired_full_path=root / "repaired_full.md",
+            )
+
+            self.assertEqual(merge["summary"]["applied_count"], 1)
+            self.assertEqual(merge["summary"]["table_targeted_patch_count"], 1)
+            self.assertEqual(merge["patches"][0]["strategy"], "replace_markdown_table_by_evidence")
+            repaired_chunk = (root / "repaired_chunks" / "c0000.md").read_text(encoding="utf-8")
+            self.assertIn("| A | 10 |", repaired_chunk)
+            self.assertIn("| B | 99% |", repaired_chunk)
+            self.assertNotIn("| B | 99 |", repaired_chunk)
         finally:
             if root.exists():
                 shutil.rmtree(root)
@@ -2350,6 +2469,9 @@ class StructureIRTests(unittest.TestCase):
                     "skipped_count": 1,
                     "manual_merge_required_count": 1,
                     "conflict_count": 0,
+                    "table_targeted_patch_count": 1,
+                    "strategy_counts": {"replace_markdown_table_by_evidence": 1, "manual_merge_required": 1},
+                    "applied_strategy_counts": {"replace_markdown_table_by_evidence": 1},
                 },
             },
             repair_merge_qa={
@@ -2488,6 +2610,7 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["repair_merge_applied_count"], 1)
         self.assertEqual(metrics["quality"]["repair_merge_patched_chunk_count"], 1)
         self.assertEqual(metrics["quality"]["repair_merge_manual_required_count"], 1)
+        self.assertEqual(metrics["quality"]["repair_merge_table_targeted_patch_count"], 1)
         self.assertEqual(metrics["quality"]["post_repair_issue_count"], 3)
         self.assertEqual(metrics["quality"]["post_repair_issue_delta"], 1)
         self.assertEqual(metrics["quality"]["post_repair_table_cell_token_error_count"], 1)
@@ -2578,6 +2701,12 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["repair_locked_token_pass_rate"], 0.8)
         self.assertEqual(metrics["rates"]["repair_table_shape_validation_pass_rate"], 0.5)
         self.assertEqual(metrics["rates"]["repair_merge_apply_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["repair_merge_table_targeted_patch_rate"], 1.0)
+        self.assertEqual(metrics["breakdowns"]["repair_merge_strategy_counts"]["replace_markdown_table_by_evidence"], 1)
+        self.assertEqual(
+            metrics["breakdowns"]["repair_merge_applied_strategy_counts"]["replace_markdown_table_by_evidence"],
+            1,
+        )
         self.assertEqual(metrics["rates"]["post_repair_issue_reduction_rate"], 0.25)
         self.assertEqual(metrics["rates"]["relationship_warning_rate"], 0.3333)
         self.assertEqual(metrics["quality"]["vision_preview_page_count"], 2)

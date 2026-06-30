@@ -145,6 +145,51 @@ def _locked_tokens_from_evidence(evidence: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(token.strip() for token in tokens if token.strip()))
 
 
+def _safe_nonnegative_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _merge_target_from_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Extract a conservative table/cell merge target from QA evidence."""
+    cells = [cell for cell in evidence.get("cells") or [] if isinstance(cell, dict)]
+    tables = [table for table in evidence.get("tables") or [] if isinstance(table, dict)]
+    table_index: int | None = None
+    table_id = ""
+
+    for cell in cells:
+        table_index = _safe_nonnegative_int(cell.get("table_index"))
+        table_id = str(cell.get("table_id") or cell.get("block_id") or "")
+        if table_index is not None:
+            break
+    if table_index is None:
+        for table in tables:
+            table_index = _safe_nonnegative_int(table.get("table_index"))
+            table_id = str(table.get("table_id") or table.get("block_id") or "")
+            if table_index is not None:
+                break
+
+    target: dict[str, Any] = {
+        "table_index": table_index,
+        "table_id": table_id,
+        "cell_count": len(cells),
+        "cells": [
+            {
+                "row_index": _safe_nonnegative_int(cell.get("row_index")),
+                "column_index": _safe_nonnegative_int(cell.get("column_index")),
+                "missing_tokens": [str(token) for token in cell.get("missing_tokens") or [] if str(token)],
+            }
+            for cell in cells[:20]
+        ],
+    }
+    if table_index is None and not table_id and not cells:
+        return {}
+    return target
+
+
 def _markdown_separator_row(row: list[str]) -> bool:
     return bool(row) and all(cell.replace("-", "").replace(":", "").strip() == "" for cell in row)
 
@@ -175,16 +220,41 @@ def _markdown_table_shapes(text: str) -> list[dict[str, int]]:
 
 def _expected_table_shapes_from_evidence(evidence: dict[str, Any]) -> list[dict[str, int]]:
     shapes: list[dict[str, int]] = []
+    seen: set[tuple[int, int, str]] = set()
     for table in evidence.get("tables") or []:
         if not isinstance(table, dict):
             continue
         source = table.get("source")
         if not isinstance(source, dict):
             continue
-        row_count = int(source.get("row_count") or 0)
-        column_count = int(source.get("column_count") or 0)
+        row_count = _safe_nonnegative_int(source.get("row_count")) or 0
+        column_count = _safe_nonnegative_int(source.get("column_count")) or 0
         if row_count >= 2 and column_count >= 2:
-            shapes.append({"row_count": row_count, "column_count": column_count})
+            key = (
+                row_count,
+                column_count,
+                str(table.get("table_id") or table.get("block_id") or table.get("table_index") or ""),
+            )
+            if key not in seen:
+                seen.add(key)
+                shapes.append({"row_count": row_count, "column_count": column_count})
+    for cell in evidence.get("cells") or []:
+        if not isinstance(cell, dict):
+            continue
+        source = cell.get("source_table_shape")
+        if not isinstance(source, dict):
+            continue
+        row_count = _safe_nonnegative_int(source.get("row_count")) or 0
+        column_count = _safe_nonnegative_int(source.get("column_count")) or 0
+        if row_count >= 2 and column_count >= 2:
+            key = (
+                row_count,
+                column_count,
+                str(cell.get("table_id") or cell.get("block_id") or cell.get("table_index") or ""),
+            )
+            if key not in seen:
+                seen.add(key)
+                shapes.append({"row_count": row_count, "column_count": column_count})
     return shapes
 
 
@@ -245,6 +315,31 @@ def _replace_first_markdown_table(current_text: str, repaired_text: str) -> tupl
     return "\n".join(merged_lines).strip() + "\n", None
 
 
+def _replace_markdown_table_by_index(
+    current_text: str,
+    repaired_text: str,
+    table_index: int,
+) -> tuple[str, str | None]:
+    current_ranges = _markdown_table_ranges(current_text)
+    repaired_ranges = _markdown_table_ranges(repaired_text)
+    if table_index < 0:
+        return current_text, "QA 证据中的目标表格索引无效。"
+    if table_index >= len(current_ranges):
+        return current_text, f"当前译文中没有可定位的第 {table_index + 1} 个 Markdown 表格。"
+    if not repaired_ranges:
+        return current_text, "候选修复片段中没有 Markdown 表格。"
+    current_lines = current_text.splitlines()
+    repaired_lines = repaired_text.splitlines()
+    current_start, current_end = current_ranges[table_index]
+    repaired_start, repaired_end = repaired_ranges[0]
+    merged_lines = [
+        *current_lines[:current_start],
+        *repaired_lines[repaired_start:repaired_end],
+        *current_lines[current_end:],
+    ]
+    return "\n".join(merged_lines).strip() + "\n", None
+
+
 def _merge_candidate_into_chunk(
     current_text: str,
     repaired_text: str,
@@ -253,6 +348,11 @@ def _merge_candidate_into_chunk(
     action = str(request.get("action") or "")
     scope = str(request.get("scope") or "")
     if action in {"repair_table_cell_tokens", "repair_table_shape"}:
+        merge_target = request.get("merge_target") if isinstance(request.get("merge_target"), dict) else {}
+        table_index = _safe_nonnegative_int(merge_target.get("table_index"))
+        if table_index is not None:
+            merged_text, reason = _replace_markdown_table_by_index(current_text, repaired_text, table_index)
+            return merged_text, "replace_markdown_table_by_evidence", reason
         merged_text, reason = _replace_first_markdown_table(current_text, repaired_text)
         return merged_text, "replace_first_markdown_table", reason
     if scope == "chunk" and action in {
@@ -404,6 +504,7 @@ def build_repair_requests(
         current_translation = _chunk_translation_text(chunk_dir, chunk_id)
         evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
         locked_tokens = _locked_tokens_from_evidence(evidence)
+        merge_target = _merge_target_from_evidence(evidence)
         executor = str(item.get("executor") or "human_review")
         action = str(item.get("action") or "review_chunk")
         priority = str(item.get("priority") or "P2")
@@ -427,6 +528,7 @@ def build_repair_requests(
                 "status": status,
                 "instruction": _repair_instruction(item, locked_tokens),
                 "locked_tokens": locked_tokens,
+                "merge_target": merge_target,
                 "source_excerpt": _clip_text(source_text),
                 "current_translation_excerpt": _clip_text(current_translation),
                 "evidence": evidence,
@@ -720,6 +822,7 @@ def build_repair_validation(
             "executor": raw_request.get("executor"),
             "locked_token_count": len(locked_tokens),
             "expected_table_shape_count": len(expected_shapes),
+            "merge_target": raw_request.get("merge_target") or {},
         }
         action_counts[action] += 1
 
@@ -892,6 +995,7 @@ def build_repair_merge(
     patches: list[dict[str, Any]] = []
     status_counts: Counter[str] = Counter()
     strategy_counts: Counter[str] = Counter()
+    applied_strategy_counts: Counter[str] = Counter()
     patched_chunks: set[str] = set()
     candidate_count = 0
 
@@ -948,24 +1052,29 @@ def build_repair_merge(
             patches.append({**base, "status": status, "reason": "同一 chunk 已应用过候选修复，需人工处理冲突。"})
             continue
 
+        merge_target = request.get("merge_target") if isinstance(request.get("merge_target"), dict) else {}
         repaired_text = _repair_result_text(result)
         merged_text, strategy, reason = _merge_candidate_into_chunk(chunk_text[chunk_id], repaired_text, request)
         strategy_counts[strategy] += 1
         if reason:
             status = "skipped_manual_merge_required"
             status_counts[status] += 1
-            patches.append({**base, "status": status, "strategy": strategy, "reason": reason})
+            patches.append(
+                {**base, "status": status, "strategy": strategy, "reason": reason, "merge_target": merge_target}
+            )
             continue
 
         chunk_text[chunk_id] = merged_text.strip()
         patched_chunks.add(chunk_id)
         status = "applied"
         status_counts[status] += 1
+        applied_strategy_counts[strategy] += 1
         patches.append(
             {
                 **base,
                 "status": status,
                 "strategy": strategy,
+                "merge_target": merge_target,
                 "result_path": result.get("result_path") or "",
                 "patched_chunk_path": (repaired_chunk_dir / f"{chunk_id}.md").as_posix()
                 if repaired_chunk_dir is not None
@@ -1006,8 +1115,10 @@ def build_repair_merge(
             ),
             "manual_merge_required_count": status_counts.get("skipped_manual_merge_required", 0),
             "conflict_count": status_counts.get("skipped_chunk_conflict", 0),
+            "table_targeted_patch_count": applied_strategy_counts.get("replace_markdown_table_by_evidence", 0),
             "status_counts": dict(status_counts),
             "strategy_counts": dict(strategy_counts),
+            "applied_strategy_counts": dict(applied_strategy_counts),
             "repaired_chunks_dir": repaired_chunk_dir.as_posix() if repaired_chunk_dir else "",
             "repaired_full_path": repaired_full_path.as_posix() if repaired_full_path else "",
         },
@@ -1026,6 +1137,7 @@ def repair_merge_to_markdown(report: dict[str, Any]) -> str:
         f"| 合并候选 | {summary.get('merge_candidate_count', 0)} |",
         f"| 已应用 | {summary.get('applied_count', 0)} |",
         f"| 已修改 chunk | {summary.get('patched_chunk_count', 0)} |",
+        f"| 按证据定位表格补丁 | {summary.get('table_targeted_patch_count', 0)} |",
         f"| 需人工合并 | {summary.get('manual_merge_required_count', 0)} |",
         f"| 冲突 | {summary.get('conflict_count', 0)} |",
         f"| 跳过 | {summary.get('skipped_count', 0)} |",
@@ -1048,6 +1160,13 @@ def repair_merge_to_markdown(report: dict[str, Any]) -> str:
         lines.append(f"- 动作：`{patch.get('action')}`，范围 `{patch.get('scope')}`")
         if patch.get("strategy"):
             lines.append(f"- 合并策略：`{patch.get('strategy')}`")
+        merge_target = patch.get("merge_target") if isinstance(patch.get("merge_target"), dict) else {}
+        if merge_target:
+            table_index = _safe_nonnegative_int(merge_target.get("table_index"))
+            table_text = "-" if table_index is None else str(table_index + 1)
+            lines.append(
+                f"- 目标表格：第 {table_text} 个 Markdown 表格，目标单元格数 {merge_target.get('cell_count', 0)}"
+            )
         if patch.get("reason"):
             lines.append(f"- 原因：{patch.get('reason')}")
         if patch.get("patched_chunk_path"):

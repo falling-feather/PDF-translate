@@ -45,6 +45,7 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "ocr_candidate_promoted_count",
         "repair_request_count",
         "repair_merge_applied_count",
+        "repair_merge_table_targeted_patch_count",
         "post_repair_issue_count",
     ],
     "rates": [
@@ -72,6 +73,7 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "ocr_candidate_promotion_rate",
         "qa_issue_per_chunk",
         "repair_merge_apply_rate",
+        "repair_merge_table_targeted_patch_rate",
         "post_repair_issue_reduction_rate",
     ],
     "performance": [
@@ -94,6 +96,8 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "structure_hint_merged_cell_candidate_reason_counts",
         "table_merged_cell_candidate_type_counts",
         "table_merged_cell_candidate_reason_counts",
+        "repair_merge_strategy_counts",
+        "repair_merge_applied_strategy_counts",
     ],
 }
 

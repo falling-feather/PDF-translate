@@ -388,6 +388,9 @@ def build_experiment_metrics(
     repair_merge_skipped_count = _as_int(repair_merge_summary.get("skipped_count"))
     repair_merge_manual_required_count = _as_int(repair_merge_summary.get("manual_merge_required_count"))
     repair_merge_conflict_count = _as_int(repair_merge_summary.get("conflict_count"))
+    repair_merge_table_targeted_patch_count = _as_int(repair_merge_summary.get("table_targeted_patch_count"))
+    repair_merge_strategy_counts = _counter_dict(repair_merge_summary.get("strategy_counts"))
+    repair_merge_applied_strategy_counts = _counter_dict(repair_merge_summary.get("applied_strategy_counts"))
     post_repair_issue_count = _as_int(repair_merge_qa_summary.get("issue_count"))
     post_repair_table_shape_error_count = _as_int(repair_merge_qa_summary.get("table_shape_error_count"))
     post_repair_table_cell_token_error_count = _as_int(repair_merge_qa_summary.get("table_cell_token_error_count"))
@@ -582,6 +585,7 @@ def build_experiment_metrics(
             "repair_merge_skipped_count": repair_merge_skipped_count,
             "repair_merge_manual_required_count": repair_merge_manual_required_count,
             "repair_merge_conflict_count": repair_merge_conflict_count,
+            "repair_merge_table_targeted_patch_count": repair_merge_table_targeted_patch_count,
             "post_repair_issue_count": post_repair_issue_count,
             "post_repair_issue_delta": translation_issue_count - post_repair_issue_count,
             "post_repair_table_shape_error_count": post_repair_table_shape_error_count,
@@ -708,6 +712,10 @@ def build_experiment_metrics(
                 repair_validation_table_shape_check_count,
             ),
             "repair_merge_apply_rate": _rate(repair_merge_applied_count, repair_merge_candidate_count),
+            "repair_merge_table_targeted_patch_rate": _rate(
+                repair_merge_table_targeted_patch_count,
+                repair_merge_applied_count,
+            ),
             "post_repair_issue_reduction_rate": _rate(
                 translation_issue_count - post_repair_issue_count,
                 translation_issue_count,
@@ -782,6 +790,8 @@ def build_experiment_metrics(
             "repair_action_counts": repair_action_counts,
             "repair_priority_counts": repair_priority_counts,
             "repair_scope_counts": repair_scope_counts,
+            "repair_merge_strategy_counts": repair_merge_strategy_counts,
+            "repair_merge_applied_strategy_counts": repair_merge_applied_strategy_counts,
             "stage_elapsed_ms": stage_elapsed_ms,
             "stage_counts": stage_counts,
             "translator_counts": translator_counts,

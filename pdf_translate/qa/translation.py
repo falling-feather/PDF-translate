@@ -248,6 +248,10 @@ def _table_cell_token_errors(
         if not target_table:
             continue
         table_id = str(table.get("table_id") or table.get("block_id") or "")
+        source_shape = {
+            "row_count": int(table.get("row_count") or 0),
+            "column_count": int(table.get("column_count") or 0),
+        }
         for cell in table.get("cells") or []:
             if not isinstance(cell, dict):
                 continue
@@ -270,6 +274,7 @@ def _table_cell_token_errors(
                     "table_id": table_id,
                     "block_id": table.get("block_id") or table_id,
                     "page_no": table.get("page_no"),
+                    "source_table_shape": source_shape,
                     "row_index": row_index,
                     "column_index": column_index,
                     "role": cell.get("role") or "data",
