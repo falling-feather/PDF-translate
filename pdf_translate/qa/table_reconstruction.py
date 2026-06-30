@@ -50,6 +50,14 @@ def _count_values(items: list[str]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def _count_candidate_types(candidates: list[dict[str, Any]]) -> dict[str, int]:
+    return _count_values([str(candidate.get("span_type") or "unknown") for candidate in candidates])
+
+
+def _count_candidate_reasons(candidates: list[dict[str, Any]]) -> dict[str, int]:
+    return _count_values([str(candidate.get("reason") or "unknown") for candidate in candidates])
+
+
 def _chain_reason_category(reason: str) -> str:
     text = str(reason or "").strip()
     if text.startswith("header_mismatch_segment_"):
@@ -268,6 +276,135 @@ def _footnote_bindings(
     return bindings
 
 
+def _merged_candidate(
+    *,
+    span_type: str,
+    row_index: int,
+    column_index: int,
+    row_span: int,
+    column_span: int,
+    text: str,
+    reason: str,
+    confidence: str,
+    covered_cells: list[dict[str, int]],
+) -> dict[str, Any]:
+    return {
+        "span_type": span_type,
+        "row_index": row_index,
+        "column_index": column_index,
+        "row_span": row_span,
+        "column_span": column_span,
+        "text": _clip(text),
+        "reason": reason,
+        "confidence": confidence,
+        "covered_cells": covered_cells,
+    }
+
+
+def _merged_cell_candidates(rows: list[list[str]], column_count: int) -> list[dict[str, Any]]:
+    if column_count < 2 or not rows:
+        return []
+    normalised = _normalise_rows(rows, column_count)
+    candidates: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+
+    def add(candidate: dict[str, Any]) -> None:
+        covered = tuple((cell["row_index"], cell["column_index"]) for cell in candidate.get("covered_cells") or [])
+        key = (
+            candidate.get("span_type"),
+            candidate.get("row_index"),
+            candidate.get("column_index"),
+            candidate.get("row_span"),
+            candidate.get("column_span"),
+            candidate.get("reason"),
+            covered,
+        )
+        if key not in seen:
+            seen.add(key)
+            candidates.append(candidate)
+
+    for row_index, row in enumerate(normalised):
+        raw_row = rows[row_index] if row_index < len(rows) else row
+        padded_columns = set(range(max(0, len(raw_row)), column_count))
+        nonempty_columns = [index for index, value in enumerate(row) if str(value).strip()]
+        if len(raw_row) < column_count and nonempty_columns:
+            if len(nonempty_columns) == 1:
+                anchor_column = nonempty_columns[0]
+                confidence = "medium" if row_index == 0 and not _NUMBER_RE.search(row[anchor_column]) else "low"
+                add(
+                    _merged_candidate(
+                        span_type="colspan",
+                        row_index=row_index,
+                        column_index=anchor_column,
+                        row_span=1,
+                        column_span=max(1, column_count - anchor_column),
+                        text=row[anchor_column],
+                        reason="single_cell_ragged_row",
+                        confidence=confidence,
+                        covered_cells=[
+                            {"row_index": row_index, "column_index": column_index}
+                            for column_index in range(anchor_column + 1, column_count)
+                        ],
+                    )
+                )
+            else:
+                anchor_column = max(nonempty_columns)
+                if anchor_column < column_count - 1:
+                    add(
+                        _merged_candidate(
+                            span_type="colspan",
+                            row_index=row_index,
+                            column_index=anchor_column,
+                            row_span=1,
+                            column_span=column_count - anchor_column,
+                            text=row[anchor_column],
+                            reason="ragged_row_trailing_span",
+                            confidence="low",
+                            covered_cells=[
+                                {"row_index": row_index, "column_index": column_index}
+                                for column_index in range(anchor_column + 1, column_count)
+                            ],
+                        )
+                    )
+
+        for column_index, text in enumerate(row):
+            if column_index in padded_columns:
+                continue
+            if str(text).strip():
+                continue
+            if row_index > 0 and str(normalised[row_index - 1][column_index]).strip():
+                confidence = "medium" if column_index == 0 else "low"
+                add(
+                    _merged_candidate(
+                        span_type="rowspan",
+                        row_index=row_index - 1,
+                        column_index=column_index,
+                        row_span=2,
+                        column_span=1,
+                        text=normalised[row_index - 1][column_index],
+                        reason="empty_cell_below_nonempty_anchor",
+                        confidence=confidence,
+                        covered_cells=[{"row_index": row_index, "column_index": column_index}],
+                    )
+                )
+            if column_index > 0 and str(row[column_index - 1]).strip():
+                add(
+                    _merged_candidate(
+                        span_type="colspan",
+                        row_index=row_index,
+                        column_index=column_index - 1,
+                        row_span=1,
+                        column_span=2,
+                        text=row[column_index - 1],
+                        reason="empty_cell_right_of_nonempty_anchor",
+                        confidence="low",
+                        covered_cells=[{"row_index": row_index, "column_index": column_index}],
+                    )
+                )
+
+    return candidates
+
+
 def _table_cells(rows: list[list[str]], header: list[str]) -> list[dict[str, Any]]:
     cells: list[dict[str, Any]] = []
     for row_index, row in enumerate(rows):
@@ -323,17 +460,24 @@ def _table_entry(
 ) -> dict[str, Any]:
     meta = block.meta if isinstance(block.meta, dict) else {}
     table_meta = meta.get("table") if isinstance(meta.get("table"), dict) else {}
-    rows = _as_rows(table_meta.get("rows"))
-    row_count = int(table_meta.get("row_count") or len(rows) or 0)
-    column_count = int(table_meta.get("column_count") or max((len(row) for row in rows), default=0))
-    rows = _normalise_rows(rows, column_count)
+    raw_rows = _as_rows(table_meta.get("rows"))
+    row_count = int(table_meta.get("row_count") or len(raw_rows) or 0)
+    column_count = int(table_meta.get("column_count") or max((len(row) for row in raw_rows), default=0))
+    rows = _normalise_rows(raw_rows, column_count)
     header = [str(cell).strip() for cell in table_meta.get("header") or [] if str(cell).strip()]
     if not header and rows and any(cell.strip() for cell in rows[0]) and not any(_NUMBER_RE.search(cell) for cell in rows[0]):
         header = [cell for cell in rows[0]]
     cells = _table_cells(rows, header)
+    ragged_row_indices = [
+        row_index
+        for row_index, row in enumerate(raw_rows)
+        if column_count > 0 and len(row) < column_count
+    ]
+    empty_cell_count = sum(1 for cell in cells if cell.get("empty"))
+    merged_cell_candidates = _merged_cell_candidates(raw_rows, column_count)
     warnings = _table_warnings(
         table_meta,
-        rows=rows,
+        rows=raw_rows,
         row_count=row_count,
         column_count=column_count,
         header=header,
@@ -353,6 +497,13 @@ def _table_entry(
         "column_count": column_count,
         "header": header,
         "rows": rows,
+        "ragged_row_indices": ragged_row_indices,
+        "ragged_row_count": len(ragged_row_indices),
+        "empty_cell_count": empty_cell_count,
+        "merged_cell_candidate_count": len(merged_cell_candidates),
+        "merged_cell_candidate_type_counts": _count_candidate_types(merged_cell_candidates),
+        "merged_cell_candidate_reason_counts": _count_candidate_reasons(merged_cell_candidates),
+        "merged_cell_candidates": merged_cell_candidates,
         "caption_blocks": children.get("captions", []),
         "footnote_blocks": children.get("footnotes", []),
         "footnote_bindings": footnote_bindings,
@@ -549,6 +700,16 @@ def _continued_table_group(
         for footnote in table.get("footnote_blocks") or []
         if isinstance(footnote, dict)
     ]
+    merged_cell_candidates = [
+        {
+            **candidate,
+            "source_table_id": str(table.get("table_id") or table.get("block_id") or ""),
+            "source_page_no": int(table.get("page_no") or 0),
+        }
+        for table in source_tables
+        for candidate in table.get("merged_cell_candidates") or []
+        if isinstance(candidate, dict)
+    ]
     return {
         "group_id": "continued:" + "->".join(table_ids),
         "continuation_ids": continuation_ids,
@@ -578,6 +739,12 @@ def _continued_table_group(
         "merged_column_count": column_count,
         "merged_row_gain": merged_row_gain,
         "skipped_repeated_header_count": skipped_repeated_header_count,
+        "ragged_row_count": sum(int(table.get("ragged_row_count") or 0) for table in source_tables),
+        "empty_cell_count": sum(int(table.get("empty_cell_count") or 0) for table in source_tables),
+        "merged_cell_candidate_count": len(merged_cell_candidates),
+        "merged_cell_candidate_type_counts": _count_candidate_types(merged_cell_candidates),
+        "merged_cell_candidate_reason_counts": _count_candidate_reasons(merged_cell_candidates),
+        "merged_cell_candidates": merged_cell_candidates,
         "header": header,
         "rows": merged_rows,
         "numeric_tokens": _unique([token for cell in cells for token in cell["numbers"]]),
@@ -642,6 +809,23 @@ def build_table_reconstruction_report(
         for cell in table.get("cells") or []
         if isinstance(cell, dict) and cell.get("numbers")
     )
+    table_empty_cell_count = cell_count - nonempty_cell_count
+    merged_cell_candidates = [
+        candidate
+        for table in tables
+        for candidate in table.get("merged_cell_candidates") or []
+        if isinstance(candidate, dict)
+    ]
+    table_merged_cell_candidate_count = len(merged_cell_candidates)
+    table_merged_cell_candidate_type_counts = _count_candidate_types(merged_cell_candidates)
+    table_merged_cell_candidate_reason_counts = _count_candidate_reasons(merged_cell_candidates)
+    table_ragged_row_count = sum(int(table.get("ragged_row_count") or 0) for table in tables)
+    table_ragged_table_count = sum(
+        1
+        for table in tables
+        if int(table.get("ragged_row_count") or 0) > 0
+        or "ragged_table_rows" in {str(item) for item in table.get("warnings") or []}
+    )
     continuation_table_count = sum(
         1
         for table in tables
@@ -650,6 +834,9 @@ def build_table_reconstruction_report(
     continuation_group_count = len((structure_qa or {}).get("table_continuations") or []) if isinstance(structure_qa, dict) else 0
     continued_table_group_count = len(continued_table_groups)
     continued_table_segment_count = sum(int(group.get("segment_count") or 0) for group in continued_table_groups)
+    continued_table_merged_cell_candidate_count = sum(
+        int(group.get("merged_cell_candidate_count") or 0) for group in continued_table_groups
+    )
     continued_table_reconstructable_group_count = sum(
         1 for group in continued_table_groups if group.get("reconstructable")
     )
@@ -723,10 +910,16 @@ def build_table_reconstruction_report(
             "low_confidence_table_count": low_confidence_table_count,
             "cell_count": cell_count,
             "nonempty_cell_count": nonempty_cell_count,
+            "empty_cell_count": table_empty_cell_count,
             "numeric_cell_count": numeric_cell_count,
             "numeric_token_count": sum(len(table.get("numeric_tokens") or []) for table in tables),
             "unit_token_count": sum(len(table.get("unit_tokens") or []) for table in tables),
             "significance_token_count": sum(len(table.get("significance_tokens") or []) for table in tables),
+            "ragged_table_count": table_ragged_table_count,
+            "ragged_row_count": table_ragged_row_count,
+            "merged_cell_candidate_count": table_merged_cell_candidate_count,
+            "merged_cell_candidate_type_counts": table_merged_cell_candidate_type_counts,
+            "merged_cell_candidate_reason_counts": table_merged_cell_candidate_reason_counts,
             "caption_linked_table_count": caption_linked_table_count,
             "footnote_linked_table_count": footnote_linked_table_count,
             "table_footnote_binding_count": table_footnote_binding_count,
@@ -738,6 +931,7 @@ def build_table_reconstruction_report(
             "continuation_group_count": continuation_group_count,
             "continued_table_group_count": continued_table_group_count,
             "continued_table_segment_count": continued_table_segment_count,
+            "continued_table_merged_cell_candidate_count": continued_table_merged_cell_candidate_count,
             "continued_table_reconstructable_group_count": continued_table_reconstructable_group_count,
             "continued_table_merged_row_count": continued_table_merged_row_count,
             "table_chain_candidate_count": table_chain_candidate_count,

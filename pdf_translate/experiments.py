@@ -23,6 +23,10 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "table_shape_error_count",
         "table_cell_token_error_count",
         "missing_table_locked_token_count",
+        "table_merged_cell_candidate_count",
+        "table_ragged_table_count",
+        "table_ragged_row_count",
+        "table_empty_cell_count",
         "table_chain_reject_reason_count",
         "table_chain_warning_reason_count",
         "table_footnote_cell_binding_count",
@@ -38,6 +42,9 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
     ],
     "rates": [
         "table_reconstruction_ready_rate",
+        "table_merged_cell_candidate_rate",
+        "table_ragged_table_rate",
+        "table_empty_cell_rate",
         "table_footnote_cell_binding_rate",
         "table_footnote_unbound_rate",
         "table_chain_reject_reason_per_rejected_chain",
@@ -71,6 +78,8 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "table_chain_reject_reason_category_counts",
         "table_chain_warning_reason_counts",
         "table_chain_warning_reason_category_counts",
+        "table_merged_cell_candidate_type_counts",
+        "table_merged_cell_candidate_reason_counts",
     ],
 }
 
@@ -459,8 +468,8 @@ def write_batch_experiment_markdown(report: dict[str, Any], path: Path) -> Path:
         "",
         "## 策略均值",
         "",
-        "| 策略 | 成功/总数 | 平均 issue | 平均边界切开率 | 平均边界保护率 | 平均续表拒绝原因 | 续表拒绝类别 | 平均耗时 ms | 平均估算成本 |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| 策略 | 成功/总数 | 平均 issue | 平均合并候选 | 平均边界切开率 | 平均边界保护率 | 平均续表拒绝原因 | 续表拒绝类别 | 平均耗时 ms | 平均估算成本 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in report.get("aggregates", []):
         averages = item.get("averages", {})
@@ -475,6 +484,7 @@ def write_batch_experiment_markdown(report: dict[str, Any], path: Path) -> Path:
                     str(item.get("variant", "")),
                     f"{item.get('succeeded_count', 0)}/{item.get('run_count', 0)}",
                     _format_number(quality.get("translation_issue_count", 0)),
+                    _format_number(quality.get("table_merged_cell_candidate_count", 0)),
                     _format_number(rates.get("split_boundary_rate", 0)),
                     _format_number(rates.get("protected_boundary_rate", 0)),
                     _format_number(quality.get("table_chain_reject_reason_count", 0)),
@@ -580,6 +590,8 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
         "translation_issue_count",
         "table_shape_error_count",
         "table_cell_token_error_count",
+        "table_merged_cell_candidate_count",
+        "table_merged_cell_candidate_types",
         "table_chain_reject_reason_count",
         "table_chain_reject_reason_categories",
         "split_boundary_rate",
@@ -613,6 +625,13 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
                     "translation_issue_count": quality.get("translation_issue_count", ""),
                     "table_shape_error_count": quality.get("table_shape_error_count", ""),
                     "table_cell_token_error_count": quality.get("table_cell_token_error_count", ""),
+                    "table_merged_cell_candidate_count": quality.get("table_merged_cell_candidate_count", ""),
+                    "table_merged_cell_candidate_types": _format_counter(
+                        (metrics.get("breakdowns", {}) if isinstance(metrics, dict) else {}).get(
+                            "table_merged_cell_candidate_type_counts",
+                            {},
+                        )
+                    ),
                     "table_chain_reject_reason_count": quality.get("table_chain_reject_reason_count", ""),
                     "table_chain_reject_reason_categories": _format_counter(
                         (metrics.get("breakdowns", {}) if isinstance(metrics, dict) else {}).get(

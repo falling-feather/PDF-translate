@@ -617,8 +617,12 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(report["summary"]["table_footnote_cell_binding_count"], 1)
         self.assertEqual(report["summary"]["table_footnote_bound_cell_count"], 1)
         self.assertEqual(report["summary"]["table_footnote_unbound_count"], 0)
+        self.assertEqual(report["summary"]["merged_cell_candidate_count"], 0)
+        self.assertEqual(report["summary"]["ragged_table_count"], 0)
+        self.assertEqual(report["summary"]["empty_cell_count"], 0)
         self.assertEqual(report["summary"]["table_reconstruction_ready_rate"], 1.0)
         table_report = report["tables"][0]
+        self.assertEqual(table_report["merged_cell_candidates"], [])
         self.assertEqual(table_report["caption_blocks"][0]["block_id"], "p1-b0000")
         self.assertEqual(table_report["footnote_blocks"][0]["block_id"], "p1-b0002")
         binding = table_report["footnote_bindings"][0]
@@ -643,6 +647,74 @@ class StructureIRTests(unittest.TestCase):
         self.assertIn("footnote-cell bindings", hints)
         self.assertIn("p1-b0002", hints)
         self.assertIn("r1c2", hints)
+
+    def test_table_reconstruction_reports_merged_cell_candidates(self) -> None:
+        page1_table = BlockIR(
+            "p1-b0000",
+            1,
+            "table",
+            "Dataset metrics\nModel Acc F1\nA 91 88",
+            (40, 640, 540, 760),
+            0,
+            meta={
+                "table": {
+                    "rows": [["Dataset metrics"], ["Model", "Acc", "F1"], ["A", "91", "88"]],
+                    "row_count": 3,
+                    "column_count": 3,
+                    "header": ["Model", "Acc", "F1"],
+                    "confidence": "medium",
+                }
+            },
+        )
+        page2_table = BlockIR(
+            "p2-b0000",
+            2,
+            "table",
+            "Model Acc F1\nB 92 89",
+            (40, 80, 540, 180),
+            0,
+            meta={
+                "table": {
+                    "rows": [["Model", "Acc", "F1"], ["B", "92", "89"]],
+                    "row_count": 2,
+                    "column_count": 3,
+                    "header": ["Model", "Acc", "F1"],
+                    "confidence": "medium",
+                }
+            },
+        )
+        doc_ir = DocumentIR(
+            doc_id="merged-cell-candidates",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(1, 600, 800, page1_table.text, [page1_table]),
+                PageIR(2, 600, 800, page2_table.text, [page2_table]),
+            ],
+        )
+
+        report = build_table_reconstruction_report(doc_ir, build_structure_qa(doc_ir))
+
+        self.assertEqual(report["summary"]["table_count"], 2)
+        self.assertEqual(report["summary"]["ragged_table_count"], 1)
+        self.assertEqual(report["summary"]["ragged_row_count"], 1)
+        self.assertEqual(report["summary"]["empty_cell_count"], 2)
+        self.assertEqual(report["summary"]["merged_cell_candidate_count"], 1)
+        self.assertEqual(report["summary"]["merged_cell_candidate_type_counts"]["colspan"], 1)
+        self.assertEqual(report["summary"]["merged_cell_candidate_reason_counts"]["single_cell_ragged_row"], 1)
+        self.assertEqual(report["summary"]["continued_table_merged_cell_candidate_count"], 1)
+        table = report["tables"][0]
+        self.assertIn("ragged_table_rows", table["warnings"])
+        self.assertEqual(table["ragged_row_indices"], [0])
+        self.assertEqual(table["empty_cell_count"], 2)
+        candidate = table["merged_cell_candidates"][0]
+        self.assertEqual(candidate["span_type"], "colspan")
+        self.assertEqual(candidate["row_index"], 0)
+        self.assertEqual(candidate["column_index"], 0)
+        self.assertEqual(candidate["column_span"], 3)
+        self.assertEqual(candidate["covered_cells"], [{"row_index": 0, "column_index": 1}, {"row_index": 0, "column_index": 2}])
+        group = report["continued_table_groups"][0]
+        self.assertEqual(group["merged_cell_candidate_count"], 1)
+        self.assertEqual(group["merged_cell_candidates"][0]["source_table_id"], "p1-b0000")
 
     def test_table_reconstruction_builds_continued_table_groups(self) -> None:
         page1_table = BlockIR(
@@ -2055,10 +2127,16 @@ class StructureIRTests(unittest.TestCase):
                     "reconstructable_table_count": 1,
                     "low_confidence_table_count": 1,
                     "cell_count": 8,
+                    "empty_cell_count": 2,
                     "numeric_cell_count": 3,
                     "numeric_token_count": 4,
                     "unit_token_count": 1,
                     "significance_token_count": 2,
+                    "ragged_table_count": 1,
+                    "ragged_row_count": 1,
+                    "merged_cell_candidate_count": 2,
+                    "merged_cell_candidate_type_counts": {"colspan": 2},
+                    "merged_cell_candidate_reason_counts": {"single_cell_ragged_row": 1, "empty_cell_right_of_nonempty_anchor": 1},
                     "caption_linked_table_count": 1,
                     "footnote_linked_table_count": 1,
                     "table_footnote_binding_count": 2,
@@ -2068,6 +2146,7 @@ class StructureIRTests(unittest.TestCase):
                     "table_footnote_table_level_count": 0,
                     "continued_table_group_count": 2,
                     "continued_table_segment_count": 2,
+                    "continued_table_merged_cell_candidate_count": 2,
                     "continued_table_reconstructable_group_count": 1,
                     "continued_table_merged_row_count": 5,
                     "table_chain_candidate_count": 2,
@@ -2340,6 +2419,10 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["active_split_reduction_vs_baseline"], 1)
         self.assertEqual(metrics["quality"]["reconstructable_table_count"], 1)
         self.assertEqual(metrics["quality"]["table_cell_count"], 8)
+        self.assertEqual(metrics["quality"]["table_empty_cell_count"], 2)
+        self.assertEqual(metrics["quality"]["table_ragged_table_count"], 1)
+        self.assertEqual(metrics["quality"]["table_ragged_row_count"], 1)
+        self.assertEqual(metrics["quality"]["table_merged_cell_candidate_count"], 2)
         self.assertEqual(metrics["quality"]["table_significance_token_count"], 2)
         self.assertEqual(metrics["quality"]["table_footnote_binding_count"], 2)
         self.assertEqual(metrics["quality"]["table_footnote_cell_binding_count"], 1)
@@ -2348,6 +2431,7 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["table_footnote_table_level_count"], 0)
         self.assertEqual(metrics["quality"]["continued_table_group_count"], 2)
         self.assertEqual(metrics["quality"]["continued_table_segment_count"], 2)
+        self.assertEqual(metrics["quality"]["continued_table_merged_cell_candidate_count"], 2)
         self.assertEqual(metrics["quality"]["continued_table_reconstructable_group_count"], 1)
         self.assertEqual(metrics["quality"]["continued_table_merged_row_count"], 5)
         self.assertEqual(metrics["quality"]["table_chain_candidate_count"], 2)
@@ -2361,6 +2445,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["table_cell_token_error_rate"], 0.6667)
         self.assertEqual(metrics["rates"]["table_locked_token_missing_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_reconstruction_ready_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["table_empty_cell_rate"], 0.25)
+        self.assertEqual(metrics["rates"]["table_ragged_table_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["table_merged_cell_candidate_rate"], 1.0)
         self.assertEqual(metrics["rates"]["continued_table_reconstruction_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_chain_merge_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_chain_reject_rate"], 0.5)
@@ -2381,6 +2468,11 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["footnote_cross_page_link_rate"], 0.0)
         self.assertEqual(metrics["breakdowns"]["budget_split_reason_counts"]["target_chars"], 1)
         self.assertEqual(metrics["breakdowns"]["budget_pressure_counts"]["over_max"], 1)
+        self.assertEqual(metrics["breakdowns"]["table_merged_cell_candidate_type_counts"]["colspan"], 2)
+        self.assertEqual(
+            metrics["breakdowns"]["table_merged_cell_candidate_reason_counts"]["single_cell_ragged_row"],
+            1,
+        )
         self.assertEqual(
             metrics["breakdowns"]["table_chain_reject_reason_counts"]["header_mismatch_segment_1"],
             1,
@@ -2976,6 +3068,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertGreaterEqual(table_reconstruction["summary"]["table_count"], 1)
             self.assertIn("table_reconstruction_ready_rate", table_reconstruction["summary"])
             self.assertIn("continued_table_group_count", table_reconstruction["summary"])
+            self.assertIn("merged_cell_candidate_count", table_reconstruction["summary"])
+            self.assertIn("merged_cell_candidate_type_counts", table_reconstruction["summary"])
             self.assertIn("table_footnote_cell_binding_count", table_reconstruction["summary"])
             self.assertIn("table_footnote_unbound_count", table_reconstruction["summary"])
             self.assertIn("table_chain_reject_reason_counts", table_reconstruction["summary"])
@@ -3045,6 +3139,9 @@ class StructureIRTests(unittest.TestCase):
             self.assertGreater(metrics["performance"]["estimated_total_token_count"], 0)
             self.assertEqual(metrics["performance"]["estimated_total_cost"], 0)
             self.assertIn("reconstructable_table_count", metrics["quality"])
+            self.assertIn("table_merged_cell_candidate_count", metrics["quality"])
+            self.assertIn("table_merged_cell_candidate_rate", metrics["rates"])
+            self.assertIn("table_merged_cell_candidate_type_counts", metrics["breakdowns"])
             self.assertIn("continued_table_group_count", metrics["quality"])
             self.assertIn("table_footnote_cell_binding_count", metrics["quality"])
             self.assertIn("table_footnote_cell_binding_rate", metrics["rates"])

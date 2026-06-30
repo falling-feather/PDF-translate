@@ -179,10 +179,22 @@ def build_experiment_metrics(
     reconstructable_table_count = _as_int(table_reconstruction_summary.get("reconstructable_table_count"))
     low_confidence_table_count = _as_int(table_reconstruction_summary.get("low_confidence_table_count"))
     table_cell_count = _as_int(table_reconstruction_summary.get("cell_count"))
+    table_empty_cell_count = _as_int(table_reconstruction_summary.get("empty_cell_count"))
     table_numeric_cell_count = _as_int(table_reconstruction_summary.get("numeric_cell_count"))
     table_numeric_token_count = _as_int(table_reconstruction_summary.get("numeric_token_count"))
     table_unit_token_count = _as_int(table_reconstruction_summary.get("unit_token_count"))
     table_significance_token_count = _as_int(table_reconstruction_summary.get("significance_token_count"))
+    table_ragged_table_count = _as_int(table_reconstruction_summary.get("ragged_table_count"))
+    table_ragged_row_count = _as_int(table_reconstruction_summary.get("ragged_row_count"))
+    table_merged_cell_candidate_count = _as_int(
+        table_reconstruction_summary.get("merged_cell_candidate_count")
+    )
+    table_merged_cell_candidate_type_counts = _counter_dict(
+        table_reconstruction_summary.get("merged_cell_candidate_type_counts")
+    )
+    table_merged_cell_candidate_reason_counts = _counter_dict(
+        table_reconstruction_summary.get("merged_cell_candidate_reason_counts")
+    )
     table_caption_linked_count = _as_int(table_reconstruction_summary.get("caption_linked_table_count"))
     table_footnote_linked_count = _as_int(table_reconstruction_summary.get("footnote_linked_table_count"))
     table_footnote_binding_count = _as_int(table_reconstruction_summary.get("table_footnote_binding_count"))
@@ -196,6 +208,9 @@ def build_experiment_metrics(
     )
     continued_table_group_count = _as_int(table_reconstruction_summary.get("continued_table_group_count"))
     continued_table_segment_count = _as_int(table_reconstruction_summary.get("continued_table_segment_count"))
+    continued_table_merged_cell_candidate_count = _as_int(
+        table_reconstruction_summary.get("continued_table_merged_cell_candidate_count")
+    )
     continued_table_reconstructable_group_count = _as_int(
         table_reconstruction_summary.get("continued_table_reconstructable_group_count")
     )
@@ -406,10 +421,14 @@ def build_experiment_metrics(
             "reconstructable_table_count": reconstructable_table_count,
             "low_confidence_table_count": low_confidence_table_count,
             "table_cell_count": table_cell_count,
+            "table_empty_cell_count": table_empty_cell_count,
             "table_numeric_cell_count": table_numeric_cell_count,
             "table_numeric_token_count": table_numeric_token_count,
             "table_unit_token_count": table_unit_token_count,
             "table_significance_token_count": table_significance_token_count,
+            "table_ragged_table_count": table_ragged_table_count,
+            "table_ragged_row_count": table_ragged_row_count,
+            "table_merged_cell_candidate_count": table_merged_cell_candidate_count,
             "table_caption_linked_count": table_caption_linked_count,
             "table_footnote_linked_count": table_footnote_linked_count,
             "table_footnote_binding_count": table_footnote_binding_count,
@@ -419,6 +438,7 @@ def build_experiment_metrics(
             "table_footnote_table_level_count": table_footnote_table_level_count,
             "continued_table_group_count": continued_table_group_count,
             "continued_table_segment_count": continued_table_segment_count,
+            "continued_table_merged_cell_candidate_count": continued_table_merged_cell_candidate_count,
             "continued_table_reconstructable_group_count": continued_table_reconstructable_group_count,
             "continued_table_merged_row_count": continued_table_merged_row_count,
             "table_chain_candidate_count": table_chain_candidate_count,
@@ -575,6 +595,9 @@ def build_experiment_metrics(
             "caption_orphan_rate": _rate(caption_orphan_count, caption_count),
             "footnote_orphan_rate": _rate(footnote_orphan_count, footnote_count),
             "table_reconstruction_ready_rate": table_reconstruction_ready_rate,
+            "table_empty_cell_rate": _rate(table_empty_cell_count, table_cell_count),
+            "table_ragged_table_rate": _rate(table_ragged_table_count, table_count),
+            "table_merged_cell_candidate_rate": _rate(table_merged_cell_candidate_count, table_count),
             "table_numeric_cell_rate": _rate(table_numeric_cell_count, table_cell_count),
             "table_caption_link_rate": _rate(table_caption_linked_count, table_count),
             "table_footnote_binding_rate": _rate(table_footnote_linked_count, table_count),
@@ -706,6 +729,8 @@ def build_experiment_metrics(
             "skip_reasons": skip_reasons,
             "error_code_counts": run_error_code_counts,
             "error_category_counts": run_error_category_counts,
+            "table_merged_cell_candidate_type_counts": table_merged_cell_candidate_type_counts,
+            "table_merged_cell_candidate_reason_counts": table_merged_cell_candidate_reason_counts,
             "table_chain_reject_reason_counts": table_chain_reject_reason_counts,
             "table_chain_reject_reason_category_counts": table_chain_reject_reason_category_counts,
             "table_chain_warning_reason_counts": table_chain_warning_reason_counts,
