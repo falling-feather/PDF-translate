@@ -647,6 +647,7 @@ class StructureIRTests(unittest.TestCase):
         self.assertIn("footnote-cell bindings", hints)
         self.assertIn("p1-b0002", hints)
         self.assertIn("r1c2", hints)
+        self.assertNotIn("合并单元格候选", hints)
 
     def test_table_reconstruction_reports_merged_cell_candidates(self) -> None:
         page1_table = BlockIR(
@@ -715,6 +716,20 @@ class StructureIRTests(unittest.TestCase):
         group = report["continued_table_groups"][0]
         self.assertEqual(group["merged_cell_candidate_count"], 1)
         self.assertEqual(group["merged_cell_candidates"][0]["source_table_id"], "p1-b0000")
+        hints = build_table_translation_hints(
+            TextChunk("c0000", [0, 1], page1_table.text + "\n" + page2_table.text, 0, 0),
+            report,
+        )
+        self.assertIn("疑似合并单元格候选", hints)
+        self.assertIn("未确认", hints)
+        self.assertIn("不作为已确认合并结构处理", hints)
+        self.assertIn("续表组内疑似合并单元格候选 1 个", hints)
+        self.assertIn("p1-b0000:r0c0", hints)
+        self.assertIn("疑似跨列候选(colspan 1x3)", hints)
+        self.assertIn("覆盖候选空位=r0c1,r0c2", hints)
+        self.assertIn("single_cell_ragged_row", hints)
+        self.assertIn("Dataset metrics", hints)
+        self.assertNotIn("已确认合并单元格", hints)
 
     def test_table_reconstruction_builds_continued_table_groups(self) -> None:
         page1_table = BlockIR(

@@ -1020,12 +1020,44 @@ def _footnote_binding_hint(binding: dict[str, Any]) -> str:
     return f"{block_id}:{marker_text}->{cell_text}"
 
 
+def _merged_cell_candidate_hint(candidate: dict[str, Any]) -> str:
+    row = int(candidate.get("row_index") or 0)
+    col = int(candidate.get("column_index") or 0)
+    span_type = str(candidate.get("span_type") or "unknown")
+    row_span = int(candidate.get("row_span") or 1)
+    column_span = int(candidate.get("column_span") or 1)
+    span_label = {"colspan": "跨列", "rowspan": "跨行"}.get(span_type, span_type)
+    covered = [
+        f"r{int(cell.get('row_index') or 0)}c{int(cell.get('column_index') or 0)}"
+        for cell in candidate.get("covered_cells") or []
+        if isinstance(cell, dict)
+    ]
+    source_table_id = str(candidate.get("source_table_id") or "").strip()
+    reason = str(candidate.get("reason") or "").strip()
+    confidence = str(candidate.get("confidence") or "").strip()
+    text = _clip(str(candidate.get("text") or ""), 60)
+    cell_ref = f"r{row}c{col}"
+    if source_table_id:
+        cell_ref = f"{source_table_id}:{cell_ref}"
+    parts = [cell_ref, f"疑似{span_label}候选({span_type} {row_span}x{column_span})"]
+    if covered:
+        parts.append("覆盖候选空位=" + ",".join(covered[:8]))
+    if reason:
+        parts.append("原因=" + reason)
+    if confidence:
+        parts.append("置信=" + confidence)
+    if text:
+        parts.append("锚文本=" + text)
+    return "；".join(parts)
+
+
 def build_table_translation_hints(
     chunk: TextChunk,
     table_reconstruction: dict[str, Any] | None,
     *,
     max_tables: int = 3,
     max_cells_per_table: int = 18,
+    max_merged_candidates_per_table: int = 3,
 ) -> str:
     """Build compact table-preservation instructions for one translation chunk."""
     if not isinstance(table_reconstruction, dict):
@@ -1072,6 +1104,22 @@ def build_table_translation_hints(
         header = [str(item).strip() for item in group.get("header") or [] if str(item).strip()]
         if merge_status == "merged" and header:
             lines.append("  合并表头：" + " | ".join(_clip(item, 40) for item in header[:12]))
+        group_candidates = [
+            candidate
+            for candidate in group.get("merged_cell_candidates") or []
+            if isinstance(candidate, dict)
+        ]
+        if group_candidates:
+            lines.append(
+                f"  续表组内疑似合并单元格候选 {len(group_candidates)} 个（未确认，仅作结构保护提示，不作为已确认合并结构处理）。"
+            )
+            lines.append(
+                "  候选示例："
+                + " / ".join(
+                    _merged_cell_candidate_hint(candidate)
+                    for candidate in group_candidates[:max(1, min(4, max_merged_candidates_per_table))]
+                )
+            )
     for table in selected[:max_tables]:
         table_id = str(table.get("table_id") or table.get("block_id") or "unknown")
         row_count = int(table.get("row_count") or 0)
@@ -1104,6 +1152,17 @@ def build_table_translation_hints(
                 "  footnote-cell bindings: "
                 + " / ".join(_footnote_binding_hint(binding) for binding in bindings[:6])
             )
+        merged_candidates = [
+            candidate
+            for candidate in table.get("merged_cell_candidates") or []
+            if isinstance(candidate, dict)
+        ]
+        if merged_candidates:
+            lines.append("  疑似合并单元格候选（未确认，仅作结构保护提示，不作为已确认合并结构处理）：")
+            for candidate in merged_candidates[:max_merged_candidates_per_table]:
+                lines.append("    - " + _merged_cell_candidate_hint(candidate))
+            if len(merged_candidates) > max_merged_candidates_per_table:
+                lines.append(f"    - 其余 {len(merged_candidates) - max_merged_candidates_per_table} 个候选略。")
         continuation = [
             str(table.get("continued_from_block_id") or "").strip(),
             str(table.get("continued_to_block_id") or "").strip(),
