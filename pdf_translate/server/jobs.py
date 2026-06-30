@@ -259,12 +259,85 @@ class JobRegistry:
             rec.touch()
             self._persist(rec)
 
+    @staticmethod
+    def _file_size(path: Path) -> int:
+        try:
+            if not path.is_file():
+                return 0
+            return path.stat().st_size
+        except OSError:
+            return 0
+
+    def artifact_fields_for_record(self, rec: JobRecord) -> dict[str, Any]:
+        input_pdf = rec.work_dir / "input.pdf"
+        output_dir = rec.work_dir / "output"
+        translated_md = output_dir / "translated_full.md"
+        bilingual_html = output_dir / "bilingual.html"
+        input_bytes = self._file_size(input_pdf)
+        translated_bytes = self._file_size(translated_md)
+        html_bytes = self._file_size(bilingual_html)
+
+        warnings: list[str] = []
+        if not rec.work_dir.is_dir():
+            warnings.append("work_dir_missing")
+        if input_bytes <= 0:
+            warnings.append("input_pdf_missing")
+        if rec.status == "done" and translated_bytes <= 0:
+            warnings.append("translated_md_missing_for_done")
+        if rec.status == "cancelled" and translated_bytes <= 0:
+            warnings.append("translated_md_missing_for_cancelled")
+
+        severe = {
+            "work_dir_missing",
+            "input_pdf_missing",
+            "translated_md_missing_for_done",
+        }
+        artifact_consistent = not any(item in severe for item in warnings)
+
+        if not artifact_consistent:
+            consistency_status = "inconsistent"
+        elif rec.status == "done":
+            consistency_status = "ready"
+        elif rec.status == "cancelled":
+            consistency_status = "partial" if translated_bytes > 0 else "no_output"
+        elif rec.status == "error":
+            consistency_status = "partial" if translated_bytes > 0 else "no_output"
+        else:
+            consistency_status = "pending"
+
+        return {
+            "artifact_consistent": artifact_consistent,
+            "artifact_consistency_status": consistency_status,
+            "artifact_warnings": warnings,
+            "input_pdf_ready": input_bytes > 0,
+            "input_pdf_bytes": input_bytes,
+            "output_dir_ready": output_dir.is_dir(),
+            "partial_output_ready": translated_bytes > 0,
+            "partial_output_bytes": translated_bytes,
+            "bilingual_html_ready": html_bytes > 0,
+            "bilingual_html_bytes": html_bytes,
+            "bundle_zip_ready": rec.status in ("done", "cancelled") and translated_bytes > 0,
+        }
+
     def status_fields_for_job(self, job_id: str) -> dict[str, Any]:
         rec = self.get(job_id)
         if not rec:
-            return {"status_available": False}
+            return {
+                "status_available": False,
+                "artifact_consistent": False,
+                "artifact_consistency_status": "missing_status",
+                "artifact_warnings": ["status_snapshot_missing"],
+                "input_pdf_ready": False,
+                "input_pdf_bytes": 0,
+                "output_dir_ready": False,
+                "partial_output_ready": False,
+                "partial_output_bytes": 0,
+                "bilingual_html_ready": False,
+                "bilingual_html_bytes": 0,
+                "bundle_zip_ready": False,
+            }
         pub = rec.to_public()
-        return {
+        fields = {
             "status_available": True,
             "status_schema_version": JOB_STATUS_SCHEMA_VERSION,
             "status": pub.status,
@@ -289,6 +362,8 @@ class JobRegistry:
             "duration_seconds": pub.duration_seconds,
             "run_started_at": pub.run_started_at,
         }
+        fields.update(self.artifact_fields_for_record(rec))
+        return fields
 
     def merge_status_into_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         merged: list[dict[str, Any]] = []

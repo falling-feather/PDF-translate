@@ -372,8 +372,6 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
 
     def _job_dict(rec: JobRecord) -> dict:
         pub = rec.to_public()
-        partial = rec.work_dir / "output" / "translated_full.md"
-        partial_ok = partial.is_file() and partial.stat().st_size > 0
         complete = rec.status == "done"
         suggested_name = suggest_md_download_name(
             original_filename=rec.original_filename,
@@ -407,8 +405,6 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             "owner_user_id": rec.owner_user_id,
             "owner_username": rec.owner_username,
             "original_filename": rec.original_filename,
-            "partial_output_ready": partial_ok,
-            "partial_output_bytes": partial.stat().st_size if partial.is_file() else 0,
             "translate_mode": rec.translate_mode,
             "parallel_max_workers": rec.parallel_max_workers,
             "duration_seconds": rec.duration_seconds,
@@ -416,6 +412,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             "suggested_download_filename": suggested_name,
             "suggested_zip_filename": suggested_zip,
         }
+        d.update(app_registry.artifact_fields_for_record(rec))
         return d
 
     @api.get("/jobs/{job_id}")
@@ -549,17 +546,20 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         root = rec.work_dir.resolve()
         if kind == "input":
             p = root / "input.pdf"
-            if not p.is_file():
+            if not p.is_file() or p.stat().st_size == 0:
                 raise HTTPException(404, "无上传文件")
             return FileResponse(p, filename="input.pdf", media_type="application/pdf")
         if kind == "output_md":
             p = root / "output" / "translated_full.md"
-            if not p.is_file():
+            if not p.is_file() or p.stat().st_size == 0:
                 raise HTTPException(404, "尚无译文")
             return FileResponse(p, filename="translated_full.md", media_type="text/markdown; charset=utf-8")
         if kind == "bundle_zip":
             if rec.status not in ("done", "cancelled"):
                 raise HTTPException(409, "任务未完成或未终止")
+            md = root / "output" / "translated_full.md"
+            if not md.is_file() or md.stat().st_size == 0:
+                raise HTTPException(404, "尚无译文可打包")
             data, zip_disp = zip_job_outputs(
                 rec.work_dir,
                 original_filename=rec.original_filename,

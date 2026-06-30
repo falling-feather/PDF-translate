@@ -80,6 +80,10 @@ class JobStatusSnapshotTests(unittest.TestCase):
         root = self._case_root("merge-preserves-db-created-at")
         registry = JobRegistry(root)
         rec = registry.create_job(original_filename="paper.pdf")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        out = rec.work_dir / "output"
+        out.mkdir()
+        (out / "translated_full.md").write_text("translated", encoding="utf-8")
         registry.update(rec.job_id, status="done", phase="done", duration_seconds=12.5)
 
         rows = [
@@ -100,6 +104,27 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(merged[0]["phase"], "done")
         self.assertEqual(merged[0]["runtime_created_at"], rec.created_at)
         self.assertEqual(merged[0]["duration_seconds"], 12.5)
+        self.assertTrue(merged[0]["artifact_consistent"])
+        self.assertEqual(merged[0]["artifact_consistency_status"], "ready")
+        self.assertTrue(merged[0]["input_pdf_ready"])
+        self.assertTrue(merged[0]["partial_output_ready"])
+        self.assertTrue(merged[0]["bundle_zip_ready"])
+
+    def test_artifact_summary_marks_done_without_translation_inconsistent(self) -> None:
+        root = self._case_root("artifact-inconsistent")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        registry.update(rec.job_id, status="done", phase="done")
+
+        merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
+
+        self.assertFalse(merged[0]["artifact_consistent"])
+        self.assertEqual(merged[0]["artifact_consistency_status"], "inconsistent")
+        self.assertIn("translated_md_missing_for_done", merged[0]["artifact_warnings"])
+        self.assertTrue(merged[0]["input_pdf_ready"])
+        self.assertFalse(merged[0]["partial_output_ready"])
+        self.assertFalse(merged[0]["bundle_zip_ready"])
 
     def test_merge_status_into_rows_marks_missing_runtime_status(self) -> None:
         root = self._case_root("merge-missing-status")
@@ -110,6 +135,8 @@ class JobStatusSnapshotTests(unittest.TestCase):
 
         self.assertEqual(merged[0]["created_at"], "db-created-at")
         self.assertFalse(merged[0]["status_available"])
+        self.assertEqual(merged[0]["artifact_consistency_status"], "missing_status")
+        self.assertIn("status_snapshot_missing", merged[0]["artifact_warnings"])
         self.assertNotIn("status", merged[0])
 
 

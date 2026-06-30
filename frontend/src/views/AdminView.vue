@@ -133,6 +133,32 @@ function formatAuditTime(iso) {
   });
 }
 
+function artifactLabel(job) {
+  const status = job.artifact_consistency_status || "missing_status";
+  const labels = {
+    ready: "产物就绪",
+    partial: "部分产物",
+    pending: "生成中",
+    no_output: "暂无译文",
+    inconsistent: "产物异常",
+    missing_status: "状态缺失",
+  };
+  return labels[status] || status;
+}
+
+function artifactClass(job) {
+  return {
+    "artifact-ok": job.artifact_consistency_status === "ready",
+    "artifact-warn": ["partial", "pending", "no_output"].includes(job.artifact_consistency_status),
+    "artifact-err": !job.artifact_consistent,
+  };
+}
+
+function artifactWarnings(job) {
+  const warnings = Array.isArray(job.artifact_warnings) ? job.artifact_warnings : [];
+  return warnings.join("、");
+}
+
 function toggleAuditDetail(id) {
   const cur = { ...auditExpanded.value };
   cur[id] = !cur[id];
@@ -439,6 +465,7 @@ onMounted(() => {
               <th>用户</th>
               <th>文件</th>
               <th>时间</th>
+              <th>产物</th>
               <th>下载</th>
             </tr>
           </thead>
@@ -448,10 +475,14 @@ onMounted(() => {
               <td>{{ j.username }} ({{ j.user_id }})</td>
               <td>{{ j.original_filename }}</td>
               <td class="muted nowrap">{{ j.created_at }}</td>
+              <td>
+                <span class="artifact-pill" :class="artifactClass(j)">{{ artifactLabel(j) }}</span>
+                <span v-if="artifactWarnings(j)" class="muted small artifact-note">{{ artifactWarnings(j) }}</span>
+              </td>
               <td class="nowrap">
-                <button type="button" class="linkish" @click="adminDownload(j.job_id, 'input', 'input.pdf')">PDF</button>
-                <button type="button" class="linkish" @click="adminDownload(j.job_id, 'output_md', 'translated.md')">MD</button>
-                <button type="button" class="linkish" @click="adminDownload(j.job_id, 'bundle_zip', j.job_id + '.zip')">ZIP</button>
+                <button type="button" class="linkish" :disabled="!j.input_pdf_ready" @click="adminDownload(j.job_id, 'input', 'input.pdf')">PDF</button>
+                <button type="button" class="linkish" :disabled="!j.partial_output_ready" @click="adminDownload(j.job_id, 'output_md', 'translated.md')">MD</button>
+                <button type="button" class="linkish" :disabled="!j.bundle_zip_ready" @click="adminDownload(j.job_id, 'bundle_zip', j.job_id + '.zip')">ZIP</button>
               </td>
             </tr>
           </tbody>
@@ -643,6 +674,38 @@ h3 {
   text-decoration: underline;
   padding: 0 0.25rem;
   font-size: inherit;
+}
+.linkish:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.artifact-pill {
+  display: inline-block;
+  padding: 0.12rem 0.38rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+.artifact-ok {
+  color: var(--ok);
+  border-color: rgba(52, 199, 89, 0.45);
+}
+.artifact-warn {
+  color: #f5c542;
+  border-color: rgba(245, 197, 66, 0.45);
+}
+.artifact-err {
+  color: var(--err);
+  border-color: rgba(255, 92, 92, 0.45);
+}
+.artifact-note {
+  display: block;
+  margin-top: 0.2rem;
+  max-width: 220px;
+  white-space: normal;
+  word-break: break-word;
 }
 .muted {
   color: var(--muted);
