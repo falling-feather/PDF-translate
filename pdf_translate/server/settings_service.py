@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from pdf_translate.config import AppConfig
 from pdf_translate.server import database
-
-DEFAULT_ENABLED = ["echo", "deepseek"]
+from pdf_translate.translators.registry import (
+    backend_catalog,
+    backend_ids,
+    backend_ui_labels,
+    custom_api_backend_ids,
+    default_enabled_backend_ids,
+    normalize_backend_id,
+)
 
 
 def _coalesce(kv_val: str | None, base_val: str | None) -> str | None:
@@ -80,13 +86,31 @@ def _parse_timeout(base: AppConfig) -> float:
 def enabled_backends() -> list[str]:
     raw = database.kv_get_json("enabled_backends", None)
     if isinstance(raw, list) and raw:
-        return [str(x).lower().strip() for x in raw if str(x).strip()]
-    return list(DEFAULT_ENABLED)
+        sanitized = sanitize_backend_ids(raw, raise_invalid=False)
+        if sanitized:
+            return sanitized
+    return default_enabled_backend_ids()
+
+
+def sanitize_backend_ids(raw: list | tuple, *, raise_invalid: bool = True) -> list[str]:
+    out: list[str] = []
+    for item in raw:
+        if str(item).strip() == "":
+            continue
+        try:
+            backend_id = normalize_backend_id(str(item))
+        except ValueError:
+            if raise_invalid:
+                raise
+            continue
+        if backend_id not in out:
+            out.append(backend_id)
+    return out
 
 
 def assert_backend_allowed(backend: str | None, default_backend: str) -> str:
     allowed = set(enabled_backends())
-    b = (backend or default_backend or "deepseek").lower().strip()
+    b = normalize_backend_id(backend or default_backend or "deepseek")
     if b not in allowed:
         raise ValueError(f"后端「{b}」未在管理端启用")
     return b
@@ -120,13 +144,21 @@ def admin_settings_snapshot() -> dict:
         if v is not None:
             out[k] = v
     out["enabled_backends"] = enabled_backends()
+    out["all_backends"] = backend_ids()
+    out["backend_labels"] = backend_ui_labels()
+    out["backend_catalog"] = backend_catalog()
+    out["custom_api_backends"] = custom_api_backend_ids()
+    out["default_enabled_backends"] = default_enabled_backend_ids()
     out["registration_open"] = database.registration_open()
     return out
 
 
 def apply_admin_settings(patch: dict) -> None:
     if "enabled_backends" in patch and patch["enabled_backends"] is not None:
-        database.kv_set_json("enabled_backends", patch["enabled_backends"])
+        raw_enabled = patch["enabled_backends"]
+        if not isinstance(raw_enabled, list):
+            raise ValueError("enabled_backends must be a list")
+        database.kv_set_json("enabled_backends", sanitize_backend_ids(raw_enabled, raise_invalid=True))
     if "registration_open" in patch and patch["registration_open"] is not None:
         v = patch["registration_open"]
         database.kv_set("registration_open", "true" if v else "false")
@@ -144,11 +176,21 @@ def apply_admin_settings(patch: dict) -> None:
         else:
             s = str(v).strip().lower()
             database.kv_set("planner_enabled", "true" if s in ("1", "true", "yes", "on") else "false")
+    if "default_backend" in patch and patch["default_backend"] is not None:
+        s = str(patch["default_backend"]).strip()
+        if s:
+            database.kv_set("default_backend", normalize_backend_id(s))
     str_keys = [
         "deepseek_api_key",
         "deepseek_base_url",
         "deepseek_model",
-        "default_backend",
+        "openai_api_key",
+        "openai_base_url",
+        "openai_model",
+        "ollama_base_url",
+        "ollama_model",
+        "deepl_api_key",
+        "deepl_api_url",
         "http_timeout_s",
         "siliconflow_api_key",
         "siliconflow_base_url",

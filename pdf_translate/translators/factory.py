@@ -8,6 +8,7 @@ from pdf_translate.translators.hybrid import HybridTranslator
 from pdf_translate.translators.ollama import OllamaTranslator
 from pdf_translate.translators.openai_compatible import OpenAICompatibleTranslator, POLISH_SYSTEM_PROMPT
 from pdf_translate.translators.base import Translator
+from pdf_translate.translators.registry import normalize_backend_id, unknown_backend_detail
 
 
 def _config_error(code: str, detail: str, *, source: str) -> PdfTranslateError:
@@ -15,8 +16,15 @@ def _config_error(code: str, detail: str, *, source: str) -> PdfTranslateError:
 
 
 def build_translator(backend: str, cfg: AppConfig) -> Translator:
-    b = backend.lower().strip()
-    if b in ("echo", "dry", "noop"):
+    try:
+        b = normalize_backend_id(backend)
+    except ValueError as exc:
+        raise _config_error(
+            "CONFIG_INVALID_BACKEND",
+            unknown_backend_detail(backend),
+            source="translator:factory",
+        ) from exc
+    if b == "echo":
         return EchoTranslator()
     if b == "openai":
         if not cfg.openai_api_key:
@@ -93,6 +101,6 @@ def build_translator(backend: str, cfg: AppConfig) -> Translator:
         return HybridTranslator(machine=mt, polisher=polish)
     raise _config_error(
         "CONFIG_INVALID_BACKEND",
-        f"Unknown backend: {backend}. Choose echo/openai/deepseek/ollama/deepl/hybrid.",
+        unknown_backend_detail(backend),
         source="translator:factory",
     )

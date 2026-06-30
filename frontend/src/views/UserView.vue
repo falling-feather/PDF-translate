@@ -27,6 +27,8 @@ const customApiModel = ref("");
 
 const enabledBackends = ref([]);
 const defaultBackend = ref("deepseek");
+const backendCatalog = ref([]);
+const customApiBackends = ref(["deepseek"]);
 
 const myJobs = ref([]);
 const myJobsError = ref("");
@@ -42,7 +44,6 @@ const pageNow = ref(Date.now());
 let footerTimer = null;
 
 const FOOTER_START_AT = new Date("2026-03-22T00:00:00+08:00").getTime();
-const CUSTOM_API_BACKENDS = ["deepseek"];
 const MAX_PARALLEL_TASKS = 3;
 const CACHE_KEY = "pdf_translate_user_view_state_v4";
 
@@ -102,7 +103,13 @@ function onDropzoneDrop(e) {
 
 function labelForBackend(b) {
   const m = backendLabels.value;
-  return (m && m[b]) || b;
+  if (m && m[b]) return m[b];
+  const hit = backendCatalog.value.find((item) => item.id === b);
+  return hit?.label || b;
+}
+
+function backendSpec(b) {
+  return backendCatalog.value.find((item) => item.id === b) || {};
 }
 
 function normalizeErrorPayload(payload) {
@@ -158,7 +165,10 @@ async function loadBackends() {
   enabledBackends.value = d.enabled || [];
   defaultBackend.value = d.default_backend || "deepseek";
   backendLabels.value = d.labels || {};
+  backendCatalog.value = Array.isArray(d.catalog) ? d.catalog : [];
+  customApiBackends.value = Array.isArray(d.custom_api_backends) && d.custom_api_backends.length ? d.custom_api_backends : ["deepseek"];
   if (backend.value && !enabledBackends.value.includes(backend.value)) backend.value = "";
+  if (!customApiBackends.value.includes(customApiBackend.value)) customApiBackend.value = customApiBackends.value[0] || "deepseek";
 }
 
 async function loadMyJobs() {
@@ -289,8 +299,8 @@ async function createJobForFile(file) {
 
   if (useCustomApi.value) {
     const cbe = customApiBackend.value.trim().toLowerCase();
-    if (!CUSTOM_API_BACKENDS.includes(cbe)) throw new Error("API翻译仅支持 deepseek / openai / ollama / deepl");
-    if ((cbe === "deepseek" || cbe === "openai" || cbe === "deepl") && !customApiKey.value.trim()) {
+    if (!customApiBackends.value.includes(cbe)) throw new Error(`API翻译仅支持 ${customApiBackends.value.join(" / ")}`);
+    if (backendSpec(cbe).requires_api_key && !customApiKey.value.trim()) {
       throw new Error("当前 API 翻译后端需要你填写 API Key");
     }
     fd.append("use_custom_api", "true");
@@ -594,11 +604,11 @@ onUnmounted(() => {
             <label class="field">
               <span>API 后端</span>
               <select v-model="customApiBackend">
-                <option v-for="b in CUSTOM_API_BACKENDS" :key="b" :value="b">{{ b }}</option>
+                <option v-for="b in customApiBackends" :key="b" :value="b">{{ labelForBackend(b) }}</option>
               </select>
             </label>
             <label class="field">
-              <span>API Key（deepseek/openai/deepl 必填）</span>
+              <span>API Key（所选后端需要密钥时必填）</span>
               <input v-model="customApiKey" type="password" placeholder="输入你自己的 API Key" />
             </label>
             <label class="field">

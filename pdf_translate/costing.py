@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from pdf_translate.config import AppConfig
+from pdf_translate.translators.registry import get_backend_spec
 
 COST_PROFILE_SCHEMA_VERSION = "cost-profile-v1"
 COST_ESTIMATE_SCHEMA_VERSION = "cost-estimate-v1"
@@ -160,18 +161,17 @@ def load_cost_profile(cfg: AppConfig) -> dict[str, Any]:
 
 
 def backend_model_name(backend: str, cfg: AppConfig) -> str:
-    b = backend.lower().strip()
-    if b == "deepseek":
-        return cfg.deepseek_model
-    if b == "openai":
-        return cfg.openai_model
-    if b == "ollama":
-        return cfg.ollama_model
-    if b == "deepl":
+    try:
+        spec = get_backend_spec(backend)
+    except ValueError:
+        return backend.lower().strip()
+    if spec.id == "deepl":
         return "deepl"
-    if b == "hybrid":
+    if spec.id == "hybrid":
         return f"deepl+{cfg.openai_model}"
-    return b
+    if spec.model_attr:
+        return str(getattr(cfg, spec.model_attr))
+    return spec.id
 
 
 def _candidate_profile_keys(backend: str, model: str | None) -> list[str]:

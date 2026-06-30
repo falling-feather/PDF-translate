@@ -7,6 +7,7 @@ import typer
 from pdf_translate.config import AppConfig
 from pdf_translate import pipeline
 from pdf_translate.experiments import load_sample_metadata, parse_variant_specs, run_batch_experiment
+from pdf_translate.translators.registry import backend_choice_text
 
 app = typer.Typer(help="PDF 英文学术文献：拆分参考文献、按块翻译、记忆目录（见 README.md memory/ 说明）")
 
@@ -49,7 +50,7 @@ def cmd_translate(
         None,
         "--backend",
         "-b",
-        help="echo | openai | ollama | deepl | hybrid；默认环境变量 PDF_TRANSLATE_BACKEND",
+        help=f"{backend_choice_text()}；默认环境变量 PDF_TRANSLATE_BACKEND",
     ),
     pages_per_chunk: int = typer.Option(3, "--pages", min=1, max=3, help="每块页数 1–3"),
     overlap: int = typer.Option(1, "--overlap", min=0, help="块间重叠页数"),
@@ -122,7 +123,7 @@ def cmd_links(
 def cmd_run(
     pdf: Path = typer.Argument(..., exists=True),
     work_dir: Path = typer.Argument(..., help="工作目录"),
-    backend: str = typer.Option(None, "--backend", "-b"),
+    backend: str = typer.Option(None, "--backend", "-b", help=f"{backend_choice_text()}；默认环境变量 PDF_TRANSLATE_BACKEND"),
     tail_fallback: bool = typer.Option(False, "--tail-fallback"),
     pages_per_chunk: int = typer.Option(3, "--pages", min=1, max=3),
     overlap: int = typer.Option(1, "--overlap", min=0),
@@ -189,7 +190,7 @@ def cmd_run(
 def cmd_experiment(
     pdfs: list[Path] = typer.Argument(..., exists=True, dir_okay=False, help="用于批量实验的一篇或多篇 PDF"),
     output_dir: Path = typer.Option(..., "--output-dir", "-o", help="批量实验输出目录"),
-    backend: str = typer.Option("echo", "--backend", "-b", help="实验后端；专利指标预跑建议先用 echo"),
+    backend: str = typer.Option("echo", "--backend", "-b", help=f"实验后端：{backend_choice_text()}；专利指标预跑建议先用 echo"),
     variants: str = typer.Option(
         "page,structure",
         "--variants",

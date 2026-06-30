@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { authHeaders, clearSession, getUsername } from "../auth";
 
@@ -14,8 +14,21 @@ const jobs = ref([]);
 
 const auditExpanded = ref({});
 
-/** 用户可选翻译后端（与服务器 ALL_BACKENDS 一致） */
-const ALL_BACKENDS = ["echo", "deepseek"];
+const backendCatalog = computed(() => {
+  const catalog = settings.value.backend_catalog;
+  return Array.isArray(catalog) && catalog.length ? catalog : [
+    { id: "echo", label: "echo（联调/测试）" },
+    { id: "deepseek", label: "DeepSeek" },
+  ];
+});
+const allBackendIds = computed(() => backendCatalog.value.map((b) => b.id));
+
+function backendLabel(id) {
+  const labels = settings.value.backend_labels || {};
+  if (labels[id]) return labels[id];
+  const hit = backendCatalog.value.find((b) => b.id === id);
+  return hit?.label || id;
+}
 
 const SF_BASE_PRESETS = [
   { id: "https://api.siliconflow.cn/v1", label: "国内 api.siliconflow.cn（推荐）" },
@@ -146,7 +159,7 @@ async function saveSettings() {
       deepseek_model: settings.value.deepseek_model ?? "",
       default_backend: settings.value.default_backend ?? "deepseek",
       http_timeout_s: settings.value.http_timeout_s ?? "120",
-      enabled_backends: settings.value.enabled_backends || ALL_BACKENDS,
+      enabled_backends: settings.value.enabled_backends || allBackendIds.value,
       registration_open: !!settings.value.registration_open,
       survey_enabled: surveyEnabled.value,
       siliconflow_api_key: settings.value.siliconflow_api_key ?? "",
@@ -203,7 +216,7 @@ async function loadJobs() {
 }
 
 function toggleBackend(b) {
-  const cur = new Set(settings.value.enabled_backends || ALL_BACKENDS);
+  const cur = new Set(settings.value.enabled_backends || allBackendIds.value);
   if (cur.has(b)) cur.delete(b);
   else cur.add(b);
   settings.value.enabled_backends = Array.from(cur);
@@ -265,19 +278,24 @@ onMounted(() => {
         <label class="field"><span>DeepSeek Model</span><input v-model="settings.deepseek_model" placeholder="deepseek-chat" /></label>
       </div>
       <div class="cols">
-        <label class="field"><span>默认后端</span><input v-model="settings.default_backend" placeholder="deepseek" /></label>
+        <label class="field">
+          <span>默认后端</span>
+          <select v-model="settings.default_backend">
+            <option v-for="b in allBackendIds" :key="'default-' + b" :value="b">{{ backendLabel(b) }}</option>
+          </select>
+        </label>
         <label class="field"><span>HTTP 超时(秒)</span><input v-model="settings.http_timeout_s" /></label>
       </div>
 
       <h3>允许用户选择的后端</h3>
       <div class="checks">
-        <label v-for="b in ALL_BACKENDS" :key="b" class="ck">
+        <label v-for="b in allBackendIds" :key="b" class="ck">
           <input
             type="checkbox"
-            :checked="(settings.enabled_backends || ALL_BACKENDS).includes(b)"
+            :checked="(settings.enabled_backends || allBackendIds).includes(b)"
             @change="toggleBackend(b)"
           />
-          {{ b }}
+          {{ backendLabel(b) }}
         </label>
       </div>
 

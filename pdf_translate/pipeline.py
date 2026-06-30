@@ -50,6 +50,7 @@ from pdf_translate.translators.base import TranslationRequest
 from pdf_translate.translators.factory import build_translator
 from pdf_translate.translators.http_retry import capture_http_retry_events
 from pdf_translate.translators.openai_compatible import SYSTEM_PROMPT_VERSION, prompt_fingerprint
+from pdf_translate.translators.registry import get_backend_spec
 from pdf_translate.vision.ocr_executor import execute_ocr_tasks
 from pdf_translate.vision.ocr_promotion import write_ocr_candidate_promotion
 from pdf_translate.vision.ocr_tasks import write_ocr_task_manifest
@@ -115,11 +116,10 @@ def _page_rows_for_main(main_pdf: Path) -> list[tuple[int, str, int, int]]:
 def _translator_supports_deferral(translator: object) -> bool:
     """DeepL/echo/混合管线等无法可靠执行「标识符+顺延英文」协议。"""
     name = getattr(translator, "name", "")
-    if name in ("deepl", "echo"):
+    try:
+        return get_backend_spec(name).supports_deferral
+    except ValueError:
         return False
-    if name == "hybrid":
-        return False
-    return True
 
 
 def _ocr_results_source(out_dir: Path, explicit_path: Path | None, *, reuse_default: bool = True) -> Path | None:

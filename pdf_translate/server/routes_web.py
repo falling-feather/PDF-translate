@@ -17,13 +17,14 @@ from pdf_translate.server import database
 from pdf_translate.server.jobs import JobRecord, JobRegistry, start_job_thread, zip_job_outputs
 from pdf_translate.server import settings_service
 from pdf_translate.translators.factory import build_translator
-
-ALL_BACKENDS = ["echo", "deepseek"]
-
-BACKEND_UI_LABELS: dict[str, str] = {
-    "echo": "echo（联调/测试）",
-    "deepseek": "DeepSeek",
-}
+from pdf_translate.translators.registry import (
+    backend_catalog,
+    backend_ids,
+    backend_ui_labels,
+    custom_api_backend_ids,
+    get_backend_spec,
+    normalize_backend_id,
+)
 
 
 def _is_deepseek_model_name(model_name: str | None) -> bool:
@@ -48,30 +49,59 @@ def _build_runtime_cfg_for_custom_api(
     api_model: str | None,
 ):
     out = replace(cfg)
-    b = backend.lower().strip()
+    b = normalize_backend_id(backend)
     key = (api_key or "").strip()
     base = (api_base_url or "").strip()
     model = (api_model or "").strip()
+    spec = get_backend_spec(b)
 
-    if b == "deepseek":
+    if not spec.supports_custom_api:
+        raise PdfTranslateError(
+            make_error_info(
+                "CONFIG_INVALID_BACKEND",
+                detail=f"{b} does not support per-job custom API settings.",
+                source="api:create_job",
+            )
+        )
+
+    if b in ("deepseek", "openai"):
         if not key:
             raise PdfTranslateError(
                 make_error_info(
                     "CONFIG_MISSING_API_KEY",
-                    detail="deepseek custom API requires API Key.",
+                    detail=f"{b} custom API requires API Key.",
                     source="api:create_job",
                 )
             )
-        out.deepseek_api_key = key
+        setattr(out, spec.api_key_attr or "", key)
         if base:
-            out.deepseek_base_url = base
+            setattr(out, spec.base_url_attr or "", base.rstrip("/"))
         if model:
-            out.deepseek_model = model
+            setattr(out, spec.model_attr or "", model)
+        return out
+    if b == "deepl":
+        if not key:
+            raise PdfTranslateError(
+                make_error_info(
+                    "CONFIG_MISSING_API_KEY",
+                    detail="deepl custom API requires API Key.",
+                    source="api:create_job",
+                )
+            )
+        out.deepl_api_key = key
+        if base:
+            out.deepl_api_url = base
+        return out
+    if b == "ollama":
+        if base:
+            out.ollama_base_url = base.rstrip("/")
+        if model:
+            out.ollama_model = model
         return out
     raise PdfTranslateError(
         make_error_info(
             "CONFIG_INVALID_BACKEND",
-            detail="Custom API translation currently only supports deepseek.",
+            detail=f"Custom API translation does not support {backend}.",
             source="api:create_job",
         )
     )
@@ -153,11 +183,14 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         _ = p
         eb = settings_service.enabled_backends()
         cfg = settings_service.effective_app_config()
-        enabled_ordered = [b for b in ALL_BACKENDS if b in eb]
+        enabled_ordered = [b for b in backend_ids() if b in eb]
+        labels = backend_ui_labels()
         return {
             "enabled": enabled_ordered,
             "default_backend": cfg.default_translator,
-            "labels": {k: BACKEND_UI_LABELS.get(k, k) for k in enabled_ordered},
+            "labels": {k: labels.get(k, k) for k in enabled_ordered},
+            "catalog": backend_catalog(),
+            "custom_api_backends": custom_api_backend_ids(),
         }
 
     @api.get("/user/jobs")
@@ -242,7 +275,11 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             be = (custom_backend or "").strip().lower()
             if not be:
                 raise HTTPException(400, "已启用 API翻译，请选择 API 后端")
-            if be not in ALL_BACKENDS:
+            try:
+                be = normalize_backend_id(be)
+            except ValueError as e:
+                raise HTTPException(400, f"不支持的 API 后端：{be}") from e
+            if be not in custom_api_backend_ids():
                 raise HTTPException(400, f"不支持的 API 后端：{be}")
             try:
                 runtime_cfg = _build_runtime_cfg_for_custom_api(
@@ -471,7 +508,10 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
 
     @admin.put("/settings")
     def admin_put_settings(body: dict = Body(...), p: Principal = Depends(require_admin)) -> dict:
-        settings_service.apply_admin_settings(body)
+        try:
+            settings_service.apply_admin_settings(body)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
         database.log_audit(
             action="admin_settings_update",
             ip=None,
