@@ -126,6 +126,33 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertFalse(merged[0]["partial_output_ready"])
         self.assertFalse(merged[0]["bundle_zip_ready"])
 
+    def test_storage_drift_reports_missing_and_unindexed_work_dirs(self) -> None:
+        root = self._case_root("storage-drift")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        orphan = root / "orphan-job"
+        orphan.mkdir()
+        (orphan / "web_status.json").write_text("{}", encoding="utf-8")
+
+        drift = registry.storage_drift({rec.job_id, "db-only-job"})
+
+        self.assertEqual(drift["indexed_job_count"], 2)
+        self.assertIn("db-only-job", drift["missing_work_dir_job_ids"])
+        self.assertIn("orphan-job", drift["unindexed_work_dir_job_ids"])
+        self.assertIn(rec.job_id, drift["active_job_ids"])
+
+    def test_remove_job_ignores_path_traversal_job_id(self) -> None:
+        root = self._case_root("remove-job-boundary")
+        registry = JobRegistry(root)
+        outside = root.parent / "outside-keep"
+        outside.mkdir(exist_ok=True)
+        self.addCleanup(lambda: shutil.rmtree(outside, ignore_errors=True))
+
+        removed = registry.remove_job("../outside-keep")
+
+        self.assertFalse(removed)
+        self.assertTrue(outside.is_dir())
+
     def test_merge_status_into_rows_marks_missing_runtime_status(self) -> None:
         root = self._case_root("merge-missing-status")
         registry = JobRegistry(root)

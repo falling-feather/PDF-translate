@@ -181,8 +181,22 @@ class JobRegistry:
         self._lock = threading.Lock()
         self._jobs: dict[str, JobRecord] = {}
 
+    def _job_dir(self, job_id: str) -> Path | None:
+        raw = str(job_id or "").strip()
+        if not raw or Path(raw).name != raw:
+            return None
+        path = (self.data_root / raw).resolve()
+        try:
+            path.relative_to(self.data_root)
+        except ValueError:
+            return None
+        return path
+
     def _status_path(self, job_id: str) -> Path:
-        return self.data_root / job_id / "web_status.json"
+        work = self._job_dir(job_id)
+        if work is None:
+            raise ValueError("Invalid job_id path segment")
+        return work / "web_status.json"
 
     def _persist(self, rec: JobRecord) -> None:
         p = self._status_path(rec.job_id)
@@ -239,14 +253,42 @@ class JobRegistry:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def remove_job(self, job_id: str) -> None:
+    def remove_job(self, job_id: str) -> bool:
         import shutil
 
-        work = self.data_root / job_id
+        work = self._job_dir(job_id)
+        if work is None:
+            return False
         with self._lock:
             self._jobs.pop(job_id, None)
         if work.is_dir():
             shutil.rmtree(work, ignore_errors=True)
+            return True
+        return False
+
+    def active_job_ids(self) -> set[str]:
+        with self._lock:
+            return {jid for jid, rec in self._jobs.items() if rec.status in ("queued", "running")}
+
+    def storage_drift(self, indexed_job_ids: set[str]) -> dict[str, Any]:
+        if self.data_root.is_dir():
+            dir_job_ids = {sub.name for sub in self.data_root.iterdir() if sub.is_dir()}
+        else:
+            dir_job_ids = set()
+        active = self.active_job_ids()
+        indexed = {str(jid) for jid in indexed_job_ids if str(jid)}
+        missing_work_dir = sorted(indexed - dir_job_ids)
+        unindexed_work_dir = sorted(dir_job_ids - indexed)
+        return {
+            "indexed_job_count": len(indexed),
+            "work_dir_count": len(dir_job_ids),
+            "missing_work_dir_count": len(missing_work_dir),
+            "unindexed_work_dir_count": len(unindexed_work_dir),
+            "active_job_count": len(active),
+            "missing_work_dir_job_ids": missing_work_dir,
+            "unindexed_work_dir_job_ids": unindexed_work_dir,
+            "active_job_ids": sorted(active),
+        }
 
     def update(self, job_id: str, **kwargs: Any) -> None:
         with self._lock:

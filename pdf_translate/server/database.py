@@ -320,6 +320,12 @@ def list_all_jobs(limit: int = 500) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
+def list_all_job_ids() -> list[str]:
+    with _db_lock, _conn() as c:
+        rows = c.execute("SELECT job_id FROM jobs_meta").fetchall()
+        return [str(r["job_id"]) for r in rows]
+
+
 def log_audit(
     *,
     action: str,

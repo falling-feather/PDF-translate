@@ -11,6 +11,8 @@ const saving = ref(false);
 const audit = ref([]);
 const users = ref([]);
 const jobs = ref([]);
+const reconcile = ref(null);
+const reconciling = ref(false);
 
 const auditExpanded = ref({});
 
@@ -241,6 +243,39 @@ async function loadJobs() {
   jobs.value = d.jobs || [];
 }
 
+async function reconcileJobs(apply = false) {
+  if (apply && !window.confirm("确认清理数据库缺目录记录和未索引任务目录？运行中的任务会跳过。")) return;
+  reconciling.value = true;
+  try {
+    const r = await fetch("/api/admin/jobs/reconcile", {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify({ apply }),
+    });
+    if (!r.ok) {
+      alert("巡检失败");
+      return;
+    }
+    reconcile.value = await r.json();
+    if (apply) await loadJobs();
+  } finally {
+    reconciling.value = false;
+  }
+}
+
+const reconcileSummary = computed(() => {
+  const drift = reconcile.value?.drift;
+  if (!drift) return "";
+  const missing = drift.missing_work_dir_count || 0;
+  const unindexed = drift.unindexed_work_dir_count || 0;
+  const deletedDb = reconcile.value.deleted_db_rows?.length || 0;
+  const deletedDirs = reconcile.value.deleted_work_dirs?.length || 0;
+  const skipped = reconcile.value.skipped_active?.length || 0;
+  const base = `数据库缺目录 ${missing} 条，未索引目录 ${unindexed} 个`;
+  if (!reconcile.value.apply) return base;
+  return `${base}；已清数据库 ${deletedDb} 条、目录 ${deletedDirs} 个，跳过运行中 ${skipped} 个`;
+});
+
 function toggleBackend(b) {
   const cur = new Set(settings.value.enabled_backends || allBackendIds.value);
   if (cur.has(b)) cur.delete(b);
@@ -457,6 +492,11 @@ onMounted(() => {
 
     <section v-show="tab === 'jobs'" class="card">
       <h2>全部任务与产物下载</h2>
+      <div class="job-tools">
+        <button type="button" class="linkish" :disabled="reconciling" @click="reconcileJobs(false)">巡检任务存储</button>
+        <button type="button" class="linkish danger-link" :disabled="reconciling" @click="reconcileJobs(true)">清理孤儿任务</button>
+        <span v-if="reconcileSummary" class="muted small">{{ reconcileSummary }}</span>
+      </div>
       <div class="scroll">
         <table class="table">
           <thead>
@@ -663,6 +703,13 @@ h3 {
   max-height: 240px;
   overflow: auto;
 }
+.job-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin: 0.25rem 0 0.75rem;
+}
 .nowrap {
   white-space: nowrap;
 }
@@ -679,6 +726,9 @@ h3 {
   color: var(--muted);
   cursor: not-allowed;
   opacity: 0.55;
+}
+.danger-link {
+  color: var(--err);
 }
 .artifact-pill {
   display: inline-block;

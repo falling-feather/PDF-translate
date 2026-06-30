@@ -534,6 +534,56 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
     def admin_jobs(_: Principal = Depends(require_admin), limit: int = 500) -> dict:
         return {"jobs": app_registry.merge_status_into_rows(database.list_all_jobs(limit=limit))}
 
+    @admin.post("/jobs/reconcile")
+    def admin_jobs_reconcile(
+        body: dict | None = Body(None),
+        p: Principal = Depends(require_admin),
+    ) -> dict:
+        apply_cleanup = bool((body or {}).get("apply"))
+        indexed = set(database.list_all_job_ids())
+        drift = app_registry.storage_drift(indexed)
+        deleted_db_rows: list[str] = []
+        deleted_work_dirs: list[str] = []
+        skipped_active: list[str] = []
+
+        if apply_cleanup:
+            active = set(drift.get("active_job_ids") or [])
+            for job_id in drift.get("missing_work_dir_job_ids") or []:
+                if job_id in active:
+                    skipped_active.append(job_id)
+                    continue
+                database.delete_job_meta_row(job_id)
+                app_registry.remove_job(job_id)
+                deleted_db_rows.append(job_id)
+            for job_id in drift.get("unindexed_work_dir_job_ids") or []:
+                if job_id in active:
+                    skipped_active.append(job_id)
+                    continue
+                if app_registry.remove_job(job_id):
+                    deleted_work_dirs.append(job_id)
+            indexed = set(database.list_all_job_ids())
+            drift = app_registry.storage_drift(indexed)
+            database.log_audit(
+                action="admin_jobs_reconcile",
+                ip=None,
+                user_id=p.user_id,
+                username=p.username,
+                detail={
+                    "apply": True,
+                    "deleted_db_rows": deleted_db_rows,
+                    "deleted_work_dirs": deleted_work_dirs,
+                    "skipped_active": skipped_active,
+                },
+            )
+
+        return {
+            "apply": apply_cleanup,
+            "drift": drift,
+            "deleted_db_rows": deleted_db_rows,
+            "deleted_work_dirs": deleted_work_dirs,
+            "skipped_active": skipped_active,
+        }
+
     @admin.get("/jobs/{job_id}/artifact", response_model=None)
     def admin_artifact(
         job_id: str,
