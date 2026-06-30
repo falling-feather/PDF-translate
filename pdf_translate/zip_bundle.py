@@ -95,9 +95,49 @@ def map_bundle_arcname(rel_posix: str) -> str:
     return rel
 
 
+def _is_within_root(root: Path, candidate: Path) -> bool:
+    """Return True when candidate resolves inside root."""
+    try:
+        root_resolved = root.resolve()
+        candidate_resolved = candidate.resolve()
+    except OSError:
+        return False
+    try:
+        candidate_resolved.relative_to(root_resolved)
+    except ValueError:
+        return False
+    return True
+
+
+def _iter_dir_files(directory: Path, root: Path, out: list[Path]) -> None:
+    if directory.is_symlink():
+        return
+    try:
+        entries = list(directory.iterdir())
+    except (FileNotFoundError, OSError):
+        return
+    for path in entries:
+        if path.is_symlink():
+            continue
+        if path.is_file():
+            if _is_within_root(root, path):
+                out.append(path)
+            continue
+        if path.is_dir():
+            _iter_dir_files(path, root, out)
+
+
 def iter_bundle_files(root: Path) -> list[Path]:
     """与历史逻辑一致：固定清单 + memory 下全部文件。"""
     root = root.resolve()
+    out: list[Path] = []
+
+    def _add_candidate(path: Path) -> None:
+        if path.is_symlink():
+            return
+        if path.is_file() and _is_within_root(root, path):
+            out.append(path)
+
     candidates = [
         root / "output" / "translated_full.md",
         root / "output" / "repaired_full.md",
@@ -144,33 +184,21 @@ def iter_bundle_files(root: Path) -> list[Path]:
         root / "split" / "main.pdf",
         root / "split" / "references.pdf",
     ]
-    out: list[Path] = []
     for f in candidates:
-        if f.is_file():
-            out.append(f)
+        _add_candidate(f)
     mem = root / "memory"
     if mem.is_dir():
-        for p in mem.rglob("*"):
-            if p.is_file():
-                out.append(p)
+        _iter_dir_files(mem, root, out)
     repairs = root / "output" / "repairs"
     if repairs.is_dir():
-        for p in repairs.rglob("*"):
-            if p.is_file():
-                out.append(p)
+        _iter_dir_files(repairs, root, out)
     repaired_chunks = root / "output" / "repaired_chunks"
     if repaired_chunks.is_dir():
-        for p in repaired_chunks.rglob("*"):
-            if p.is_file():
-                out.append(p)
+        _iter_dir_files(repaired_chunks, root, out)
     vision_pages = root / "output" / "vision_pages"
     if vision_pages.is_dir():
-        for p in vision_pages.rglob("*"):
-            if p.is_file():
-                out.append(p)
+        _iter_dir_files(vision_pages, root, out)
     vision_crops = root / "output" / "vision_crops"
     if vision_crops.is_dir():
-        for p in vision_crops.rglob("*"):
-            if p.is_file():
-                out.append(p)
+        _iter_dir_files(vision_crops, root, out)
     return out

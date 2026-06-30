@@ -8,6 +8,7 @@ dist/
 build/
 frontend/node_modules/
 data/
+test-output/
 
 # 本地素材草稿（正式资源放在 frontend/public，构建后进入 server/static）
 /sucai/

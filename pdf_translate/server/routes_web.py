@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
@@ -28,6 +29,9 @@ from pdf_translate.translators.registry import (
     normalize_backend_id,
 )
 
+PDF_UPLOAD_MAGIC = b"%PDF-"
+UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
+
 
 def _is_deepseek_model_name(model_name: str | None) -> bool:
     return "deepseek" in str(model_name or "").strip().lower()
@@ -40,6 +44,37 @@ def client_ip(request: Request) -> str:
     if request.client:
         return request.client.host or ""
     return ""
+
+
+async def _save_pdf_upload_streaming(
+    file: UploadFile,
+    dest: Path,
+    *,
+    max_bytes: int,
+    max_mb: int,
+) -> int:
+    header = await file.read(len(PDF_UPLOAD_MAGIC))
+    if header != PDF_UPLOAD_MAGIC:
+        raise HTTPException(400, "上传文件不是有效 PDF")
+    total = len(header)
+    if total > max_bytes:
+        raise HTTPException(400, f"文件超过 {max_mb}MB 上限")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with dest.open("wb") as out:
+            out.write(header)
+            while True:
+                chunk = await file.read(UPLOAD_READ_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(400, f"文件超过 {max_mb}MB 上限")
+                out.write(chunk)
+    except HTTPException:
+        dest.unlink(missing_ok=True)
+        raise
+    return total
 
 
 def _build_runtime_cfg_for_custom_api(
@@ -345,12 +380,17 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             parallel_max_workers=pwm,
         )
         dest = rec.work_dir / "input.pdf"
-        content = await file.read()
         max_mb = max_upload_mb()
-        if len(content) > max_mb * 1024 * 1024:
+        try:
+            uploaded_bytes = await _save_pdf_upload_streaming(
+                file,
+                dest,
+                max_bytes=max_mb * 1024 * 1024,
+                max_mb=max_mb,
+            )
+        except HTTPException:
             app_registry.remove_job(rec.job_id)
-            raise HTTPException(400, f"文件超过 {max_mb}MB 上限")
-        dest.write_bytes(content)
+            raise
 
         database.insert_job_meta(rec.job_id, p.user_id, p.username, file.filename or "upload.pdf")
         database.log_audit(
@@ -359,7 +399,13 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             user_id=p.user_id,
             username=p.username,
             job_id=rec.job_id,
-            detail={"filename": file.filename, "backend": be, "use_custom_api": bool(use_custom_api)},
+            detail={
+                "filename": file.filename,
+                "backend": be,
+                "use_custom_api": bool(use_custom_api),
+                "upload_bytes": uploaded_bytes,
+                "upload_limit_mb": max_mb,
+            },
         )
 
         start_job_thread(
