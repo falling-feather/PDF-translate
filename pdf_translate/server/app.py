@@ -11,6 +11,7 @@ from pdf_translate.server import database
 from pdf_translate.server.jobs import JobRegistry
 from pdf_translate.server.routes_web import register_web_routes
 from pdf_translate.server.runtime_state import set_data_dir
+from pdf_translate.server.security_preflight import cors_origins_from_env
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -31,7 +32,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in os.getenv("PDF_TRANSLATE_CORS_ORIGINS", "*").split(",") if o.strip()],
+    allow_origins=cors_origins_from_env(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

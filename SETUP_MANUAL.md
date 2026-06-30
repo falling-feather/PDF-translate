@@ -92,6 +92,10 @@ pdf-translate-web
 | `DEEPL_API_URL` | Free 一般为 `https://api-free.deepl.com/v2/translate`；Pro 为 `https://api.deepl.com/v2/translate` |
 | `HTTP_TIMEOUT_S` | HTTP 超时秒数（读超时为主），默认 **`240`**（长块翻译建议 ≥180） |
 | `PDF_TRANSLATE_HTTP_RETRIES` | 对 DeepSeek/OpenAI 兼容与 DeepL 的 HTTP 失败自动重试次数，默认 **`4`**（含首次请求，即最多约 4 次尝试） |
+| `PDF_TRANSLATE_CORS_ORIGINS` | Web CORS 白名单，默认 `*` 仅适合本地/内网联调；公网部署应填写具体域名 |
+| `PDF_TRANSLATE_JWT_SECRET` | JWT 签名密钥；生产环境建议显式设置，未设置时使用本地 `jwt_secret.txt` |
+| `PDF_TRANSLATE_MAX_UPLOAD_MB` | Web 上传 PDF 大小上限，默认 `120`；非法值会回退默认值并进入安全预检 |
+| `PDF_TRANSLATE_ENV` / `PDF_TRANSLATE_DEPLOYMENT_MODE` | 可选：设为 `production` / `prod` 时，安全预检会把部分问题提升为高风险 |
 | `PDF_TRANSLATE_SURVEY_ENABLED` | `1` / `true` / `yes` 时，每块译前调用**硅基流动**做巡视（术语草稿 + 图文标签 JSON）；默认关闭 |
 | `SILICONFLOW_API_KEY` | 硅基流动 API Key（与巡视配套） |
 | `SILICONFLOW_BASE_URL` | 默认 **`https://api.siliconflow.com/v1`**（若控制台要求国内节点可改为文档中的 `.cn` 等地址） |
@@ -106,6 +110,14 @@ pdf-translate-web
 | `PDF_TRANSLATE_COST_CURRENCY` | 成本画像默认币种，默认 `USD` |
 
 管理端可在 KV 中覆盖 `survey_enabled`、`siliconflow_*`、`planner_*`、`cost_profile_*`（与上述环境变量同名键），逻辑见 `settings_service.effective_app_config`。
+
+部署前可运行：
+
+```bash
+pdf-translate security-check
+```
+
+该命令会输出 `security-preflight-v1` JSON，检查默认管理员引导密码、CORS、JWT secret、上传上限、数据目录和本地 SQLite 密钥存储提示；管理端也提供 `/api/admin/security/preflight` 同口径接口。
 
 **最小可运行（不调用外网）：**
 

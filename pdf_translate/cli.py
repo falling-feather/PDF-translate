@@ -10,13 +10,18 @@ from pdf_translate.config import AppConfig
 from pdf_translate import pipeline
 from pdf_translate.experiments import load_sample_metadata, parse_variant_specs, run_batch_experiment
 from pdf_translate.server.jobs import JobRegistry
+from pdf_translate.server.security_preflight import build_security_preflight
 from pdf_translate.translators.registry import backend_choice_text
 
 app = typer.Typer(help="PDF 英文学术文献：拆分参考文献、按块翻译、记忆目录（见 README.md memory/ 说明）")
 
 
+def _default_data_base() -> Path:
+    return Path(os.getenv("PDF_TRANSLATE_DATA", Path.cwd() / "data")).resolve()
+
+
 def _default_web_data_root() -> Path:
-    data_base = Path(os.getenv("PDF_TRANSLATE_DATA", Path.cwd() / "data")).resolve()
+    data_base = _default_data_base()
     return Path(os.getenv("PDF_TRANSLATE_WEB_DATA", data_base / "web_jobs")).resolve()
 
 
@@ -161,6 +166,25 @@ def cmd_web_status(
                 for rec in records[:limit]
             ],
         }
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+@app.command("security-check")
+def cmd_security_check(
+    data_dir: Path | None = typer.Option(
+        None,
+        "--data-dir",
+        help="数据目录；默认读取 PDF_TRANSLATE_DATA 或 data",
+    ),
+    data_root: Path | None = typer.Option(
+        None,
+        "--data-root",
+        help="Web 任务目录；默认读取 PDF_TRANSLATE_WEB_DATA 或 data/web_jobs",
+    ),
+) -> None:
+    base = (data_dir or _default_data_base()).resolve()
+    root = (data_root or Path(os.getenv("PDF_TRANSLATE_WEB_DATA", base / "web_jobs"))).resolve()
+    payload = build_security_preflight(base, root)
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
 
 

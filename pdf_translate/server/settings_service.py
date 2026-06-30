@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pdf_translate.config import AppConfig
 from pdf_translate.server import database
+from pdf_translate.server.security_preflight import SECRET_SETTING_KEYS
 from pdf_translate.translators.registry import (
     backend_catalog,
     backend_ids,
@@ -117,20 +118,18 @@ def assert_backend_allowed(backend: str | None, default_backend: str) -> str:
 
 
 def admin_settings_snapshot() -> dict:
+    base = AppConfig.from_env()
     keys = [
-        "deepseek_api_key",
         "deepseek_base_url",
         "deepseek_model",
         "default_backend",
         "http_timeout_s",
         "survey_enabled",
-        "siliconflow_api_key",
         "siliconflow_base_url",
         "siliconflow_survey_model",
         "siliconflow_vision_model",
         "survey_max_text_chars",
         "planner_enabled",
-        "planner_api_key",
         "planner_base_url",
         "planner_model",
         "cost_profile_json",
@@ -143,6 +142,11 @@ def admin_settings_snapshot() -> dict:
         v = database.kv_get(k)
         if v is not None:
             out[k] = v
+    out["secret_fields"] = {}
+    for key in SECRET_SETTING_KEYS:
+        kv_configured = bool((database.kv_get(key) or "").strip())
+        env_configured = bool(str(getattr(base, key, "") or "").strip())
+        out["secret_fields"][key] = kv_configured or env_configured
     out["enabled_backends"] = enabled_backends()
     out["all_backends"] = backend_ids()
     out["backend_labels"] = backend_ui_labels()

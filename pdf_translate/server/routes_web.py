@@ -15,6 +15,8 @@ from pdf_translate.pipeline_cancel import cancel_flag_path
 from pdf_translate.server.auth_deps import Principal, bearer_principal, mint_token, require_admin
 from pdf_translate.server import database
 from pdf_translate.server.jobs import JobRecord, JobRegistry, start_job_thread, zip_job_outputs
+from pdf_translate.server.runtime_state import require_data_dir
+from pdf_translate.server.security_preflight import build_security_preflight, max_upload_mb
 from pdf_translate.server import settings_service
 from pdf_translate.translators.factory import build_translator
 from pdf_translate.translators.registry import (
@@ -344,8 +346,10 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         )
         dest = rec.work_dir / "input.pdf"
         content = await file.read()
-        if len(content) > 120 * 1024 * 1024:
-            raise HTTPException(400, "文件超过 120MB 上限")
+        max_mb = max_upload_mb()
+        if len(content) > max_mb * 1024 * 1024:
+            app_registry.remove_job(rec.job_id)
+            raise HTTPException(400, f"文件超过 {max_mb}MB 上限")
         dest.write_bytes(content)
 
         database.insert_job_meta(rec.job_id, p.user_id, p.username, file.filename or "upload.pdf")
@@ -474,6 +478,13 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
     def admin_get_settings(_: Principal = Depends(require_admin)) -> dict:
         snap = settings_service.admin_settings_snapshot()
         return snap
+
+    @admin.get("/security/preflight")
+    def admin_security_preflight(_: Principal = Depends(require_admin)) -> dict:
+        return build_security_preflight(
+            require_data_dir(),
+            app_registry.data_root,
+        )
 
     @admin.put("/settings")
     def admin_put_settings(body: dict = Body(...), p: Principal = Depends(require_admin)) -> dict:
