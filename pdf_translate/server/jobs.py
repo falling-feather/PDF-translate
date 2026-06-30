@@ -15,6 +15,9 @@ from pdf_translate.error_codes import error_info_from_exception, make_error_info
 from pdf_translate.pipeline import export_links, init_workdir, run_split, run_translate
 from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
 
+JOB_STATUS_SCHEMA_VERSION = "web-job-status-v1"
+VALID_JOB_STATUSES = {"queued", "running", "done", "error", "cancelled"}
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -104,6 +107,72 @@ class JobRecord:
             run_started_at=self.run_started_at,
         )
 
+    def to_status_dict(self) -> dict[str, Any]:
+        """Persistent status snapshot used by Web APIs after restart."""
+        return {
+            "schema_version": JOB_STATUS_SCHEMA_VERSION,
+            "job_id": self.job_id,
+            "work_dir": str(self.work_dir),
+            "status": self.status,
+            "phase": self.phase,
+            "message": self.message,
+            "chunk_total": self.chunk_total,
+            "chunk_index": self.chunk_index,
+            "chunk_id": self.chunk_id,
+            "error": self.error,
+            "error_code": self.error_code,
+            "error_category": self.error_category,
+            "error_retryable": self.error_retryable,
+            "error_next_step": self.error_next_step,
+            "error_source": self.error_source,
+            "error_http_status": self.error_http_status,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "main_pages": self.main_pages,
+            "reference_pages": self.reference_pages,
+            "owner_user_id": self.owner_user_id,
+            "owner_username": self.owner_username,
+            "original_filename": self.original_filename,
+            "translate_mode": self.translate_mode,
+            "parallel_max_workers": self.parallel_max_workers,
+            "duration_seconds": self.duration_seconds,
+            "run_started_at": self.run_started_at,
+        }
+
+    @classmethod
+    def from_status_dict(cls, raw: dict[str, Any], fallback_work_dir: Path) -> JobRecord:
+        status = str(raw.get("status") or "queued")
+        if status not in VALID_JOB_STATUSES:
+            status = "queued"
+        return cls(
+            job_id=str(raw.get("job_id") or fallback_work_dir.name),
+            work_dir=fallback_work_dir.resolve(),
+            status=status,  # type: ignore[arg-type]
+            phase=str(raw.get("phase") or "queued"),
+            message=str(raw.get("message") or ""),
+            chunk_total=raw.get("chunk_total"),
+            chunk_index=raw.get("chunk_index"),
+            chunk_id=raw.get("chunk_id"),
+            error=raw.get("error"),
+            error_code=raw.get("error_code"),
+            error_category=raw.get("error_category"),
+            error_retryable=raw.get("error_retryable"),
+            error_next_step=raw.get("error_next_step"),
+            error_source=raw.get("error_source"),
+            error_http_status=raw.get("error_http_status"),
+            created_at=raw.get("created_at") or _utc_now_iso(),
+            updated_at=raw.get("updated_at") or _utc_now_iso(),
+            main_pages=raw.get("main_pages"),
+            reference_pages=raw.get("reference_pages"),
+            owner_user_id=raw.get("owner_user_id"),
+            owner_username=raw.get("owner_username"),
+            original_filename=raw.get("original_filename"),
+            translate_mode=raw.get("translate_mode") or "serial",
+            parallel_max_workers=raw.get("parallel_max_workers"),
+            duration_seconds=raw.get("duration_seconds"),
+            run_started_at=raw.get("run_started_at"),
+        )
+
 
 class JobRegistry:
     def __init__(self, data_root: Path) -> None:
@@ -118,35 +187,9 @@ class JobRegistry:
     def _persist(self, rec: JobRecord) -> None:
         p = self._status_path(rec.job_id)
         p.parent.mkdir(parents=True, exist_ok=True)
-        d = {
-            "job_id": rec.job_id,
-            "work_dir": str(rec.work_dir),
-            "status": rec.status,
-            "phase": rec.phase,
-            "message": rec.message,
-            "chunk_total": rec.chunk_total,
-            "chunk_index": rec.chunk_index,
-            "chunk_id": rec.chunk_id,
-            "error": rec.error,
-            "error_code": rec.error_code,
-            "error_category": rec.error_category,
-            "error_retryable": rec.error_retryable,
-            "error_next_step": rec.error_next_step,
-            "error_source": rec.error_source,
-            "error_http_status": rec.error_http_status,
-            "created_at": rec.created_at,
-            "updated_at": rec.updated_at,
-            "main_pages": rec.main_pages,
-            "reference_pages": rec.reference_pages,
-            "owner_user_id": rec.owner_user_id,
-            "owner_username": rec.owner_username,
-            "original_filename": rec.original_filename,
-            "translate_mode": rec.translate_mode,
-            "parallel_max_workers": rec.parallel_max_workers,
-            "duration_seconds": rec.duration_seconds,
-            "run_started_at": rec.run_started_at,
-        }
-        p.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(json.dumps(rec.to_status_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, p)
 
     def create_job(
         self,
@@ -189,36 +232,8 @@ class JobRegistry:
                     raw = json.loads(st.read_text(encoding="utf-8"))
                 except json.JSONDecodeError:
                     continue
-                jid = raw.get("job_id") or sub.name
-                rec = JobRecord(
-                    job_id=jid,
-                    work_dir=sub,
-                    status=raw.get("status", "queued"),
-                    phase=raw.get("phase", "queued"),
-                    message=raw.get("message", ""),
-                    chunk_total=raw.get("chunk_total"),
-                    chunk_index=raw.get("chunk_index"),
-                    chunk_id=raw.get("chunk_id"),
-                    error=raw.get("error"),
-                    error_code=raw.get("error_code"),
-                    error_category=raw.get("error_category"),
-                    error_retryable=raw.get("error_retryable"),
-                    error_next_step=raw.get("error_next_step"),
-                    error_source=raw.get("error_source"),
-                    error_http_status=raw.get("error_http_status"),
-                    created_at=raw.get("created_at") or _utc_now_iso(),
-                    updated_at=raw.get("updated_at") or _utc_now_iso(),
-                    main_pages=raw.get("main_pages"),
-                    reference_pages=raw.get("reference_pages"),
-                    owner_user_id=raw.get("owner_user_id"),
-                    owner_username=raw.get("owner_username"),
-                    original_filename=raw.get("original_filename"),
-                    translate_mode=raw.get("translate_mode") or "serial",
-                    parallel_max_workers=raw.get("parallel_max_workers"),
-                    duration_seconds=raw.get("duration_seconds"),
-                    run_started_at=raw.get("run_started_at"),
-                )
-                self._jobs[jid] = rec
+                rec = JobRecord.from_status_dict(raw, fallback_work_dir=sub)
+                self._jobs[rec.job_id] = rec
 
     def get(self, job_id: str) -> JobRecord | None:
         with self._lock:
@@ -243,6 +258,46 @@ class JobRegistry:
                     setattr(rec, k, v)
             rec.touch()
             self._persist(rec)
+
+    def status_fields_for_job(self, job_id: str) -> dict[str, Any]:
+        rec = self.get(job_id)
+        if not rec:
+            return {"status_available": False}
+        pub = rec.to_public()
+        return {
+            "status_available": True,
+            "status_schema_version": JOB_STATUS_SCHEMA_VERSION,
+            "status": pub.status,
+            "phase": pub.phase,
+            "message": pub.message,
+            "chunk_total": pub.chunk_total,
+            "chunk_index": pub.chunk_index,
+            "chunk_id": pub.chunk_id,
+            "error": pub.error,
+            "error_code": pub.error_code,
+            "error_category": pub.error_category,
+            "error_retryable": pub.error_retryable,
+            "error_next_step": pub.error_next_step,
+            "error_source": pub.error_source,
+            "error_http_status": pub.error_http_status,
+            "runtime_created_at": pub.created_at,
+            "runtime_updated_at": pub.updated_at,
+            "main_pages": pub.main_pages,
+            "reference_pages": pub.reference_pages,
+            "translate_mode": pub.translate_mode,
+            "parallel_max_workers": pub.parallel_max_workers,
+            "duration_seconds": pub.duration_seconds,
+            "run_started_at": pub.run_started_at,
+        }
+
+    def merge_status_into_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        for row in rows:
+            job_id = str(row.get("job_id") or "")
+            out = dict(row)
+            out.update(self.status_fields_for_job(job_id))
+            merged.append(out)
+        return merged
 
     def run_pipeline(
         self,

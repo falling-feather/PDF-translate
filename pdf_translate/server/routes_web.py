@@ -195,8 +195,8 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
 
     @api.get("/user/jobs")
     def my_jobs(p: Principal = Depends(bearer_principal), limit: int = 100) -> dict:
-        rows = database.list_jobs_for_user(p.user_id, limit=limit)
-        favorites = database.list_favorite_jobs_for_user(p.user_id, limit=limit)
+        rows = app_registry.merge_status_into_rows(database.list_jobs_for_user(p.user_id, limit=limit))
+        favorites = app_registry.merge_status_into_rows(database.list_favorite_jobs_for_user(p.user_id, limit=limit))
         return {
             "jobs": rows,
             "favorites": favorites,
@@ -535,7 +535,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
 
     @admin.get("/jobs")
     def admin_jobs(_: Principal = Depends(require_admin), limit: int = 500) -> dict:
-        return {"jobs": database.list_all_jobs(limit=limit)}
+        return {"jobs": app_registry.merge_status_into_rows(database.list_all_jobs(limit=limit))}
 
     @admin.get("/jobs/{job_id}/artifact", response_model=None)
     def admin_artifact(
