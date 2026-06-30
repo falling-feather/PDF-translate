@@ -11,7 +11,7 @@ from pdf_translate.server import database
 from pdf_translate.server.jobs import JobRegistry
 from pdf_translate.server.routes_web import register_web_routes
 from pdf_translate.server.runtime_state import set_data_dir
-from pdf_translate.server.security_preflight import cors_origins_from_env
+from pdf_translate.server.security_preflight import assert_production_security_ready, cors_origins_from_env
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -19,6 +19,7 @@ DATA_BASE = Path(os.getenv("PDF_TRANSLATE_DATA", Path.cwd() / "data")).resolve()
 DATA_ROOT = Path(os.getenv("PDF_TRANSLATE_WEB_DATA", DATA_BASE / "web_jobs")).resolve()
 
 set_data_dir(DATA_BASE)
+assert_production_security_ready(DATA_BASE, DATA_ROOT)
 database.configure(DATA_BASE / "app.db")
 
 registry = JobRegistry(DATA_ROOT)

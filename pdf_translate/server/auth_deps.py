@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import jwt
 from fastapi import Depends, Header, HTTPException
 
 from pdf_translate.server import database
 from pdf_translate.server.runtime_state import require_data_dir
+from pdf_translate.server.security_preflight import jwt_ttl_seconds
 
 
 @dataclass
@@ -18,21 +20,33 @@ class Principal:
 
 
 def _jwt_secret() -> str:
-    dd = require_data_dir()
     env = os.getenv("PDF_TRANSLATE_JWT_SECRET")
     if env and env.strip():
         return env.strip()
+    dd = require_data_dir()
     return database.get_jwt_secret_file(dd)
 
 
 def mint_token(*, user_id: int, username: str, role: str) -> str:
-    payload = {"sub": str(user_id), "username": username, "role": role}
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": str(user_id),
+        "username": username,
+        "role": role,
+        "iat": now,
+        "exp": now + timedelta(seconds=jwt_ttl_seconds()),
+    }
     return jwt.encode(payload, _jwt_secret(), algorithm="HS256")
 
 
 def decode_token(token: str) -> Principal:
     try:
-        payload = jwt.decode(token, _jwt_secret(), algorithms=["HS256"])
+        payload = jwt.decode(
+            token,
+            _jwt_secret(),
+            algorithms=["HS256"],
+            options={"require": ["exp", "sub", "username", "role"]},
+        )
         return Principal(
             user_id=int(payload["sub"]),
             username=str(payload["username"]),

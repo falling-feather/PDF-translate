@@ -11,6 +11,9 @@ DEFAULT_BOOTSTRAP_ADMIN_PASSWORD = "mic820323"
 DEFAULT_MAX_UPLOAD_MB = 120
 MAX_UPLOAD_MB_MIN = 1
 MAX_UPLOAD_MB_MAX = 1024
+DEFAULT_JWT_TTL_MINUTES = 12 * 60
+JWT_TTL_MINUTES_MIN = 1
+JWT_TTL_MINUTES_MAX = 7 * 24 * 60
 
 SECRET_SETTING_KEYS = (
     "deepseek_api_key",
@@ -28,6 +31,29 @@ class UploadLimitConfig:
     raw_value: str | None
     uses_default: bool
     invalid_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class JwtTtlConfig:
+    minutes: int
+    seconds: int
+    raw_value: str | None
+    uses_default: bool
+    invalid_reason: str | None = None
+
+
+class ProductionSecurityError(RuntimeError):
+    def __init__(self, report: dict[str, Any]) -> None:
+        self.report = report
+        issues = [
+            str(issue.get("code") or "UNKNOWN")
+            for issue in report.get("issues", [])
+            if str(issue.get("severity") or "low") in {"high", "medium"}
+        ]
+        super().__init__(
+            "Production security gate failed: "
+            + (", ".join(issues) if issues else "unknown blocking issue")
+        )
 
 
 def _env_get(env: Mapping[str, str] | None, name: str) -> str | None:
@@ -97,12 +123,58 @@ def upload_limit_config(
     )
 
 
+def jwt_ttl_config(
+    env: Mapping[str, str] | None = None,
+    *,
+    raw_value: str | None = None,
+) -> JwtTtlConfig:
+    raw = _env_get(env, "PDF_TRANSLATE_JWT_TTL_MINUTES") if raw_value is None else raw_value
+    if raw is None or str(raw).strip() == "":
+        minutes = DEFAULT_JWT_TTL_MINUTES
+        return JwtTtlConfig(
+            minutes=minutes,
+            seconds=minutes * 60,
+            raw_value=None,
+            uses_default=True,
+        )
+    try:
+        minutes = int(str(raw).strip())
+    except ValueError:
+        minutes = DEFAULT_JWT_TTL_MINUTES
+        return JwtTtlConfig(
+            minutes=minutes,
+            seconds=minutes * 60,
+            raw_value=str(raw),
+            uses_default=True,
+            invalid_reason="not_an_integer",
+        )
+    if minutes < JWT_TTL_MINUTES_MIN or minutes > JWT_TTL_MINUTES_MAX:
+        fallback = DEFAULT_JWT_TTL_MINUTES
+        return JwtTtlConfig(
+            minutes=fallback,
+            seconds=fallback * 60,
+            raw_value=str(raw),
+            uses_default=True,
+            invalid_reason=f"outside_{JWT_TTL_MINUTES_MIN}_{JWT_TTL_MINUTES_MAX}_minutes",
+        )
+    return JwtTtlConfig(
+        minutes=minutes,
+        seconds=minutes * 60,
+        raw_value=str(raw),
+        uses_default=False,
+    )
+
+
 def max_upload_bytes(env: Mapping[str, str] | None = None) -> int:
     return upload_limit_config(env).max_bytes
 
 
 def max_upload_mb(env: Mapping[str, str] | None = None) -> int:
     return upload_limit_config(env).max_mb
+
+
+def jwt_ttl_seconds(env: Mapping[str, str] | None = None) -> int:
+    return jwt_ttl_config(env).seconds
 
 
 def _add_issue(
@@ -200,6 +272,26 @@ def build_security_preflight(
             env_var="PDF_TRANSLATE_JWT_SECRET",
         )
 
+    jwt_ttl = jwt_ttl_config(env)
+    if jwt_ttl.invalid_reason:
+        _add_issue(
+            issues,
+            code="JWT_TTL_INVALID",
+            severity="medium",
+            message="PDF_TRANSLATE_JWT_TTL_MINUTES is invalid; the default session lifetime is being used.",
+            next_step=f"Set PDF_TRANSLATE_JWT_TTL_MINUTES to an integer from {JWT_TTL_MINUTES_MIN} to {JWT_TTL_MINUTES_MAX}.",
+            env_var="PDF_TRANSLATE_JWT_TTL_MINUTES",
+        )
+    elif jwt_ttl.uses_default:
+        _add_issue(
+            issues,
+            code="JWT_TTL_DEFAULT",
+            severity="low",
+            message="JWT session lifetime uses the default value.",
+            next_step="Set PDF_TRANSLATE_JWT_TTL_MINUTES explicitly for the target deployment.",
+            env_var="PDF_TRANSLATE_JWT_TTL_MINUTES",
+        )
+
     upload = upload_limit_config(env)
     if upload.invalid_reason:
         _add_issue(
@@ -279,9 +371,36 @@ def build_security_preflight(
             "uses_default": upload.uses_default,
             "invalid_reason": upload.invalid_reason,
         },
+        "jwt": {
+            "ttl_minutes": jwt_ttl.minutes,
+            "ttl_seconds": jwt_ttl.seconds,
+            "ttl_raw_value": jwt_ttl.raw_value,
+            "ttl_uses_default": jwt_ttl.uses_default,
+            "ttl_invalid_reason": jwt_ttl.invalid_reason,
+        },
         "api_keys": {
             "stored_key_count": len(stored_keys),
             "stored_key_names": stored_keys,
         },
         "issues": issues,
     }
+
+
+def assert_production_security_ready(
+    data_base: Path,
+    data_root: Path,
+    *,
+    env: Mapping[str, str] | None = None,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    report = build_security_preflight(data_base, data_root, env=env, db_path=db_path)
+    if not report["production_mode"]:
+        return report
+    blocking = [
+        issue
+        for issue in report["issues"]
+        if str(issue.get("severity") or "low") in {"high", "medium"}
+    ]
+    if blocking:
+        raise ProductionSecurityError(report)
+    return report

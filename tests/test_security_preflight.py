@@ -11,8 +11,12 @@ from typer.testing import CliRunner
 from pdf_translate.cli import app
 from pdf_translate.server import database, settings_service
 from pdf_translate.server.security_preflight import (
+    DEFAULT_JWT_TTL_MINUTES,
     DEFAULT_MAX_UPLOAD_MB,
+    ProductionSecurityError,
+    assert_production_security_ready,
     build_security_preflight,
+    jwt_ttl_config,
     upload_limit_config,
 )
 
@@ -49,6 +53,7 @@ class SecurityPreflightTests(unittest.TestCase):
             "PDF_TRANSLATE_BOOTSTRAP_ADMIN_PASSWORD": "change-me-before-release-123!",
             "PDF_TRANSLATE_CORS_ORIGINS": "https://paper.example.edu",
             "PDF_TRANSLATE_JWT_SECRET": "x" * 48,
+            "PDF_TRANSLATE_JWT_TTL_MINUTES": "30",
             "PDF_TRANSLATE_DATA": str(root),
             "PDF_TRANSLATE_MAX_UPLOAD_MB": "64",
         }
@@ -58,6 +63,9 @@ class SecurityPreflightTests(unittest.TestCase):
         self.assertNotIn("DEFAULT_BOOTSTRAP_ADMIN_PASSWORD", codes)
         self.assertNotIn("CORS_ALLOW_ALL", codes)
         self.assertNotIn("JWT_SECRET_FILE_FALLBACK", codes)
+        self.assertNotIn("JWT_TTL_DEFAULT", codes)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["jwt"]["ttl_minutes"], 30)
         self.assertNotIn("UPLOAD_LIMIT_DEFAULT", codes)
         self.assertEqual(report["upload"]["max_mb"], 64)
         self.assertFalse(report["cors"]["allow_all"])
@@ -75,6 +83,63 @@ class SecurityPreflightTests(unittest.TestCase):
         )
         codes = {issue["code"] for issue in report["issues"]}
         self.assertIn("UPLOAD_LIMIT_INVALID", codes)
+
+    def test_invalid_jwt_ttl_falls_back_and_reports_issue(self) -> None:
+        cfg = jwt_ttl_config(env={"PDF_TRANSLATE_JWT_TTL_MINUTES": "0"})
+        self.assertEqual(cfg.minutes, DEFAULT_JWT_TTL_MINUTES)
+        self.assertEqual(cfg.invalid_reason, "outside_1_10080_minutes")
+
+        root = self._case_root("invalid-jwt-ttl")
+        report = build_security_preflight(
+            root,
+            root / "web_jobs",
+            env={"PDF_TRANSLATE_JWT_TTL_MINUTES": "not-a-number"},
+        )
+        codes = {issue["code"] for issue in report["issues"]}
+        self.assertIn("JWT_TTL_INVALID", codes)
+
+    def test_production_startup_gate_blocks_insecure_environment(self) -> None:
+        root = self._case_root("startup-blocked")
+
+        with self.assertRaises(ProductionSecurityError) as raised:
+            assert_production_security_ready(
+                root,
+                root / "web_jobs",
+                env={"PDF_TRANSLATE_ENV": "production"},
+            )
+
+        report = raised.exception.report
+        codes = {issue["code"] for issue in report["issues"]}
+        self.assertTrue(report["production_mode"])
+        self.assertIn("DEFAULT_BOOTSTRAP_ADMIN_PASSWORD", codes)
+        self.assertIn("CORS_ALLOW_ALL", codes)
+        self.assertIn("JWT_SECRET_FILE_FALLBACK", codes)
+
+    def test_production_startup_gate_allows_hardened_environment(self) -> None:
+        root = self._case_root("startup-hardened")
+        report = assert_production_security_ready(
+            root,
+            root / "web_jobs",
+            env={
+                "PDF_TRANSLATE_ENV": "production",
+                "PDF_TRANSLATE_BOOTSTRAP_ADMIN_PASSWORD": "change-me-before-release-123!",
+                "PDF_TRANSLATE_CORS_ORIGINS": "https://paper.example.edu",
+                "PDF_TRANSLATE_JWT_SECRET": "x" * 48,
+                "PDF_TRANSLATE_JWT_TTL_MINUTES": "30",
+                "PDF_TRANSLATE_DATA": str(root),
+                "PDF_TRANSLATE_MAX_UPLOAD_MB": "64",
+            },
+        )
+
+        self.assertTrue(report["production_mode"])
+        self.assertTrue(report["ok"])
+
+    def test_startup_gate_does_not_block_development_environment(self) -> None:
+        root = self._case_root("startup-dev")
+        report = assert_production_security_ready(root, root / "web_jobs", env={})
+
+        self.assertFalse(report["production_mode"])
+        self.assertFalse(report["ok"])
 
     def test_local_secret_storage_is_reported_without_leaking_values(self) -> None:
         root = self._case_root("stored-secrets")
