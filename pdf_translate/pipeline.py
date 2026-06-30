@@ -31,7 +31,11 @@ from pdf_translate.qa.repair import (
     write_repair_validation,
 )
 from pdf_translate.qa.structure import write_structure_qa
-from pdf_translate.qa.table_reconstruction import build_table_translation_hints, write_table_reconstruction_report
+from pdf_translate.qa.table_reconstruction import (
+    build_table_translation_hints,
+    write_structure_hints_manifest,
+    write_table_reconstruction_report,
+)
 from pdf_translate.qa.translation import write_translation_qa
 from pdf_translate.rich_content import extract_page_rich_meta
 from pdf_translate.run_metrics import RunMetricsRecorder, elapsed_ms_since
@@ -182,6 +186,7 @@ def _parallel_translate_one(
     style_text: str,
     ch: TextChunk,
     table_reconstruction: dict | None = None,
+    structure_hints_by_chunk: dict[str, str] | None = None,
 ) -> tuple[TextChunk, str, str, dict]:
     if is_cancel_requested(work_dir):
         raise JobCancelled()
@@ -192,7 +197,9 @@ def _parallel_translate_one(
     mem = MemoryStore(work_dir / "memory")
     _write_survey_and_merge_glossary(work_dir, cfg, mem, ch, text)
     gloss = mem.glossary_snippet_for_pages(p0, p1)
-    structure_hints = build_table_translation_hints(ch, table_reconstruction)
+    structure_hints = (structure_hints_by_chunk or {}).get(ch.chunk_id)
+    if structure_hints is None:
+        structure_hints = build_table_translation_hints(ch, table_reconstruction)
     req = TranslationRequest(
         source_text=text,
         glossary_excerpt=gloss,
@@ -403,6 +410,17 @@ def run_translate(
             out_dir / "chunk_strategy_comparison.json",
             active_strategy=chunk_strategy,
         )
+    with run_metrics.stage("structure_hints_manifest"):
+        structure_hints_manifest = write_structure_hints_manifest(
+            chunks,
+            table_reconstruction,
+            out_dir / "structure_hints_manifest.json",
+        )
+    structure_hints_by_chunk = {
+        str(entry.get("chunk_id")): str(entry.get("hint_text") or "")
+        for entry in structure_hints_manifest.get("chunks", [])
+        if isinstance(entry, dict) and str(entry.get("chunk_id") or "")
+    }
 
     state_path = out_dir / "state.json"
     state: dict = {"completed": [], "prompt_version": SYSTEM_PROMPT_VERSION, "prompt_hash": prompt_fingerprint()}
@@ -528,6 +546,7 @@ def run_translate(
             pipeline_variant=chunk_strategy,
             chunk_boundary_qa=chunk_boundary_qa,
             chunk_strategy_comparison=chunk_strategy_comparison,
+            structure_hints_manifest=structure_hints_manifest,
             table_reconstruction=table_reconstruction,
             ocr_tasks=ocr_tasks,
             ocr_results=ocr_results,
@@ -584,7 +603,16 @@ def run_translate(
                     )
             with ThreadPoolExecutor(max_workers=len(batch)) as ex:
                 futs = [
-                    ex.submit(_parallel_translate_one, work_dir, cfg, be, style_text, ch, table_reconstruction)
+                    ex.submit(
+                        _parallel_translate_one,
+                        work_dir,
+                        cfg,
+                        be,
+                        style_text,
+                        ch,
+                        table_reconstruction,
+                        structure_hints_by_chunk,
+                    )
                     for _idx, ch in batch
                 ]
                 got: list[tuple[TextChunk, str, str, dict]] = []
@@ -695,7 +723,9 @@ def run_translate(
 
         is_doc_last = idx == len(chunks) - 1
         use_defer = defer_protocol and not is_doc_last
-        structure_hints = build_table_translation_hints(ch, table_reconstruction)
+        structure_hints = structure_hints_by_chunk.get(ch.chunk_id)
+        if structure_hints is None:
+            structure_hints = build_table_translation_hints(ch, table_reconstruction)
 
         req = TranslationRequest(
             source_text=text,

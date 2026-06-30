@@ -50,6 +50,17 @@ def _count_values(items: list[str]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def _sum_count_dicts(items: list[dict[str, int]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        for key, value in item.items():
+            text = str(key).strip()
+            if not text:
+                continue
+            counts[text] = counts.get(text, 0) + int(value)
+    return dict(sorted(counts.items()))
+
+
 def _count_candidate_types(candidates: list[dict[str, Any]]) -> dict[str, int]:
     return _count_values([str(candidate.get("span_type") or "unknown") for candidate in candidates])
 
@@ -1186,3 +1197,126 @@ def build_table_translation_hints(
     if len(selected) > max_tables:
         lines.append(f"- 其余 {len(selected) - max_tables} 个表格仅按原文中的 Markdown 表格形状保持。")
     return "\n".join(lines)
+
+
+def build_structure_hints_manifest(
+    chunks: list[TextChunk],
+    table_reconstruction: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build an audit manifest for per-chunk structure hints sent to translators."""
+    if not isinstance(table_reconstruction, dict):
+        table_reconstruction = {}
+    tables = [table for table in table_reconstruction.get("tables") or [] if isinstance(table, dict)]
+    groups = [
+        group
+        for group in table_reconstruction.get("continued_table_groups") or []
+        if isinstance(group, dict)
+    ]
+    chunk_entries: list[dict[str, Any]] = []
+    for chunk in chunks:
+        block_ids = _chunk_block_ids(chunk)
+        selected = [table for table in tables if _table_matches_chunk(table, chunk, block_ids)]
+        selected_table_ids = [
+            str(table.get("table_id") or table.get("block_id") or "")
+            for table in selected
+            if str(table.get("table_id") or table.get("block_id") or "")
+        ]
+        selected_table_id_set = set(selected_table_ids)
+        selected_groups = [
+            group
+            for group in groups
+            if selected_table_id_set.intersection(
+                {str(table_id) for table_id in group.get("table_ids") or [] if str(table_id)}
+            )
+        ]
+        hints = build_table_translation_hints(chunk, table_reconstruction)
+        merged_candidates = [
+            candidate
+            for table in selected
+            for candidate in table.get("merged_cell_candidates") or []
+            if isinstance(candidate, dict)
+        ]
+        footnote_binding_count = sum(
+            len([binding for binding in table.get("footnote_bindings") or [] if isinstance(binding, dict)])
+            for table in selected
+        )
+        locked_token_count = sum(len(_table_locked_tokens(table)) for table in selected)
+        chunk_entries.append(
+            {
+                "chunk_id": chunk.chunk_id,
+                "pages_1based": [chunk.pages_0based[0] + 1, chunk.pages_0based[-1] + 1],
+                "block_ids": sorted(block_ids),
+                "has_structure_hints": bool(hints.strip()),
+                "hint_char_count": len(hints),
+                "hint_line_count": len([line for line in hints.splitlines() if line.strip()]),
+                "table_ids": selected_table_ids,
+                "table_count": len(selected_table_ids),
+                "continued_table_group_ids": [
+                    str(group.get("group_id") or "") for group in selected_groups if str(group.get("group_id") or "")
+                ],
+                "continued_table_group_count": len(selected_groups),
+                "merged_cell_candidate_count": len(merged_candidates),
+                "merged_cell_candidate_type_counts": _count_candidate_types(merged_candidates),
+                "merged_cell_candidate_reason_counts": _count_candidate_reasons(merged_candidates),
+                "footnote_binding_count": footnote_binding_count,
+                "locked_token_count": locked_token_count,
+                "hint_text": hints,
+            }
+        )
+    hinted_chunks = [entry for entry in chunk_entries if entry["has_structure_hints"]]
+    hint_char_counts = [int(entry["hint_char_count"]) for entry in chunk_entries]
+    structure_hint_char_count = sum(hint_char_counts)
+    return {
+        "schema_version": "structure-hints-manifest-v1",
+        "doc_id": str(table_reconstruction.get("doc_id") or ""),
+        "summary": {
+            "chunk_count": len(chunk_entries),
+            "structure_hint_chunk_count": len(hinted_chunks),
+            "structure_hint_empty_chunk_count": len(chunk_entries) - len(hinted_chunks),
+            "structure_hint_char_count": structure_hint_char_count,
+            "structure_hint_avg_char_count": round(
+                structure_hint_char_count / len(chunk_entries),
+                4,
+            )
+            if chunk_entries
+            else 0.0,
+            "structure_hint_max_char_count": max(hint_char_counts) if hint_char_counts else 0,
+            "structure_hint_table_count": sum(int(entry["table_count"]) for entry in chunk_entries),
+            "structure_hint_continued_group_count": sum(
+                int(entry["continued_table_group_count"]) for entry in chunk_entries
+            ),
+            "structure_hint_merged_cell_candidate_count": sum(
+                int(entry["merged_cell_candidate_count"]) for entry in chunk_entries
+            ),
+            "structure_hint_merged_cell_candidate_type_counts": _sum_count_dicts(
+                [
+                    entry["merged_cell_candidate_type_counts"]
+                    for entry in chunk_entries
+                    if isinstance(entry["merged_cell_candidate_type_counts"], dict)
+                ]
+            ),
+            "structure_hint_merged_cell_candidate_reason_counts": _sum_count_dicts(
+                [
+                    entry["merged_cell_candidate_reason_counts"]
+                    for entry in chunk_entries
+                    if isinstance(entry["merged_cell_candidate_reason_counts"], dict)
+                ]
+            ),
+            "structure_hint_footnote_binding_count": sum(
+                int(entry["footnote_binding_count"]) for entry in chunk_entries
+            ),
+            "structure_hint_locked_token_count": sum(int(entry["locked_token_count"]) for entry in chunk_entries),
+        },
+        "chunks": chunk_entries,
+    }
+
+
+def write_structure_hints_manifest(
+    chunks: list[TextChunk],
+    table_reconstruction: dict[str, Any] | None,
+    path: Path,
+) -> dict[str, Any]:
+    manifest = build_structure_hints_manifest(chunks, table_reconstruction)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return manifest

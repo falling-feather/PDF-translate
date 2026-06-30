@@ -85,6 +85,14 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertEqual(loaded["records"][0]["pdf_type"], "table-heavy")
             self.assertIn("metrics", loaded["records"][0])
             self.assertIn("translation_issue_count", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("structure_hint_chunk_count", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("structure_hint_avg_char_count", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("structure_hint_chunk_rate", loaded["records"][0]["metrics"]["rates"])
+            self.assertIn("structure_hint_locked_token_per_chunk", loaded["records"][0]["metrics"]["rates"])
+            self.assertIn(
+                "structure_hint_merged_cell_candidate_type_counts",
+                loaded["records"][0]["metrics"]["breakdowns"],
+            )
             self.assertIn("table_merged_cell_candidate_count", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("table_merged_cell_candidate_rate", loaded["records"][0]["metrics"]["rates"])
             self.assertIn("table_merged_cell_candidate_type_counts", loaded["records"][0]["metrics"]["breakdowns"])
@@ -93,6 +101,7 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("table_chain_reject_reason_count", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("table_chain_reject_reason_counts", loaded["records"][0]["metrics"]["breakdowns"])
             self.assertIn("breakdowns", loaded["aggregates"][0])
+            self.assertIn("structure_hint_merged_cell_candidate_type_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("table_merged_cell_candidate_type_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("table_chain_reject_reason_category_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("total_elapsed_ms", loaded["records"][0]["metrics"]["performance"])

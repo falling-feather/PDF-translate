@@ -39,7 +39,11 @@ from pdf_translate.qa.repair import (
     build_repair_validation,
 )
 from pdf_translate.qa.structure import build_structure_qa
-from pdf_translate.qa.table_reconstruction import build_table_reconstruction_report, build_table_translation_hints
+from pdf_translate.qa.table_reconstruction import (
+    build_structure_hints_manifest,
+    build_table_reconstruction_report,
+    build_table_translation_hints,
+)
 from pdf_translate.qa.translation import build_translation_qa
 from pdf_translate.pipeline import init_workdir, run_split, run_translate
 from pdf_translate.run_metrics import build_run_metrics
@@ -730,6 +734,30 @@ class StructureIRTests(unittest.TestCase):
         self.assertIn("single_cell_ragged_row", hints)
         self.assertIn("Dataset metrics", hints)
         self.assertNotIn("已确认合并单元格", hints)
+        hint_manifest = build_structure_hints_manifest(
+            [TextChunk("c0000", [0, 1], page1_table.text + "\n" + page2_table.text, 0, 0)],
+            report,
+        )
+        self.assertEqual(hint_manifest["schema_version"], "structure-hints-manifest-v1")
+        self.assertEqual(hint_manifest["summary"]["chunk_count"], 1)
+        self.assertEqual(hint_manifest["summary"]["structure_hint_chunk_count"], 1)
+        self.assertEqual(hint_manifest["summary"]["structure_hint_table_count"], 2)
+        self.assertEqual(hint_manifest["summary"]["structure_hint_continued_group_count"], 1)
+        self.assertEqual(hint_manifest["summary"]["structure_hint_merged_cell_candidate_count"], 1)
+        self.assertEqual(hint_manifest["summary"]["structure_hint_empty_chunk_count"], 0)
+        self.assertEqual(hint_manifest["summary"]["structure_hint_max_char_count"], len(hint_manifest["chunks"][0]["hint_text"]))
+        self.assertEqual(hint_manifest["summary"]["structure_hint_avg_char_count"], len(hint_manifest["chunks"][0]["hint_text"]))
+        self.assertEqual(hint_manifest["summary"]["structure_hint_merged_cell_candidate_type_counts"]["colspan"], 1)
+        self.assertEqual(
+            hint_manifest["summary"]["structure_hint_merged_cell_candidate_reason_counts"]["single_cell_ragged_row"],
+            1,
+        )
+        self.assertGreater(hint_manifest["summary"]["structure_hint_char_count"], 0)
+        self.assertEqual(hint_manifest["chunks"][0]["table_ids"], ["p1-b0000", "p2-b0000"])
+        self.assertEqual(hint_manifest["chunks"][0]["continued_table_group_count"], 1)
+        self.assertEqual(hint_manifest["chunks"][0]["hint_char_count"], len(hint_manifest["chunks"][0]["hint_text"]))
+        self.assertEqual(hint_manifest["chunks"][0]["merged_cell_candidate_type_counts"]["colspan"], 1)
+        self.assertIn("疑似合并单元格候选", hint_manifest["chunks"][0]["hint_text"])
 
     def test_table_reconstruction_builds_continued_table_groups(self) -> None:
         page1_table = BlockIR(
@@ -2135,6 +2163,27 @@ class StructureIRTests(unittest.TestCase):
                     "active_split_reduction_rate_vs_baseline": 0.5,
                 },
             },
+            structure_hints_manifest={
+                "schema_version": "structure-hints-manifest-v1",
+                "summary": {
+                    "chunk_count": 2,
+                    "structure_hint_chunk_count": 1,
+                    "structure_hint_empty_chunk_count": 1,
+                    "structure_hint_char_count": 240,
+                    "structure_hint_avg_char_count": 120.0,
+                    "structure_hint_max_char_count": 240,
+                    "structure_hint_table_count": 2,
+                    "structure_hint_continued_group_count": 1,
+                    "structure_hint_merged_cell_candidate_count": 2,
+                    "structure_hint_merged_cell_candidate_type_counts": {"colspan": 2},
+                    "structure_hint_merged_cell_candidate_reason_counts": {
+                        "single_cell_ragged_row": 1,
+                        "empty_cell_right_of_nonempty_anchor": 1,
+                    },
+                    "structure_hint_footnote_binding_count": 1,
+                    "structure_hint_locked_token_count": 4,
+                },
+            },
             table_reconstruction={
                 "schema_version": "table-reconstruction-v1",
                 "summary": {
@@ -2377,6 +2426,29 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["schema_version"], "experiment-metrics-v1")
         self.assertEqual(metrics["doc_id"], "metrics-sample")
         self.assertEqual(metrics["pipeline_variant"], "structure")
+        self.assertEqual(metrics["quality"]["structure_hint_chunk_count"], 1)
+        self.assertEqual(metrics["quality"]["structure_hint_empty_chunk_count"], 1)
+        self.assertEqual(metrics["quality"]["structure_hint_char_count"], 240)
+        self.assertEqual(metrics["quality"]["structure_hint_avg_char_count"], 120.0)
+        self.assertEqual(metrics["quality"]["structure_hint_max_char_count"], 240)
+        self.assertEqual(metrics["quality"]["structure_hint_table_count"], 2)
+        self.assertEqual(metrics["quality"]["structure_hint_continued_group_count"], 1)
+        self.assertEqual(metrics["quality"]["structure_hint_merged_cell_candidate_count"], 2)
+        self.assertEqual(metrics["quality"]["structure_hint_footnote_binding_count"], 1)
+        self.assertEqual(metrics["quality"]["structure_hint_locked_token_count"], 4)
+        self.assertEqual(metrics["rates"]["structure_hint_chunk_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["structure_hint_table_per_chunk"], 2.0)
+        self.assertEqual(metrics["rates"]["structure_hint_merged_cell_candidate_per_chunk"], 2.0)
+        self.assertEqual(metrics["rates"]["structure_hint_footnote_binding_per_chunk"], 1.0)
+        self.assertEqual(metrics["rates"]["structure_hint_locked_token_per_chunk"], 4.0)
+        self.assertEqual(metrics["breakdowns"]["structure_hint_merged_cell_candidate_type_counts"]["colspan"], 2)
+        self.assertEqual(
+            metrics["breakdowns"]["structure_hint_merged_cell_candidate_reason_counts"][
+                "empty_cell_right_of_nonempty_anchor"
+            ],
+            1,
+        )
+        self.assertEqual(metrics["evidence_files"]["structure_hints_manifest"], "output/structure_hints_manifest.json")
         self.assertEqual(metrics["performance"]["total_elapsed_ms"], 1000)
         self.assertEqual(metrics["performance"]["translation_request_count"], 2)
         self.assertEqual(metrics["performance"]["http_attempt_count"], 3)
@@ -2948,6 +3020,7 @@ class StructureIRTests(unittest.TestCase):
             active_manifest_path = work_dir / "output" / "chunks_manifest.json"
             qa_path = work_dir / "output" / "structure_qa.json"
             table_reconstruction_path = work_dir / "output" / "table_reconstruction.json"
+            structure_hints_manifest_path = work_dir / "output" / "structure_hints_manifest.json"
             chunk_boundary_qa_path = work_dir / "output" / "chunk_boundary_qa.json"
             chunk_strategy_comparison_path = work_dir / "output" / "chunk_strategy_comparison.json"
             vision_path = work_dir / "output" / "vision_route.json"
@@ -2985,6 +3058,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(active_manifest_path.is_file())
             self.assertTrue(qa_path.is_file())
             self.assertTrue(table_reconstruction_path.is_file())
+            self.assertTrue(structure_hints_manifest_path.is_file())
             self.assertTrue(chunk_boundary_qa_path.is_file())
             self.assertTrue(chunk_strategy_comparison_path.is_file())
             self.assertTrue(vision_path.is_file())
@@ -3022,6 +3096,7 @@ class StructureIRTests(unittest.TestCase):
             active_manifest = json.loads(active_manifest_path.read_text(encoding="utf-8"))
             qa = json.loads(qa_path.read_text(encoding="utf-8"))
             table_reconstruction = json.loads(table_reconstruction_path.read_text(encoding="utf-8"))
+            structure_hints_manifest = json.loads(structure_hints_manifest_path.read_text(encoding="utf-8"))
             chunk_boundary_qa = json.loads(chunk_boundary_qa_path.read_text(encoding="utf-8"))
             chunk_strategy_comparison = json.loads(chunk_strategy_comparison_path.read_text(encoding="utf-8"))
             vision = json.loads(vision_path.read_text(encoding="utf-8"))
@@ -3090,6 +3165,21 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("table_chain_reject_reason_counts", table_reconstruction["summary"])
             self.assertIn("table_chain_reject_reason_category_counts", table_reconstruction["summary"])
             self.assertIn("continued_table_groups", table_reconstruction)
+            self.assertEqual(structure_hints_manifest["schema_version"], "structure-hints-manifest-v1")
+            self.assertGreaterEqual(structure_hints_manifest["summary"]["chunk_count"], 1)
+            self.assertIn("structure_hint_chunk_count", structure_hints_manifest["summary"])
+            self.assertIn("structure_hint_empty_chunk_count", structure_hints_manifest["summary"])
+            self.assertIn("structure_hint_avg_char_count", structure_hints_manifest["summary"])
+            self.assertIn("structure_hint_max_char_count", structure_hints_manifest["summary"])
+            self.assertIn("structure_hint_merged_cell_candidate_type_counts", structure_hints_manifest["summary"])
+            self.assertIn("structure_hint_merged_cell_candidate_reason_counts", structure_hints_manifest["summary"])
+            self.assertGreaterEqual(len(structure_hints_manifest["chunks"]), 1)
+            self.assertIn("has_structure_hints", structure_hints_manifest["chunks"][0])
+            self.assertIn("hint_text", structure_hints_manifest["chunks"][0])
+            self.assertEqual(
+                structure_hints_manifest["chunks"][0]["hint_char_count"],
+                len(structure_hints_manifest["chunks"][0]["hint_text"]),
+            )
             self.assertEqual(chunk_boundary_qa["schema_version"], "chunk-boundary-qa-v1")
             self.assertEqual(chunk_boundary_qa["pipeline_variant"], "structure")
             self.assertIn("split_boundary_count", chunk_boundary_qa["summary"])
@@ -3155,6 +3245,12 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(metrics["performance"]["estimated_total_cost"], 0)
             self.assertIn("reconstructable_table_count", metrics["quality"])
             self.assertIn("table_merged_cell_candidate_count", metrics["quality"])
+            self.assertIn("structure_hint_chunk_count", metrics["quality"])
+            self.assertIn("structure_hint_empty_chunk_count", metrics["quality"])
+            self.assertIn("structure_hint_avg_char_count", metrics["quality"])
+            self.assertIn("structure_hint_max_char_count", metrics["quality"])
+            self.assertIn("structure_hint_chunk_rate", metrics["rates"])
+            self.assertIn("structure_hint_merged_cell_candidate_type_counts", metrics["breakdowns"])
             self.assertIn("table_merged_cell_candidate_rate", metrics["rates"])
             self.assertIn("table_merged_cell_candidate_type_counts", metrics["breakdowns"])
             self.assertIn("continued_table_group_count", metrics["quality"])
@@ -3192,6 +3288,10 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(
                 metrics["evidence_files"]["table_reconstruction"],
                 "output/table_reconstruction.json",
+            )
+            self.assertEqual(
+                metrics["evidence_files"]["structure_hints_manifest"],
+                "output/structure_hints_manifest.json",
             )
             self.assertEqual(
                 metrics["evidence_files"]["chunk_strategy_comparison"],
@@ -3235,6 +3335,7 @@ class StructureIRTests(unittest.TestCase):
                 "bilingual.html",
                 "document_ir.json",
                 "structure_chunks_manifest.json",
+                "structure_hints_manifest.json",
                 "structure_qa.json",
                 "table_reconstruction.json",
                 "chunk_boundary_qa.json",
@@ -3300,6 +3401,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/qa_report.md", rels)
             self.assertIn("output/document_ir.json", rels)
             self.assertIn("output/table_reconstruction.json", rels)
+            self.assertIn("output/structure_hints_manifest.json", rels)
             self.assertIn("output/chunk_boundary_qa.json", rels)
             self.assertIn("output/chunk_strategy_comparison.json", rels)
             self.assertIn("output/experiment_metrics.json", rels)
@@ -3334,6 +3436,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(map_bundle_arcname("output/document_ir_promoted.json"), "设置/OCR晋级文档结构IR.json")
             self.assertEqual(map_bundle_arcname("output/structure_qa.json"), "质量/结构QA.json")
             self.assertEqual(map_bundle_arcname("output/table_reconstruction.json"), "质量/表格重建证据.json")
+            self.assertEqual(map_bundle_arcname("output/structure_hints_manifest.json"), "设置/结构提示清单.json")
             self.assertEqual(map_bundle_arcname("output/chunk_boundary_qa.json"), "质量/分段边界QA.json")
             self.assertEqual(map_bundle_arcname("output/chunk_strategy_comparison.json"), "质量/分段策略对比.json")
             self.assertEqual(map_bundle_arcname("output/experiment_metrics.json"), "质量/实验指标.json")

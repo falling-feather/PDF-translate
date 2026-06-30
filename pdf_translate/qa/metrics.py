@@ -8,6 +8,7 @@ SCHEMA_VERSION = "experiment-metrics-v1"
 
 DEFAULT_EVIDENCE_FILES = {
     "structure_chunks_manifest": "output/structure_chunks_manifest.json",
+    "structure_hints_manifest": "output/structure_hints_manifest.json",
     "structure_qa": "output/structure_qa.json",
     "table_reconstruction": "output/table_reconstruction.json",
     "vision_route": "output/vision_route.json",
@@ -96,6 +97,7 @@ def build_experiment_metrics(
     pipeline_variant: str | None = None,
     chunk_boundary_qa: dict[str, Any] | None = None,
     chunk_strategy_comparison: dict[str, Any] | None = None,
+    structure_hints_manifest: dict[str, Any] | None = None,
     table_reconstruction: dict[str, Any] | None = None,
     ocr_tasks: dict[str, Any] | None = None,
     ocr_results: dict[str, Any] | None = None,
@@ -124,6 +126,7 @@ def build_experiment_metrics(
     ocr_candidate_promotion_summary = _summary(ocr_candidate_promotion)
     chunk_boundary_summary = _summary(chunk_boundary_qa)
     chunk_strategy_summary = _summary(chunk_strategy_comparison)
+    structure_hints_summary = _summary(structure_hints_manifest)
     translation_summary = _summary(translation_qa)
     repair_summary = _summary(repair_plan)
     repair_request_summary = _summary(repair_requests)
@@ -328,6 +331,35 @@ def build_experiment_metrics(
         vision_action_counts.get("local_ocr", 0) + vision_action_counts.get("vlm_review", 0)
     )
     chunk_count = _as_int(translation_summary.get("chunk_count")) or _as_int(repair_summary.get("chunk_count"))
+    structure_hint_chunk_count = _as_int(structure_hints_summary.get("structure_hint_chunk_count"))
+    structure_hint_empty_chunk_count = _as_int(
+        structure_hints_summary.get("structure_hint_empty_chunk_count")
+    )
+    structure_hint_char_count = _as_int(structure_hints_summary.get("structure_hint_char_count"))
+    structure_hint_avg_char_count = _as_float(
+        structure_hints_summary.get("structure_hint_avg_char_count")
+    )
+    structure_hint_max_char_count = _as_int(
+        structure_hints_summary.get("structure_hint_max_char_count")
+    )
+    structure_hint_table_count = _as_int(structure_hints_summary.get("structure_hint_table_count"))
+    structure_hint_continued_group_count = _as_int(
+        structure_hints_summary.get("structure_hint_continued_group_count")
+    )
+    structure_hint_merged_cell_candidate_count = _as_int(
+        structure_hints_summary.get("structure_hint_merged_cell_candidate_count")
+    )
+    structure_hint_merged_cell_candidate_type_counts = _counter_dict(
+        structure_hints_summary.get("structure_hint_merged_cell_candidate_type_counts")
+    )
+    structure_hint_merged_cell_candidate_reason_counts = _counter_dict(
+        structure_hints_summary.get("structure_hint_merged_cell_candidate_reason_counts")
+    )
+    structure_hint_footnote_binding_count = _as_int(
+        structure_hints_summary.get("structure_hint_footnote_binding_count")
+    )
+    structure_hint_locked_token_count = _as_int(structure_hints_summary.get("structure_hint_locked_token_count"))
+    structure_hint_total_chunk_count = _as_int(structure_hints_summary.get("chunk_count"))
     translation_issue_count = _as_int(translation_summary.get("issue_count"))
     repair_item_count = _as_int(repair_summary.get("repair_item_count"))
     repair_request_count = _as_int(repair_request_summary.get("repair_request_count"))
@@ -417,6 +449,16 @@ def build_experiment_metrics(
         "quality": {
             "page_count": page_count,
             "chunk_count": chunk_count,
+            "structure_hint_chunk_count": structure_hint_chunk_count,
+            "structure_hint_empty_chunk_count": structure_hint_empty_chunk_count,
+            "structure_hint_char_count": structure_hint_char_count,
+            "structure_hint_avg_char_count": structure_hint_avg_char_count,
+            "structure_hint_max_char_count": structure_hint_max_char_count,
+            "structure_hint_table_count": structure_hint_table_count,
+            "structure_hint_continued_group_count": structure_hint_continued_group_count,
+            "structure_hint_merged_cell_candidate_count": structure_hint_merged_cell_candidate_count,
+            "structure_hint_footnote_binding_count": structure_hint_footnote_binding_count,
+            "structure_hint_locked_token_count": structure_hint_locked_token_count,
             "table_count": table_count,
             "reconstructable_table_count": reconstructable_table_count,
             "low_confidence_table_count": low_confidence_table_count,
@@ -594,6 +636,23 @@ def build_experiment_metrics(
             "footnote_cross_page_link_rate": _rate(footnote_cross_page_linked_count, footnote_count),
             "caption_orphan_rate": _rate(caption_orphan_count, caption_count),
             "footnote_orphan_rate": _rate(footnote_orphan_count, footnote_count),
+            "structure_hint_chunk_rate": _rate(
+                structure_hint_chunk_count,
+                chunk_count or structure_hint_total_chunk_count,
+            ),
+            "structure_hint_table_per_chunk": _rate(structure_hint_table_count, structure_hint_chunk_count),
+            "structure_hint_merged_cell_candidate_per_chunk": _rate(
+                structure_hint_merged_cell_candidate_count,
+                structure_hint_chunk_count,
+            ),
+            "structure_hint_footnote_binding_per_chunk": _rate(
+                structure_hint_footnote_binding_count,
+                structure_hint_chunk_count,
+            ),
+            "structure_hint_locked_token_per_chunk": _rate(
+                structure_hint_locked_token_count,
+                structure_hint_chunk_count,
+            ),
             "table_reconstruction_ready_rate": table_reconstruction_ready_rate,
             "table_empty_cell_rate": _rate(table_empty_cell_count, table_cell_count),
             "table_ragged_table_rate": _rate(table_ragged_table_count, table_count),
@@ -729,6 +788,8 @@ def build_experiment_metrics(
             "skip_reasons": skip_reasons,
             "error_code_counts": run_error_code_counts,
             "error_category_counts": run_error_category_counts,
+            "structure_hint_merged_cell_candidate_type_counts": structure_hint_merged_cell_candidate_type_counts,
+            "structure_hint_merged_cell_candidate_reason_counts": structure_hint_merged_cell_candidate_reason_counts,
             "table_merged_cell_candidate_type_counts": table_merged_cell_candidate_type_counts,
             "table_merged_cell_candidate_reason_counts": table_merged_cell_candidate_reason_counts,
             "table_chain_reject_reason_counts": table_chain_reject_reason_counts,
@@ -753,6 +814,7 @@ def write_experiment_metrics(
     pipeline_variant: str | None = None,
     chunk_boundary_qa: dict[str, Any] | None = None,
     chunk_strategy_comparison: dict[str, Any] | None = None,
+    structure_hints_manifest: dict[str, Any] | None = None,
     table_reconstruction: dict[str, Any] | None = None,
     ocr_tasks: dict[str, Any] | None = None,
     ocr_results: dict[str, Any] | None = None,
@@ -777,6 +839,7 @@ def write_experiment_metrics(
         pipeline_variant=pipeline_variant,
         chunk_boundary_qa=chunk_boundary_qa,
         chunk_strategy_comparison=chunk_strategy_comparison,
+        structure_hints_manifest=structure_hints_manifest,
         table_reconstruction=table_reconstruction,
         ocr_tasks=ocr_tasks,
         ocr_results=ocr_results,
