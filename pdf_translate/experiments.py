@@ -23,6 +23,8 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "table_shape_error_count",
         "table_cell_token_error_count",
         "missing_table_locked_token_count",
+        "table_chain_reject_reason_count",
+        "table_chain_warning_reason_count",
         "table_footnote_cell_binding_count",
         "table_footnote_unbound_count",
         "page_boundary_fragment_count",
@@ -38,6 +40,8 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "table_reconstruction_ready_rate",
         "table_footnote_cell_binding_rate",
         "table_footnote_unbound_rate",
+        "table_chain_reject_reason_per_rejected_chain",
+        "table_chain_warning_reason_per_candidate_chain",
         "table_cell_token_error_rate",
         "table_locked_token_missing_rate",
         "split_boundary_rate",
@@ -61,6 +65,12 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "estimated_total_token_count",
         "estimated_total_cost",
         "estimated_cost_per_chunk",
+    ],
+    "breakdowns": [
+        "table_chain_reject_reason_counts",
+        "table_chain_reject_reason_category_counts",
+        "table_chain_warning_reason_counts",
+        "table_chain_warning_reason_category_counts",
     ],
 }
 
@@ -314,6 +324,19 @@ def _mean(values: list[float]) -> float:
     return round(sum(values) / len(values), 4)
 
 
+def _merge_counter_dicts(values: list[Any]) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        for key, count in value.items():
+            if isinstance(count, bool):
+                continue
+            if isinstance(count, (int, float)):
+                merged[str(key)] = merged.get(str(key), 0) + int(count)
+    return dict(sorted(merged.items()))
+
+
 def _aggregate_records(records: list[dict[str, Any]], variants: list[ExperimentVariant]) -> list[dict[str, Any]]:
     aggregates: list[dict[str, Any]] = []
     for variant in variants:
@@ -321,6 +344,8 @@ def _aggregate_records(records: list[dict[str, Any]], variants: list[ExperimentV
         succeeded = [record for record in variant_records if record.get("status") == "succeeded"]
         averages: dict[str, dict[str, float]] = {}
         for group, fields in SUMMARY_FIELDS.items():
+            if group == "breakdowns":
+                continue
             averages[group] = {}
             for field in fields:
                 values = [
@@ -329,6 +354,15 @@ def _aggregate_records(records: list[dict[str, Any]], variants: list[ExperimentV
                     if (number := _numeric(_metric_value(record, group, field))) is not None
                 ]
                 averages[group][field] = _mean(values)
+        breakdowns = {
+            field: _merge_counter_dicts(
+                [
+                    _metric_value(record, "breakdowns", field)
+                    for record in succeeded
+                ]
+            )
+            for field in SUMMARY_FIELDS.get("breakdowns", [])
+        }
         aggregates.append(
             {
                 "variant": variant.name,
@@ -339,6 +373,7 @@ def _aggregate_records(records: list[dict[str, Any]], variants: list[ExperimentV
                 "succeeded_count": len(succeeded),
                 "failed_count": len(variant_records) - len(succeeded),
                 "averages": averages,
+                "breakdowns": breakdowns,
             }
         )
     return aggregates
@@ -405,6 +440,12 @@ def _format_number(value: Any) -> str:
     return str(value)
 
 
+def _format_counter(value: Any) -> str:
+    if not isinstance(value, dict) or not value:
+        return ""
+    return "; ".join(f"{key}:{count}" for key, count in sorted(value.items()))
+
+
 def write_batch_experiment_markdown(report: dict[str, Any], path: Path) -> Path:
     lines = [
         "# 批量实验汇总",
@@ -418,14 +459,15 @@ def write_batch_experiment_markdown(report: dict[str, Any], path: Path) -> Path:
         "",
         "## 策略均值",
         "",
-        "| 策略 | 成功/总数 | 平均 issue | 平均边界切开率 | 平均边界保护率 | 平均耗时 ms | 平均估算成本 |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| 策略 | 成功/总数 | 平均 issue | 平均边界切开率 | 平均边界保护率 | 平均续表拒绝原因 | 续表拒绝类别 | 平均耗时 ms | 平均估算成本 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in report.get("aggregates", []):
         averages = item.get("averages", {})
         quality = averages.get("quality", {})
         rates = averages.get("rates", {})
         performance = averages.get("performance", {})
+        breakdowns = item.get("breakdowns", {}) if isinstance(item.get("breakdowns"), dict) else {}
         lines.append(
             "| "
             + " | ".join(
@@ -435,6 +477,8 @@ def write_batch_experiment_markdown(report: dict[str, Any], path: Path) -> Path:
                     _format_number(quality.get("translation_issue_count", 0)),
                     _format_number(rates.get("split_boundary_rate", 0)),
                     _format_number(rates.get("protected_boundary_rate", 0)),
+                    _format_number(quality.get("table_chain_reject_reason_count", 0)),
+                    _format_counter(breakdowns.get("table_chain_reject_reason_category_counts")),
                     _format_number(performance.get("total_elapsed_ms", 0)),
                     _format_number(performance.get("estimated_total_cost", 0)),
                 ]
@@ -536,6 +580,8 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
         "translation_issue_count",
         "table_shape_error_count",
         "table_cell_token_error_count",
+        "table_chain_reject_reason_count",
+        "table_chain_reject_reason_categories",
         "split_boundary_rate",
         "protected_boundary_rate",
         "total_elapsed_ms",
@@ -567,6 +613,13 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
                     "translation_issue_count": quality.get("translation_issue_count", ""),
                     "table_shape_error_count": quality.get("table_shape_error_count", ""),
                     "table_cell_token_error_count": quality.get("table_cell_token_error_count", ""),
+                    "table_chain_reject_reason_count": quality.get("table_chain_reject_reason_count", ""),
+                    "table_chain_reject_reason_categories": _format_counter(
+                        (metrics.get("breakdowns", {}) if isinstance(metrics, dict) else {}).get(
+                            "table_chain_reject_reason_category_counts",
+                            {},
+                        )
+                    ),
                     "split_boundary_rate": rates.get("split_boundary_rate", ""),
                     "protected_boundary_rate": rates.get("protected_boundary_rate", ""),
                     "total_elapsed_ms": performance.get("total_elapsed_ms", ""),

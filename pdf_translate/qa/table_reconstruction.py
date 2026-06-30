@@ -40,6 +40,29 @@ def _unique(items: list[str]) -> list[str]:
     return out
 
 
+def _count_values(items: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        text = str(item).strip()
+        if not text:
+            continue
+        counts[text] = counts.get(text, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _chain_reason_category(reason: str) -> str:
+    text = str(reason or "").strip()
+    if text.startswith("header_mismatch_segment_"):
+        return "header_mismatch"
+    if text.startswith("missing_header_for_segment_"):
+        return "missing_header"
+    if text == "ragged_table_rows_in_chain":
+        return "ragged_table_rows"
+    if text == "low_confidence_table_structure_in_chain":
+        return "low_confidence_table_structure"
+    return text or "unknown"
+
+
 def _clip(text: str, limit: int = 120) -> str:
     value = re.sub(r"\s+", " ", str(text or "")).strip()
     if len(value) <= limit:
@@ -649,6 +672,28 @@ def build_table_reconstruction_report(
         for group in continued_table_groups
         if isinstance(group.get("compatibility"), dict)
     )
+    table_chain_reject_reasons = [
+        str(reason)
+        for group in continued_table_groups
+        if isinstance(group.get("compatibility"), dict)
+        for reason in group.get("compatibility", {}).get("reject_reasons") or []
+        if str(reason).strip()
+    ]
+    table_chain_warning_reasons = [
+        str(reason)
+        for group in continued_table_groups
+        if isinstance(group.get("compatibility"), dict)
+        for reason in group.get("compatibility", {}).get("warnings") or []
+        if str(reason).strip()
+    ]
+    table_chain_reject_reason_counts = _count_values(table_chain_reject_reasons)
+    table_chain_reject_reason_category_counts = _count_values(
+        [_chain_reason_category(reason) for reason in table_chain_reject_reasons]
+    )
+    table_chain_warning_reason_counts = _count_values(table_chain_warning_reasons)
+    table_chain_warning_reason_category_counts = _count_values(
+        [_chain_reason_category(reason) for reason in table_chain_warning_reasons]
+    )
     caption_linked_table_count = sum(1 for table in tables if table.get("caption_blocks"))
     footnote_linked_table_count = sum(1 for table in tables if table.get("footnote_blocks"))
     footnote_bindings = [
@@ -700,6 +745,12 @@ def build_table_reconstruction_report(
             "table_chain_reject_count": table_chain_reject_count,
             "table_chain_row_gain": table_chain_row_gain,
             "table_chain_warning_count": table_chain_warning_count,
+            "table_chain_reject_reason_count": len(table_chain_reject_reasons),
+            "table_chain_warning_reason_count": len(table_chain_warning_reasons),
+            "table_chain_reject_reason_counts": table_chain_reject_reason_counts,
+            "table_chain_reject_reason_category_counts": table_chain_reject_reason_category_counts,
+            "table_chain_warning_reason_counts": table_chain_warning_reason_counts,
+            "table_chain_warning_reason_category_counts": table_chain_warning_reason_category_counts,
             "table_reconstruction_ready_rate": round(reconstructable_table_count / table_count, 4)
             if table_count
             else 0.0,

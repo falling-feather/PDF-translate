@@ -771,6 +771,16 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(report["summary"]["table_chain_merged_count"], 0)
         self.assertEqual(report["summary"]["table_chain_reject_count"], 1)
         self.assertEqual(report["summary"]["table_chain_row_gain"], 0)
+        self.assertEqual(report["summary"]["table_chain_reject_reason_count"], 1)
+        self.assertEqual(report["summary"]["table_chain_warning_reason_count"], 0)
+        self.assertEqual(
+            report["summary"]["table_chain_reject_reason_counts"]["header_mismatch_segment_1"],
+            1,
+        )
+        self.assertEqual(
+            report["summary"]["table_chain_reject_reason_category_counts"]["header_mismatch"],
+            1,
+        )
         self.assertEqual(report["summary"]["continued_table_reconstructable_group_count"], 0)
         group = report["continued_table_groups"][0]
         self.assertEqual(group["merge_status"], "rejected")
@@ -2065,6 +2075,12 @@ class StructureIRTests(unittest.TestCase):
                     "table_chain_reject_count": 1,
                     "table_chain_row_gain": 2,
                     "table_chain_warning_count": 1,
+                    "table_chain_reject_reason_count": 1,
+                    "table_chain_warning_reason_count": 1,
+                    "table_chain_reject_reason_counts": {"header_mismatch_segment_1": 1},
+                    "table_chain_reject_reason_category_counts": {"header_mismatch": 1},
+                    "table_chain_warning_reason_counts": {"missing_header_for_segment_1": 1},
+                    "table_chain_warning_reason_category_counts": {"missing_header": 1},
                     "table_reconstruction_ready_rate": 0.5,
                 },
             },
@@ -2339,6 +2355,8 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["table_chain_reject_count"], 1)
         self.assertEqual(metrics["quality"]["table_chain_row_gain"], 2)
         self.assertEqual(metrics["quality"]["table_chain_warning_count"], 1)
+        self.assertEqual(metrics["quality"]["table_chain_reject_reason_count"], 1)
+        self.assertEqual(metrics["quality"]["table_chain_warning_reason_count"], 1)
         self.assertEqual(metrics["rates"]["table_shape_error_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_cell_token_error_rate"], 0.6667)
         self.assertEqual(metrics["rates"]["table_locked_token_missing_rate"], 0.5)
@@ -2346,6 +2364,8 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["continued_table_reconstruction_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_chain_merge_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_chain_reject_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["table_chain_reject_reason_per_rejected_chain"], 1.0)
+        self.assertEqual(metrics["rates"]["table_chain_warning_reason_per_candidate_chain"], 1.0)
         self.assertEqual(metrics["rates"]["table_numeric_cell_rate"], 0.375)
         self.assertEqual(metrics["rates"]["table_caption_link_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_footnote_binding_rate"], 0.5)
@@ -2361,6 +2381,16 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["footnote_cross_page_link_rate"], 0.0)
         self.assertEqual(metrics["breakdowns"]["budget_split_reason_counts"]["target_chars"], 1)
         self.assertEqual(metrics["breakdowns"]["budget_pressure_counts"]["over_max"], 1)
+        self.assertEqual(
+            metrics["breakdowns"]["table_chain_reject_reason_counts"]["header_mismatch_segment_1"],
+            1,
+        )
+        self.assertEqual(metrics["breakdowns"]["table_chain_reject_reason_category_counts"]["header_mismatch"], 1)
+        self.assertEqual(
+            metrics["breakdowns"]["table_chain_warning_reason_counts"]["missing_header_for_segment_1"],
+            1,
+        )
+        self.assertEqual(metrics["breakdowns"]["table_chain_warning_reason_category_counts"]["missing_header"], 1)
         self.assertEqual(metrics["rates"]["entity_missing_rate"], 0.25)
         self.assertEqual(metrics["rates"]["repair_item_per_chunk"], 2.0)
         self.assertEqual(metrics["rates"]["repair_request_ready_rate"], 0.75)
@@ -2948,6 +2978,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("continued_table_group_count", table_reconstruction["summary"])
             self.assertIn("table_footnote_cell_binding_count", table_reconstruction["summary"])
             self.assertIn("table_footnote_unbound_count", table_reconstruction["summary"])
+            self.assertIn("table_chain_reject_reason_counts", table_reconstruction["summary"])
+            self.assertIn("table_chain_reject_reason_category_counts", table_reconstruction["summary"])
             self.assertIn("continued_table_groups", table_reconstruction)
             self.assertEqual(chunk_boundary_qa["schema_version"], "chunk-boundary-qa-v1")
             self.assertEqual(chunk_boundary_qa["pipeline_variant"], "structure")
@@ -3016,6 +3048,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("continued_table_group_count", metrics["quality"])
             self.assertIn("table_footnote_cell_binding_count", metrics["quality"])
             self.assertIn("table_footnote_cell_binding_rate", metrics["rates"])
+            self.assertIn("table_chain_reject_reason_count", metrics["quality"])
+            self.assertIn("table_chain_reject_reason_counts", metrics["breakdowns"])
             self.assertIn("table_reconstruction_ready_rate", metrics["rates"])
             self.assertIn("continued_table_reconstruction_rate", metrics["rates"])
             self.assertEqual(

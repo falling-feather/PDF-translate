@@ -205,6 +205,24 @@ def build_experiment_metrics(
     table_chain_reject_count = _as_int(table_reconstruction_summary.get("table_chain_reject_count"))
     table_chain_row_gain = _as_int(table_reconstruction_summary.get("table_chain_row_gain"))
     table_chain_warning_count = _as_int(table_reconstruction_summary.get("table_chain_warning_count"))
+    table_chain_reject_reason_count = _as_int(
+        table_reconstruction_summary.get("table_chain_reject_reason_count")
+    )
+    table_chain_warning_reason_count = _as_int(
+        table_reconstruction_summary.get("table_chain_warning_reason_count")
+    )
+    table_chain_reject_reason_counts = _counter_dict(
+        table_reconstruction_summary.get("table_chain_reject_reason_counts")
+    )
+    table_chain_reject_reason_category_counts = _counter_dict(
+        table_reconstruction_summary.get("table_chain_reject_reason_category_counts")
+    )
+    table_chain_warning_reason_counts = _counter_dict(
+        table_reconstruction_summary.get("table_chain_warning_reason_counts")
+    )
+    table_chain_warning_reason_category_counts = _counter_dict(
+        table_reconstruction_summary.get("table_chain_warning_reason_category_counts")
+    )
     table_reconstruction_ready_rate = _as_float(
         table_reconstruction_summary.get("table_reconstruction_ready_rate")
     )
@@ -408,6 +426,8 @@ def build_experiment_metrics(
             "table_chain_reject_count": table_chain_reject_count,
             "table_chain_row_gain": table_chain_row_gain,
             "table_chain_warning_count": table_chain_warning_count,
+            "table_chain_reject_reason_count": table_chain_reject_reason_count,
+            "table_chain_warning_reason_count": table_chain_warning_reason_count,
             "table_continuation_count": table_continuation_count,
             "table_footnote_count": table_footnote_count,
             "caption_orphan_count": caption_orphan_count,
@@ -570,6 +590,14 @@ def build_experiment_metrics(
             ),
             "table_chain_merge_rate": _rate(table_chain_merged_count, table_chain_candidate_count),
             "table_chain_reject_rate": _rate(table_chain_reject_count, table_chain_candidate_count),
+            "table_chain_reject_reason_per_rejected_chain": _rate(
+                table_chain_reject_reason_count,
+                table_chain_reject_count,
+            ),
+            "table_chain_warning_reason_per_candidate_chain": _rate(
+                table_chain_warning_reason_count + table_chain_reject_reason_count,
+                table_chain_candidate_count,
+            ),
             "table_shape_error_rate": _rate(table_shape_error_count, source_table_count),
             "table_cell_token_error_rate": _rate(table_cell_token_error_count, table_numeric_cell_count),
             "table_locked_token_missing_rate": _rate(
@@ -678,6 +706,10 @@ def build_experiment_metrics(
             "skip_reasons": skip_reasons,
             "error_code_counts": run_error_code_counts,
             "error_category_counts": run_error_category_counts,
+            "table_chain_reject_reason_counts": table_chain_reject_reason_counts,
+            "table_chain_reject_reason_category_counts": table_chain_reject_reason_category_counts,
+            "table_chain_warning_reason_counts": table_chain_warning_reason_counts,
+            "table_chain_warning_reason_category_counts": table_chain_warning_reason_category_counts,
             "budget_split_reason_counts": budget_split_reason_counts,
             "budget_pressure_counts": budget_pressure_counts,
         },
