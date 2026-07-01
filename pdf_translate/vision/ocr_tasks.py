@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,10 @@ from pdf_translate.extractors.document_ir import BlockIR, DocumentIR
 SCHEMA_VERSION = "ocr-task-manifest-v1"
 STRUCTURE_CONTRACT_SCHEMA_VERSION = "ocr-structure-contract-v1"
 OCR_ROUTE_ACTIONS = {"local_ocr", "vlm_review"}
+_FORMULA_TOKEN_RE = re.compile(
+    r"(?:\([0-9]{1,3}[A-Za-z]?\)|[A-Za-z](?:_\{?[A-Za-z0-9,+\-]+\}?|\^\{?[A-Za-z0-9,+\-]+\}?)+|"
+    r"\\[A-Za-z]+|[=+\-*/<>≤≥≈±∑∫√])"
+)
 
 
 def _route_page_index(vision_route: dict[str, Any]) -> dict[int, dict[str, Any]]:
@@ -119,13 +124,36 @@ def _table_subtarget(table_context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _structure_contract(block_type: str, table_context: dict[str, Any]) -> dict[str, Any]:
-    if block_type != "table" or not table_context:
+def _formula_context(block: BlockIR | None) -> dict[str, Any]:
+    if block is None or block.type != "formula":
+        return {}
+    source_text = str(block.text or "").strip()
+    return {
+        "formula_id": block.block_id,
+        "formula_block_type": block.type,
+        "source_page_no": block.page_no,
+        "source_block_bbox": [round(float(value), 2) for value in block.bbox],
+        "source_text": source_text[:500],
+        "source_tokens": _string_list(_FORMULA_TOKEN_RE.findall(source_text), limit=120),
+        "locked_tokens": _string_list(block.locked_tokens, limit=120),
+    }
+
+
+def _formula_subtarget(formula_context: dict[str, Any]) -> dict[str, Any]:
+    if not formula_context:
         return {}
     return {
+        "type": "formula_block",
+        "formula_id": str(formula_context.get("formula_id") or ""),
+        "expected_granularity": "formula_text_latex_and_tokens",
+    }
+
+
+def _base_structure_contract(target_structure_type: str, expected_output: str) -> dict[str, Any]:
+    return {
         "schema_version": STRUCTURE_CONTRACT_SCHEMA_VERSION,
-        "target_structure_type": "table",
-        "expected_output": "plain_text_with_structured_table_cells",
+        "target_structure_type": target_structure_type,
+        "expected_output": expected_output,
         "required_result_fields": [
             "task_id",
             "text",
@@ -135,22 +163,49 @@ def _structure_contract(block_type: str, table_context: dict[str, Any]) -> dict[
             "bbox",
             "warnings",
         ],
-        "optional_result_fields": [
-            "structured_cells",
-            "row_count",
-            "column_count",
-            "cell_bboxes",
-            "merged_cell_candidates",
-            "table_footnotes",
-        ],
-        "qa_gates": [
-            "preserve_row_column_grid",
-            "preserve_locked_tokens",
-            "preserve_numeric_tokens",
-            "flag_merged_or_ragged_cells",
-            "keep_table_footnotes_attached",
-        ],
     }
+
+
+def _structure_contract(
+    block_type: str,
+    table_context: dict[str, Any],
+    formula_context: dict[str, Any],
+) -> dict[str, Any]:
+    if block_type == "table" and table_context:
+        return {
+            **_base_structure_contract("table", "plain_text_with_structured_table_cells"),
+            "optional_result_fields": [
+                "structured_cells",
+                "row_count",
+                "column_count",
+                "cell_bboxes",
+                "merged_cell_candidates",
+                "table_footnotes",
+            ],
+            "qa_gates": [
+                "preserve_row_column_grid",
+                "preserve_locked_tokens",
+                "preserve_numeric_tokens",
+                "flag_merged_or_ragged_cells",
+                "keep_table_footnotes_attached",
+            ],
+        }
+    if block_type == "formula" and formula_context:
+        return {
+            **_base_structure_contract("formula", "plain_text_with_formula_latex_and_tokens"),
+            "optional_result_fields": [
+                "formula_latex",
+                "formula_tokens",
+                "equation_labels",
+                "formula_confidence",
+            ],
+            "qa_gates": [
+                "preserve_formula_tokens",
+                "preserve_equation_labels",
+                "flag_low_confidence_formula",
+            ],
+        }
+    return {}
 
 
 def _priority(action: str, risk_level: str, block_type: str) -> str:
@@ -202,8 +257,9 @@ def _base_task_payload(
     block: BlockIR | None,
 ) -> dict[str, Any]:
     table_context = _table_context(block)
-    subtarget = _table_subtarget(table_context)
-    contract = _structure_contract(block_type, table_context)
+    formula_context = _formula_context(block)
+    subtarget = _table_subtarget(table_context) or _formula_subtarget(formula_context)
+    contract = _structure_contract(block_type, table_context, formula_context)
     payload: dict[str, Any] = {
         "layout_scope": _layout_scope(scope, block_type),
         "target_structure_type": _target_structure_type(block_type),
@@ -211,6 +267,8 @@ def _base_task_payload(
     }
     if table_context:
         payload["table_context"] = table_context
+    if formula_context:
+        payload["formula_context"] = formula_context
     if contract:
         payload["structure_contract"] = contract
     return payload
@@ -376,6 +434,12 @@ def build_ocr_task_manifest(
         for task in tasks
         if isinstance(task.get("table_context"), dict) and str(task.get("status") or "") == "pending_engine"
     )
+    formula_context_count = sum(1 for task in tasks if isinstance(task.get("formula_context"), dict))
+    formula_context_ready_count = sum(
+        1
+        for task in tasks
+        if isinstance(task.get("formula_context"), dict) and str(task.get("status") or "") == "pending_engine"
+    )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -391,6 +455,8 @@ def build_ocr_task_manifest(
             "structured_contract_task_count": structured_contract_count,
             "table_context_task_count": table_context_count,
             "table_context_ready_task_count": table_context_ready_count,
+            "formula_context_task_count": formula_context_count,
+            "formula_context_ready_task_count": formula_context_ready_count,
             "scope_counts": dict(scope_counts),
             "status_counts": dict(status_counts),
             "priority_counts": dict(priority_counts),
@@ -413,6 +479,7 @@ def build_ocr_task_manifest(
             ],
             "optional_structured_fields": [
                 "table_context",
+                "formula_context",
                 "subtarget",
                 "structured_cells",
                 "row_count",
@@ -420,6 +487,10 @@ def build_ocr_task_manifest(
                 "cell_bboxes",
                 "merged_cell_candidates",
                 "table_footnotes",
+                "formula_latex",
+                "formula_tokens",
+                "equation_labels",
+                "formula_confidence",
             ],
             "writeback_policy": "append OCR candidates to DocumentIR meta; do not replace source text before QA",
             "qa_gate": "OCR text must pass structure and token checks before entering translation chunks",

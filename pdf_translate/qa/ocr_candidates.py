@@ -16,11 +16,19 @@ STRUCTURED_RESULT_FIELDS = (
     "cell_bboxes",
     "merged_cell_candidates",
     "table_footnotes",
+    "formula_latex",
+    "formula_tokens",
+    "equation_labels",
+    "formula_confidence",
 )
 STRUCTURED_TABLE_PASS = "passed"
 STRUCTURED_TABLE_REVIEW = "needs_review"
 STRUCTURED_TABLE_BLOCKED = "blocked"
 STRUCTURED_TABLE_NOT_APPLICABLE = "not_applicable"
+STRUCTURED_FORMULA_PASS = "passed"
+STRUCTURED_FORMULA_REVIEW = "needs_review"
+STRUCTURED_FORMULA_BLOCKED = "blocked"
+STRUCTURED_FORMULA_NOT_APPLICABLE = "not_applicable"
 
 
 def _json_copy(value: Any) -> Any:
@@ -47,6 +55,10 @@ def _normalized_text(value: Any) -> str:
 def _structured_payload(value: Any) -> Any | None:
     if isinstance(value, (dict, list)):
         return _json_copy(value)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
     return None
 
 
@@ -64,6 +76,10 @@ def _item_count(value: Any) -> int:
         return len(value)
     if isinstance(value, dict):
         return len(value)
+    if isinstance(value, str):
+        return 1 if value.strip() else 0
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return 1
     return 0
 
 
@@ -108,6 +124,14 @@ def _tokens_missing(tokens: Any, haystack: str) -> list[str]:
         if item and item.casefold() not in normalized:
             missing.append(item)
     return missing
+
+
+def _string_items(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [_normalized_text(item) for item in value if _normalized_text(item)]
+    if isinstance(value, str) and value.strip():
+        return [_normalized_text(value)]
+    return []
 
 
 def _cell_text(cell: Any) -> str:
@@ -225,6 +249,62 @@ def _structured_table_gate(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _structured_formula_gate(item: dict[str, Any], *, review_confidence: float) -> dict[str, Any]:
+    target_structure_type = str(item.get("target_structure_type") or item.get("block_type") or "")
+    block_type = str(item.get("block_type") or "")
+    if target_structure_type != "formula" and block_type != "formula":
+        return {"status": STRUCTURED_FORMULA_NOT_APPLICABLE}
+
+    formula_context = item.get("formula_context") if isinstance(item.get("formula_context"), dict) else {}
+    text = str(item.get("text") or "")
+    latex = str(item.get("formula_latex") or "").strip()
+    formula_tokens = _string_items(item.get("formula_tokens"))
+    equation_labels = _string_items(item.get("equation_labels"))
+    source_tokens = _string_items(formula_context.get("source_tokens"))
+    locked_tokens = _string_items(formula_context.get("locked_tokens"))
+    expected_equation_labels = [
+        token for token in source_tokens if token.startswith("(") and token.endswith(")")
+    ]
+    haystack = " ".join([text, latex, " ".join(formula_tokens), " ".join(equation_labels)])
+    missing_locked_tokens = _tokens_missing(locked_tokens, haystack)
+    missing_equation_labels = _tokens_missing(expected_equation_labels, haystack)
+    formula_confidence = _as_float(item.get("formula_confidence"))
+
+    issues: list[str] = []
+    blockers: list[str] = []
+    if not latex:
+        issues.append("structured_formula_missing_latex")
+    if not formula_tokens:
+        issues.append("structured_formula_missing_tokens")
+    if expected_equation_labels and missing_equation_labels:
+        issues.append("structured_formula_missing_equation_labels")
+    if locked_tokens and missing_locked_tokens:
+        issues.append("structured_formula_missing_locked_tokens")
+    if item.get("formula_confidence") is not None and formula_confidence < review_confidence:
+        issues.append("structured_formula_low_confidence")
+    if not text.strip() and not latex:
+        blockers.append("structured_formula_empty_text")
+
+    if blockers:
+        status = STRUCTURED_FORMULA_BLOCKED
+    elif issues:
+        status = STRUCTURED_FORMULA_REVIEW
+    else:
+        status = STRUCTURED_FORMULA_PASS
+
+    return {
+        "status": status,
+        "issues": issues,
+        "blockers": blockers,
+        "formula_token_count": len(formula_tokens),
+        "equation_label_count": len(equation_labels),
+        "expected_equation_label_count": len(expected_equation_labels),
+        "missing_equation_labels": missing_equation_labels,
+        "missing_locked_tokens": missing_locked_tokens,
+        "formula_confidence": round(formula_confidence, 4),
+    }
+
+
 def _iter_page_candidates(page: dict[str, Any]) -> list[dict[str, Any]]:
     meta = page.get("meta") if isinstance(page.get("meta"), dict) else {}
     candidates = meta.get("ocr_candidates") if isinstance(meta, dict) else []
@@ -300,6 +380,9 @@ def _iter_candidates(document_ir_ocr: dict[str, Any] | None) -> list[dict[str, A
                 "table_context": _json_copy(candidate.get("table_context"))
                 if isinstance(candidate.get("table_context"), dict)
                 else {},
+                "formula_context": _json_copy(candidate.get("formula_context"))
+                if isinstance(candidate.get("formula_context"), dict)
+                else {},
                 "subtarget": _json_copy(candidate.get("subtarget"))
                 if isinstance(candidate.get("subtarget"), dict)
                 else {},
@@ -318,12 +401,14 @@ def _assessment(item: dict[str, Any], *, review_confidence: float) -> dict[str, 
     useful_ratio = _useful_char_ratio(text)
     block_type = str(item.get("block_type") or "")
     table_context = item.get("table_context") if isinstance(item.get("table_context"), dict) else {}
+    formula_context = item.get("formula_context") if isinstance(item.get("formula_context"), dict) else {}
     subtarget = item.get("subtarget") if isinstance(item.get("subtarget"), dict) else {}
     structure_contract = (
         item.get("structure_contract") if isinstance(item.get("structure_contract"), dict) else {}
     )
     structured_result_fields = _structured_result_fields(item)
     structured_table_gate = _structured_table_gate(item)
+    structured_formula_gate = _structured_formula_gate(item, review_confidence=review_confidence)
     reasons: list[str] = []
     blockers: list[str] = []
 
@@ -345,7 +430,19 @@ def _assessment(item: dict[str, Any], *, review_confidence: float) -> dict[str, 
         else:
             reasons.append("needs_structured_table_review")
     elif structured_table_gate.get("status") == STRUCTURED_TABLE_NOT_APPLICABLE and block_type in STRUCTURE_REVIEW_BLOCK_TYPES:
-        reasons.append(f"needs_{block_type}_structure_review")
+        if block_type != "formula":
+            reasons.append(f"needs_{block_type}_structure_review")
+    if structured_formula_gate.get("status") == STRUCTURED_FORMULA_BLOCKED:
+        blockers.extend([str(value) for value in structured_formula_gate.get("blockers") or []])
+        reasons.extend([str(value) for value in structured_formula_gate.get("issues") or []])
+    elif structured_formula_gate.get("status") == STRUCTURED_FORMULA_REVIEW:
+        reasons.extend([str(value) for value in structured_formula_gate.get("issues") or []])
+        reasons.append("needs_structured_formula_review")
+    elif (
+        structured_formula_gate.get("status") == STRUCTURED_FORMULA_NOT_APPLICABLE
+        and block_type == "formula"
+    ):
+        reasons.append("needs_formula_structure_review")
     if item.get("warnings"):
         reasons.append("engine_warnings_present")
 
@@ -379,6 +476,8 @@ def _assessment(item: dict[str, Any], *, review_confidence: float) -> dict[str, 
     }
     if table_context:
         assessment["table_context"] = _json_copy(table_context)
+    if formula_context:
+        assessment["formula_context"] = _json_copy(formula_context)
     if subtarget:
         assessment["subtarget"] = _json_copy(subtarget)
     if structure_contract:
@@ -387,6 +486,8 @@ def _assessment(item: dict[str, Any], *, review_confidence: float) -> dict[str, 
         assessment[key] = _json_copy(value)
     if structured_table_gate.get("status") != STRUCTURED_TABLE_NOT_APPLICABLE:
         assessment["structured_table_gate"] = _json_copy(structured_table_gate)
+    if structured_formula_gate.get("status") != STRUCTURED_FORMULA_NOT_APPLICABLE:
+        assessment["structured_formula_gate"] = _json_copy(structured_formula_gate)
     return assessment
 
 
@@ -405,6 +506,7 @@ def build_ocr_candidate_qa(
     scope_counts = Counter(str(item.get("scope") or "unknown") for item in assessments)
     text_char_count = sum(int(item.get("text_char_count") or 0) for item in assessments)
     table_context_candidate_count = sum(1 for item in assessments if isinstance(item.get("table_context"), dict))
+    formula_context_candidate_count = sum(1 for item in assessments if isinstance(item.get("formula_context"), dict))
     structured_contract_candidate_count = sum(
         1 for item in assessments if isinstance(item.get("structure_contract"), dict)
     )
@@ -412,22 +514,30 @@ def build_ocr_candidate_qa(
     structured_result_candidate_count = sum(
         1
         for item in assessments
-        if any(isinstance(item.get(key), (dict, list)) for key in STRUCTURED_RESULT_FIELDS)
+        if any(_structured_payload(item.get(key)) is not None for key in STRUCTURED_RESULT_FIELDS)
     )
     structured_result_field_counts = {
-        key: sum(1 for item in assessments if isinstance(item.get(key), (dict, list)))
+        key: sum(1 for item in assessments if _structured_payload(item.get(key)) is not None)
         for key in STRUCTURED_RESULT_FIELDS
     }
     structured_result_item_counts = {
-        key: sum(_item_count(item.get(key)) for item in assessments if isinstance(item.get(key), (dict, list)))
+        key: sum(_item_count(item.get(key)) for item in assessments if _structured_payload(item.get(key)) is not None)
         for key in STRUCTURED_RESULT_FIELDS
     }
     structured_table_gate_counts = Counter(
         str(item.get("structured_table_gate", {}).get("status") or STRUCTURED_TABLE_NOT_APPLICABLE)
         for item in assessments
     )
+    structured_formula_gate_counts = Counter(
+        str(item.get("structured_formula_gate", {}).get("status") or STRUCTURED_FORMULA_NOT_APPLICABLE)
+        for item in assessments
+    )
     structured_table_gate_issue_counts: Counter[str] = Counter()
+    structured_formula_gate_issue_counts: Counter[str] = Counter()
     structured_table_missing_locked_token_count = 0
+    structured_formula_missing_locked_token_count = 0
+    structured_formula_token_count = 0
+    structured_formula_equation_label_count = 0
     for item in assessments:
         gate = item.get("structured_table_gate") if isinstance(item.get("structured_table_gate"), dict) else {}
         for issue in gate.get("issues") or []:
@@ -435,6 +545,16 @@ def build_ocr_candidate_qa(
         for blocker in gate.get("blockers") or []:
             structured_table_gate_issue_counts[str(blocker)] += 1
         structured_table_missing_locked_token_count += len(gate.get("missing_locked_tokens") or [])
+        formula_gate = (
+            item.get("structured_formula_gate") if isinstance(item.get("structured_formula_gate"), dict) else {}
+        )
+        for issue in formula_gate.get("issues") or []:
+            structured_formula_gate_issue_counts[str(issue)] += 1
+        for blocker in formula_gate.get("blockers") or []:
+            structured_formula_gate_issue_counts[str(blocker)] += 1
+        structured_formula_missing_locked_token_count += len(formula_gate.get("missing_locked_tokens") or [])
+        structured_formula_token_count += int(formula_gate.get("formula_token_count") or 0)
+        structured_formula_equation_label_count += int(formula_gate.get("equation_label_count") or 0)
     for item in assessments:
         for reason in item.get("reasons") or []:
             issue_counts[str(reason)] += 1
@@ -457,6 +577,7 @@ def build_ocr_candidate_qa(
             "blocked_candidate_count": status_counts.get("blocked", 0),
             "candidate_text_char_count": text_char_count,
             "table_context_candidate_count": table_context_candidate_count,
+            "formula_context_candidate_count": formula_context_candidate_count,
             "structured_contract_candidate_count": structured_contract_candidate_count,
             "subtarget_candidate_count": subtarget_candidate_count,
             "structured_result_candidate_count": structured_result_candidate_count,
@@ -466,10 +587,17 @@ def build_ocr_candidate_qa(
             "cell_bboxes_candidate_count": structured_result_field_counts["cell_bboxes"],
             "merged_cell_candidates_candidate_count": structured_result_field_counts["merged_cell_candidates"],
             "table_footnotes_candidate_count": structured_result_field_counts["table_footnotes"],
+            "formula_latex_candidate_count": structured_result_field_counts["formula_latex"],
+            "formula_tokens_candidate_count": structured_result_field_counts["formula_tokens"],
+            "equation_labels_candidate_count": structured_result_field_counts["equation_labels"],
+            "formula_confidence_candidate_count": structured_result_field_counts["formula_confidence"],
             "structured_cell_count": structured_result_item_counts["structured_cells"],
             "cell_bbox_count": structured_result_item_counts["cell_bboxes"],
             "result_merged_cell_candidate_count": structured_result_item_counts["merged_cell_candidates"],
             "result_table_footnote_count": structured_result_item_counts["table_footnotes"],
+            "result_formula_latex_count": structured_result_item_counts["formula_latex"],
+            "result_formula_token_count": structured_result_item_counts["formula_tokens"],
+            "result_equation_label_count": structured_result_item_counts["equation_labels"],
             "structured_table_gate_counts": dict(structured_table_gate_counts),
             "structured_table_gate_issue_counts": dict(structured_table_gate_issue_counts),
             "structured_table_candidate_count": (
@@ -481,6 +609,19 @@ def build_ocr_candidate_qa(
             "structured_table_gate_review_count": structured_table_gate_counts.get(STRUCTURED_TABLE_REVIEW, 0),
             "structured_table_gate_blocked_count": structured_table_gate_counts.get(STRUCTURED_TABLE_BLOCKED, 0),
             "structured_table_missing_locked_token_count": structured_table_missing_locked_token_count,
+            "structured_formula_gate_counts": dict(structured_formula_gate_counts),
+            "structured_formula_gate_issue_counts": dict(structured_formula_gate_issue_counts),
+            "structured_formula_candidate_count": (
+                structured_formula_gate_counts.get(STRUCTURED_FORMULA_PASS, 0)
+                + structured_formula_gate_counts.get(STRUCTURED_FORMULA_REVIEW, 0)
+                + structured_formula_gate_counts.get(STRUCTURED_FORMULA_BLOCKED, 0)
+            ),
+            "structured_formula_gate_passed_count": structured_formula_gate_counts.get(STRUCTURED_FORMULA_PASS, 0),
+            "structured_formula_gate_review_count": structured_formula_gate_counts.get(STRUCTURED_FORMULA_REVIEW, 0),
+            "structured_formula_gate_blocked_count": structured_formula_gate_counts.get(STRUCTURED_FORMULA_BLOCKED, 0),
+            "structured_formula_missing_locked_token_count": structured_formula_missing_locked_token_count,
+            "structured_formula_token_count": structured_formula_token_count,
+            "structured_formula_equation_label_count": structured_formula_equation_label_count,
             "writeback_accepted_result_count": int(writeback_summary.get("accepted_result_count") or 0),
             "status_counts": dict(status_counts),
             "issue_counts": dict(issue_counts),

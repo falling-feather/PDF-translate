@@ -16,6 +16,10 @@ STRUCTURED_RESULT_FIELDS = (
     "cell_bboxes",
     "merged_cell_candidates",
     "table_footnotes",
+    "formula_latex",
+    "formula_tokens",
+    "equation_labels",
+    "formula_confidence",
 )
 
 
@@ -113,6 +117,10 @@ def _normalized_warnings(value: Any) -> list[str]:
 def _structured_payload(value: Any) -> Any | None:
     if isinstance(value, (dict, list)):
         return _json_copy(value)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
     return None
 
 
@@ -130,6 +138,10 @@ def _item_count(value: Any) -> int:
         return len(value)
     if isinstance(value, dict):
         return len(value)
+    if isinstance(value, str):
+        return 1 if value.strip() else 0
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return 1
     return 0
 
 
@@ -184,7 +196,7 @@ def _candidate(
         "input_path": str(task.get("input_path") or ""),
         "result_status": str(result.get("status") or "succeeded"),
     }
-    for key in ("table_context", "structure_contract"):
+    for key in ("table_context", "formula_context", "structure_contract"):
         value = task.get(key)
         if isinstance(value, dict):
             candidate[key] = _json_copy(value)
@@ -293,6 +305,7 @@ def build_ocr_writeback(
     block_writeback_count = 0
     page_writeback_count = 0
     table_context_writeback_count = 0
+    formula_context_writeback_count = 0
     structured_result_writeback_count = 0
     structured_result_field_counts: Counter[str] = Counter()
     structured_result_item_counts: Counter[str] = Counter()
@@ -358,10 +371,12 @@ def build_ocr_writeback(
             page_writeback_count += 1
         if isinstance(candidate.get("table_context"), dict):
             table_context_writeback_count += 1
+        if isinstance(candidate.get("formula_context"), dict):
+            formula_context_writeback_count += 1
         structured_fields = {
             key: candidate[key]
             for key in STRUCTURED_RESULT_FIELDS
-            if isinstance(candidate.get(key), (dict, list))
+            if _structured_payload(candidate.get(key)) is not None
         }
         if structured_fields:
             structured_result_writeback_count += 1
@@ -378,7 +393,7 @@ def build_ocr_writeback(
             "confidence": candidate["confidence"],
             "engine": candidate["engine"],
         }
-        for key in ("table_context", "subtarget"):
+        for key in ("table_context", "formula_context", "subtarget"):
             value = candidate.get(key)
             if isinstance(value, dict):
                 writeback_record[key] = _json_copy(value)
@@ -408,6 +423,7 @@ def build_ocr_writeback(
             "block_writeback_count": block_writeback_count,
             "page_writeback_count": page_writeback_count,
             "table_context_writeback_count": table_context_writeback_count,
+            "formula_context_writeback_count": formula_context_writeback_count,
             "structured_result_writeback_count": structured_result_writeback_count,
             "structured_result_field_counts": dict(structured_result_field_counts),
             "structured_result_item_counts": dict(structured_result_item_counts),

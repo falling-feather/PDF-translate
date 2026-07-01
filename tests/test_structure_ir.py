@@ -1902,6 +1902,144 @@ class StructureIRTests(unittest.TestCase):
         promoted_meta = promotion["promoted_document_ir"]["pages"][0]["blocks"][0]["meta"]["ocr_promotions"][0]
         self.assertEqual(promoted_meta["table_footnotes"][0]["marker"], "*")
 
+    def test_formula_ocr_writeback_preserves_structure_context(self) -> None:
+        doc_ir = DocumentIR(
+            doc_id="formula-ocr-context",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text="Formula image L_i (1)",
+                    image_count=1,
+                    warnings=["formula_dense_low_text"],
+                    meta={
+                        "text_char_count": 20,
+                        "text_area_ratio": 0.02,
+                        "image_area_ratio": 0.45,
+                    },
+                    blocks=[
+                        BlockIR(
+                            "p1-b0000",
+                            1,
+                            "formula",
+                            "Formula image L_i (1)",
+                            (80, 220, 520, 300),
+                            0,
+                            locked_tokens=["L_i", "(1)"],
+                        ),
+                    ],
+                )
+            ],
+        )
+        route = {
+            "schema_version": "vision-route-v1",
+            "doc_id": doc_ir.doc_id,
+            "summary": {},
+            "pages": [
+                {
+                    "page_no": 1,
+                    "action": "local_ocr",
+                    "risk_level": "high",
+                    "risk_score": 0.86,
+                    "reasons": ["formula_dense_low_text"],
+                    "evidence": {
+                        "page_preview_path": "vision_pages/page-0001.png",
+                        "region_crops": [
+                            {
+                                "block_id": "p1-b0000",
+                                "block_type": "formula",
+                                "crop_path": "vision_crops/page-0001/p1-b0000-formula.png",
+                                "bbox": [80, 220, 520, 300],
+                                "crop_width": 720,
+                                "crop_height": 120,
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+
+        manifest = build_ocr_task_manifest(doc_ir, route)
+        formula_task = manifest["tasks"][0]
+        self.assertEqual(manifest["summary"]["formula_context_task_count"], 1)
+        self.assertEqual(manifest["summary"]["formula_context_ready_task_count"], 1)
+        self.assertEqual(manifest["summary"]["structured_contract_task_count"], 1)
+        self.assertEqual(formula_task["block_type"], "formula")
+        self.assertEqual(formula_task["layout_scope"], "formula_region")
+        self.assertEqual(formula_task["target_structure_type"], "formula")
+        self.assertEqual(formula_task["recommended_engine"], "local_formula_ocr")
+        self.assertEqual(formula_task["writeback"]["subtarget"]["type"], "formula_block")
+        self.assertEqual(formula_task["formula_context"]["formula_id"], "p1-b0000")
+        self.assertIn("L_i", formula_task["formula_context"]["source_tokens"])
+        self.assertIn("(1)", formula_task["formula_context"]["source_tokens"])
+        self.assertEqual(formula_task["structure_contract"]["target_structure_type"], "formula")
+        self.assertIn("formula_latex", formula_task["structure_contract"]["optional_result_fields"])
+        self.assertIn(
+            "formula_tokens",
+            manifest["result_writeback_contract"]["optional_structured_fields"],
+        )
+
+        results = build_ocr_results_payload(
+            manifest,
+            {
+                "schema_version": "ocr-results-v1",
+                "results": [
+                    {
+                        "task_id": formula_task["task_id"],
+                        "status": "succeeded",
+                        "text": "L_i = sum_j x_{ij} (1)",
+                        "confidence": 0.94,
+                        "engine": "unit_formula_ocr",
+                        "language": "en",
+                        "bbox": [80, 220, 520, 300],
+                        "warnings": [],
+                        "formula_latex": r"L_i = \sum_j x_{ij}",
+                        "formula_tokens": ["L_i", "=", r"\sum", "x_{ij}", "(1)"],
+                        "equation_labels": ["(1)"],
+                        "formula_confidence": 0.93,
+                    }
+                ],
+            },
+        )
+
+        built = build_ocr_writeback(doc_ir, manifest, results)
+        self.assertEqual(built["summary"]["accepted_result_count"], 1)
+        self.assertEqual(built["summary"]["formula_context_writeback_count"], 1)
+        self.assertEqual(built["summary"]["structured_result_writeback_count"], 1)
+        self.assertEqual(built["summary"]["structured_result_field_counts"]["formula_latex"], 1)
+        self.assertEqual(built["summary"]["structured_result_item_counts"]["formula_tokens"], 5)
+        candidate = built["augmented_document_ir"]["pages"][0]["blocks"][0]["meta"]["ocr_candidates"][0]
+        self.assertEqual(candidate["target_structure_type"], "formula")
+        self.assertEqual(candidate["formula_context"]["formula_id"], "p1-b0000")
+        self.assertEqual(candidate["subtarget"]["type"], "formula_block")
+        self.assertEqual(candidate["formula_tokens"][0], "L_i")
+        self.assertEqual(candidate["equation_labels"], ["(1)"])
+
+        candidate_qa = build_ocr_candidate_qa(built["augmented_document_ir"], built)
+        self.assertEqual(candidate_qa["summary"]["candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["formula_context_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["formula_latex_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["formula_tokens_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["result_formula_token_count"], 5)
+        self.assertEqual(candidate_qa["summary"]["structured_formula_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["structured_formula_gate_passed_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["structured_formula_gate_review_count"], 0)
+        self.assertEqual(candidate_qa["summary"]["structured_formula_token_count"], 5)
+        self.assertEqual(candidate_qa["summary"]["structured_formula_equation_label_count"], 1)
+        self.assertEqual(candidate_qa["candidates"][0]["status"], "candidate")
+        self.assertEqual(candidate_qa["candidates"][0]["structured_formula_gate"]["status"], "passed")
+        self.assertEqual(candidate_qa["candidates"][0]["formula_context"]["formula_id"], "p1-b0000")
+
+        promotion = build_ocr_candidate_promotion(built["augmented_document_ir"], candidate_qa)
+        self.assertEqual(promotion["summary"]["promoted_candidate_count"], 1)
+        self.assertEqual(promotion["promotions"][0]["formula_tokens"][0], "L_i")
+        self.assertEqual(promotion["promotions"][0]["formula_context"]["formula_id"], "p1-b0000")
+        promoted_meta = promotion["promoted_document_ir"]["pages"][0]["blocks"][0]["meta"]["ocr_promotions"][0]
+        self.assertEqual(promoted_meta["formula_latex"], r"L_i = \sum_j x_{ij}")
+        self.assertEqual(promoted_meta["equation_labels"], ["(1)"])
+
     def test_structured_table_ocr_gate_requires_locked_tokens_and_bboxes(self) -> None:
         document_ir_ocr = {
             "doc_id": "table-ocr-gate",
@@ -2707,9 +2845,11 @@ class StructureIRTests(unittest.TestCase):
                     "ready_task_count": 3,
                     "blocked_by_missing_evidence_count": 1,
                     "vlm_fallback_task_count": 1,
-                    "structured_contract_task_count": 1,
+                    "structured_contract_task_count": 2,
                     "table_context_task_count": 1,
                     "table_context_ready_task_count": 1,
+                    "formula_context_task_count": 1,
+                    "formula_context_ready_task_count": 1,
                     "scope_counts": {"region": 3, "page": 1},
                     "status_counts": {"pending_engine": 3, "blocked_missing_visual_evidence": 1},
                     "priority_counts": {"P0": 2, "P1": 2},
@@ -2755,18 +2895,27 @@ class StructureIRTests(unittest.TestCase):
                     "block_writeback_count": 2,
                     "page_writeback_count": 0,
                     "table_context_writeback_count": 1,
+                    "formula_context_writeback_count": 1,
                     "structured_result_writeback_count": 1,
                     "structured_result_field_counts": {
                         "structured_cells": 1,
                         "cell_bboxes": 1,
                         "merged_cell_candidates": 1,
                         "table_footnotes": 1,
+                        "formula_latex": 1,
+                        "formula_tokens": 1,
+                        "equation_labels": 1,
+                        "formula_confidence": 1,
                     },
                     "structured_result_item_counts": {
                         "structured_cells": 4,
                         "cell_bboxes": 2,
                         "merged_cell_candidates": 1,
                         "table_footnotes": 1,
+                        "formula_latex": 1,
+                        "formula_tokens": 5,
+                        "equation_labels": 1,
+                        "formula_confidence": 1,
                     },
                     "result_status_counts": {"succeeded": 3},
                     "accepted_engine_counts": {"local_ocr": 1, "local_table_ocr": 1},
@@ -2782,6 +2931,7 @@ class StructureIRTests(unittest.TestCase):
                     "blocked_candidate_count": 1,
                     "candidate_text_char_count": 180,
                     "table_context_candidate_count": 1,
+                    "formula_context_candidate_count": 1,
                     "structured_contract_candidate_count": 1,
                     "subtarget_candidate_count": 1,
                     "structured_result_candidate_count": 1,
@@ -2790,21 +2940,36 @@ class StructureIRTests(unittest.TestCase):
                         "cell_bboxes": 1,
                         "merged_cell_candidates": 1,
                         "table_footnotes": 1,
+                        "formula_latex": 1,
+                        "formula_tokens": 1,
+                        "equation_labels": 1,
+                        "formula_confidence": 1,
                     },
                     "structured_result_item_counts": {
                         "structured_cells": 4,
                         "cell_bboxes": 2,
                         "merged_cell_candidates": 1,
                         "table_footnotes": 1,
+                        "formula_latex": 1,
+                        "formula_tokens": 5,
+                        "equation_labels": 1,
+                        "formula_confidence": 1,
                     },
                     "structured_cells_candidate_count": 1,
                     "cell_bboxes_candidate_count": 1,
                     "merged_cell_candidates_candidate_count": 1,
                     "table_footnotes_candidate_count": 1,
+                    "formula_latex_candidate_count": 1,
+                    "formula_tokens_candidate_count": 1,
+                    "equation_labels_candidate_count": 1,
+                    "formula_confidence_candidate_count": 1,
                     "structured_cell_count": 4,
                     "cell_bbox_count": 2,
                     "result_merged_cell_candidate_count": 1,
                     "result_table_footnote_count": 1,
+                    "result_formula_latex_count": 1,
+                    "result_formula_token_count": 5,
+                    "result_equation_label_count": 1,
                     "structured_table_gate_counts": {"passed": 1, "needs_review": 1},
                     "structured_table_gate_issue_counts": {
                         "structured_table_missing_locked_tokens": 1,
@@ -2815,6 +2980,17 @@ class StructureIRTests(unittest.TestCase):
                     "structured_table_gate_review_count": 1,
                     "structured_table_gate_blocked_count": 0,
                     "structured_table_missing_locked_token_count": 1,
+                    "structured_formula_gate_counts": {"passed": 1, "needs_review": 1},
+                    "structured_formula_gate_issue_counts": {
+                        "structured_formula_missing_equation_labels": 1,
+                    },
+                    "structured_formula_candidate_count": 2,
+                    "structured_formula_gate_passed_count": 1,
+                    "structured_formula_gate_review_count": 1,
+                    "structured_formula_gate_blocked_count": 0,
+                    "structured_formula_missing_locked_token_count": 0,
+                    "structured_formula_token_count": 5,
+                    "structured_formula_equation_label_count": 1,
                     "status_counts": {"candidate": 1, "needs_review": 1, "blocked": 1},
                     "issue_counts": {
                         "needs_table_structure_review": 1,
@@ -3178,9 +3354,11 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_ready_task_count"], 3)
         self.assertEqual(metrics["quality"]["ocr_blocked_task_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_vlm_fallback_task_count"], 1)
-        self.assertEqual(metrics["quality"]["ocr_structured_contract_task_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_contract_task_count"], 2)
         self.assertEqual(metrics["quality"]["ocr_table_context_task_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_table_context_ready_task_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_formula_context_task_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_formula_context_ready_task_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_result_payload_count"], 3)
         self.assertEqual(metrics["quality"]["ocr_invalid_result_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_executor_attempted_task_count"], 3)
@@ -3196,6 +3374,7 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_block_writeback_count"], 2)
         self.assertEqual(metrics["quality"]["ocr_page_writeback_count"], 0)
         self.assertEqual(metrics["quality"]["ocr_table_context_writeback_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_formula_context_writeback_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_structured_result_writeback_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_qa_count"], 3)
         self.assertEqual(metrics["quality"]["ocr_candidate_promotable_count"], 1)
@@ -3203,6 +3382,7 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_candidate_blocked_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_text_char_count"], 180)
         self.assertEqual(metrics["quality"]["ocr_table_context_candidate_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_formula_context_candidate_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_structured_contract_candidate_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_subtarget_candidate_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_structured_result_candidate_count"], 1)
@@ -3210,10 +3390,15 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_cell_bboxes_candidate_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_merged_cell_candidates_candidate_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_table_footnotes_candidate_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_formula_latex_candidate_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_formula_tokens_candidate_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_equation_labels_candidate_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_structured_cell_count"], 4)
         self.assertEqual(metrics["quality"]["ocr_cell_bbox_count"], 2)
         self.assertEqual(metrics["quality"]["ocr_result_merged_cell_candidate_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_result_table_footnote_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_result_formula_token_count"], 5)
+        self.assertEqual(metrics["quality"]["ocr_result_equation_label_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_structured_table_candidate_count"], 2)
         self.assertEqual(metrics["quality"]["ocr_structured_table_gate_passed_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_structured_table_gate_review_count"], 1)
@@ -3221,6 +3406,13 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_structured_table_missing_locked_token_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_structured_table_row_col_mismatch_count"], 0)
         self.assertEqual(metrics["quality"]["ocr_structured_table_missing_cell_bboxes_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_formula_candidate_count"], 2)
+        self.assertEqual(metrics["quality"]["ocr_structured_formula_gate_passed_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_formula_gate_review_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_formula_gate_blocked_count"], 0)
+        self.assertEqual(metrics["quality"]["ocr_structured_formula_token_count"], 5)
+        self.assertEqual(metrics["quality"]["ocr_structured_formula_equation_label_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_formula_missing_equation_label_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_promotion_eligible_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_promoted_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_promotion_skipped_count"], 2)
@@ -3232,9 +3424,11 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["ocr_task_per_routed_page"], 2.0)
         self.assertEqual(metrics["rates"]["ocr_region_task_rate"], 0.75)
         self.assertEqual(metrics["rates"]["ocr_ready_task_rate"], 0.75)
-        self.assertEqual(metrics["rates"]["ocr_structured_contract_task_rate"], 0.25)
+        self.assertEqual(metrics["rates"]["ocr_structured_contract_task_rate"], 0.5)
         self.assertEqual(metrics["rates"]["ocr_table_context_task_rate"], 0.25)
         self.assertEqual(metrics["rates"]["ocr_table_context_ready_rate"], 1.0)
+        self.assertEqual(metrics["rates"]["ocr_formula_context_task_rate"], 0.25)
+        self.assertEqual(metrics["rates"]["ocr_formula_context_ready_rate"], 1.0)
         self.assertEqual(metrics["rates"]["ocr_result_payload_valid_rate"], 0.75)
         self.assertEqual(metrics["rates"]["ocr_executor_success_rate"], 0.6667)
         self.assertEqual(metrics["rates"]["ocr_task_result_coverage_rate"], 0.75)
@@ -3249,6 +3443,10 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["ocr_structured_table_structure_review_rate"], 0.5)
         self.assertEqual(metrics["rates"]["ocr_structured_table_row_col_match_rate"], 1.0)
         self.assertEqual(metrics["rates"]["ocr_table_cell_bbox_coverage_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["ocr_structured_formula_gate_pass_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["ocr_structured_formula_gate_review_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["ocr_formula_token_per_candidate"], 2.5)
+        self.assertEqual(metrics["rates"]["ocr_formula_equation_label_per_candidate"], 0.5)
         self.assertEqual(metrics["rates"]["ocr_candidate_promotable_rate"], 0.3333)
         self.assertEqual(metrics["rates"]["ocr_candidate_blocked_rate"], 0.3333)
         self.assertEqual(metrics["rates"]["ocr_candidate_promotion_rate"], 0.3333)
@@ -3265,9 +3463,16 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["breakdowns"]["ocr_candidate_issue_counts"]["too_short"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_candidate_structured_result_field_counts"]["cell_bboxes"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_candidate_structured_table_gate_counts"]["passed"], 1)
+        self.assertEqual(metrics["breakdowns"]["ocr_candidate_structured_formula_gate_counts"]["passed"], 1)
         self.assertEqual(
             metrics["breakdowns"]["ocr_candidate_structured_table_gate_issue_counts"][
                 "structured_table_missing_locked_tokens"
+            ],
+            1,
+        )
+        self.assertEqual(
+            metrics["breakdowns"]["ocr_candidate_structured_formula_gate_issue_counts"][
+                "structured_formula_missing_equation_labels"
             ],
             1,
         )

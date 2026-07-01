@@ -12,6 +12,10 @@ STRUCTURED_RESULT_FIELDS = (
     "cell_bboxes",
     "merged_cell_candidates",
     "table_footnotes",
+    "formula_latex",
+    "formula_tokens",
+    "equation_labels",
+    "formula_confidence",
 )
 
 
@@ -41,6 +45,10 @@ def _text(value: Any) -> str:
 def _structured_payload(value: Any) -> Any | None:
     if isinstance(value, (dict, list)):
         return _json_copy(value)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
     return None
 
 
@@ -130,7 +138,7 @@ def _promotion_meta(qa_item: dict[str, Any], source_candidate: dict[str, Any]) -
     )
     if target_structure_type:
         meta["target_structure_type"] = target_structure_type
-    for key in ("table_context", "subtarget", "structure_contract"):
+    for key in ("table_context", "formula_context", "subtarget", "structure_contract"):
         value = source_candidate.get(key)
         if not isinstance(value, dict):
             value = qa_item.get(key)
@@ -146,11 +154,19 @@ def _promotion_meta(qa_item: dict[str, Any], source_candidate: dict[str, Any]) -
 
 
 def _attach_structure_trace(record: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
-    for key in ("target_structure_type", "table_context", "subtarget", *STRUCTURED_RESULT_FIELDS):
+    for key in (
+        "target_structure_type",
+        "table_context",
+        "formula_context",
+        "subtarget",
+        *STRUCTURED_RESULT_FIELDS,
+    ):
         value = meta.get(key)
         if isinstance(value, (dict, list)):
             record[key] = _json_copy(value)
         elif isinstance(value, str) and value:
+            record[key] = value
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
             record[key] = value
     return record
 
