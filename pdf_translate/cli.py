@@ -300,6 +300,11 @@ def cmd_experiment(
     parallel_workers: int = typer.Option(4, "--parallel-workers", min=1, help="并行模式 worker 数"),
     resume: bool = typer.Option(False, "--resume", help="复用已有完成块；默认每次重跑当前策略"),
     stop_on_error: bool = typer.Option(False, "--stop-on-error", help="任一运行失败时立即停止"),
+    patent_batch_only: bool = typer.Option(
+        False,
+        "--patent-batch-only",
+        help="只运行样本清单中 include_in_patent_batch 被人工标记为纳入的样本",
+    ),
 ) -> None:
     if translate_mode not in ("serial", "parallel"):
         raise typer.BadParameter("translate-mode must be serial or parallel")
@@ -319,6 +324,7 @@ def cmd_experiment(
         resume=resume,
         stop_on_error=stop_on_error,
         sample_metadata=load_sample_metadata(sample_manifest) if sample_manifest else None,
+        patent_batch_only=patent_batch_only,
     )
     typer.echo(f"批量实验汇总: {(output_dir / 'batch_experiment_summary.json').resolve()}")
     typer.echo(f"Markdown 报告: {(output_dir / 'batch_experiment_summary.md').resolve()}")

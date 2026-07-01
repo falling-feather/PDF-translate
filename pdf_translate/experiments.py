@@ -1050,11 +1050,15 @@ def _format_counter(value: Any) -> str:
 
 
 def write_batch_experiment_markdown(report: dict[str, Any], path: Path) -> Path:
+    sample_filter = report.get("sample_filter", {}) if isinstance(report.get("sample_filter"), dict) else {}
     lines = [
         "# 批量实验汇总",
         "",
         f"- 生成时间：{report.get('created_at')}",
+        f"- 输入 PDF 数：{report.get('input_pdf_count', report.get('sample_count'))}",
         f"- 样本数：{report.get('sample_count')}",
+        f"- 仅运行人工纳入样本：{'是' if sample_filter.get('patent_batch_only') else '否'}",
+        f"- 跳过样本数：{sample_filter.get('skipped_sample_count', 0)}",
         f"- 运行数：{report.get('run_count')}",
         f"- 成功数：{report.get('succeeded_count')}",
         f"- 失败数：{report.get('failed_count')}",
@@ -1124,8 +1128,8 @@ def write_batch_experiment_markdown(report: dict[str, Any], path: Path) -> Path:
             "",
             "## 样本标签",
             "",
-            "| 样本 | 类型 | 标签 | 备注 |",
-            "| --- | --- | --- | --- |",
+            "| 样本 | 类型 | 标签 | 纳入批量 | 确认人 | 确认备注 | 备注 |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for sample in report.get("samples", []):
@@ -1136,6 +1140,9 @@ def write_batch_experiment_markdown(report: dict[str, Any], path: Path) -> Path:
                     str(sample.get("sample_id", "")),
                     str(sample.get("pdf_type", "")),
                     ", ".join(sample.get("tags", []) or []),
+                    str(sample.get("include_in_patent_batch", "")),
+                    str(sample.get("reviewer", "")),
+                    str(sample.get("review_notes", "")),
                     str(sample.get("notes", "")),
                 ]
             )
@@ -1726,18 +1733,37 @@ def run_batch_experiment(
     resume: bool = False,
     stop_on_error: bool = False,
     sample_metadata: dict[str, Any] | None = None,
+    patent_batch_only: bool = False,
 ) -> dict[str, Any]:
     if not pdfs:
         raise ValueError("at least one PDF is required")
     variants = variants or parse_variant_specs("page,structure")
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    samples = _build_samples(pdfs, sample_metadata)
+    all_samples = _build_samples(pdfs, sample_metadata)
+    samples = [
+        sample
+        for sample in all_samples
+        if not patent_batch_only or _review_truthy(sample.include_in_patent_batch)
+    ]
+    if not samples:
+        raise ValueError(
+            "no samples selected for batch experiment; fill include_in_patent_batch "
+            "or disable patent_batch_only"
+        )
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "backend": backend or cfg.default_translator,
+        "input_pdf_count": len(pdfs),
+        "sample_count": len(samples),
+        "sample_filter": {
+            "patent_batch_only": patent_batch_only,
+            "input_sample_count": len(all_samples),
+            "selected_sample_count": len(samples),
+            "skipped_sample_count": len(all_samples) - len(samples),
+        },
         "pages_per_chunk": pages_per_chunk,
         "overlap_pages": overlap_pages,
         "max_chunks": max_chunks,
@@ -1827,7 +1853,9 @@ def run_batch_experiment(
         "schema_version": SCHEMA_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "backend": backend or cfg.default_translator,
-        "sample_count": len(pdfs),
+        "input_pdf_count": len(pdfs),
+        "sample_count": len(samples),
+        "sample_filter": manifest["sample_filter"],
         "variant_count": len(variants),
         "run_count": len(records),
         "succeeded_count": sum(1 for record in records if record.get("status") == "succeeded"),

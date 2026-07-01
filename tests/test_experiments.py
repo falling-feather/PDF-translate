@@ -184,20 +184,24 @@ class BatchExperimentTests(unittest.TestCase):
         root.mkdir(parents=True)
         try:
             pdf_path = root / "sample.pdf"
+            excluded_pdf = root / "excluded.pdf"
             self._write_sample_pdf(pdf_path)
+            self._write_sample_pdf(excluded_pdf)
 
             metadata_path = root / "samples.csv"
             metadata_path.write_text(
                 "source_pdf,sample_id,pdf_type,tags,confirmed_pdf_type,confirmed_tags,"
                 "include_in_patent_batch,reviewer,review_notes,notes\n"
                 "sample.pdf,sample-table,normal,normal,table-heavy,table;entity,"
-                "是,导师,确认作为表格样本,用于表格与实体保留实验\n",
+                "是,导师,确认作为表格样本,用于表格与实体保留实验\n"
+                "excluded.pdf,sample-excluded,normal,normal,normal,normal,"
+                "否,导师,暂不进入本轮专利跑批,用于过滤测试\n",
                 encoding="utf-8",
             )
 
             output_dir = root / "experiment"
             report = run_batch_experiment(
-                [pdf_path],
+                [pdf_path, excluded_pdf],
                 output_dir,
                 AppConfig.from_env(),
                 variants=parse_variant_specs("page,structure"),
@@ -206,6 +210,7 @@ class BatchExperimentTests(unittest.TestCase):
                 overlap_pages=0,
                 max_chunks=1,
                 sample_metadata=load_sample_metadata(metadata_path),
+                patent_batch_only=True,
             )
 
             summary_json = output_dir / "batch_experiment_summary.json"
@@ -218,6 +223,10 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertTrue(review_csv.is_file())
             self.assertEqual(report["schema_version"], "batch-experiment-v1")
             self.assertEqual(report["sample_count"], 1)
+            self.assertEqual(report["input_pdf_count"], 2)
+            self.assertTrue(report["sample_filter"]["patent_batch_only"])
+            self.assertEqual(report["sample_filter"]["selected_sample_count"], 1)
+            self.assertEqual(report["sample_filter"]["skipped_sample_count"], 1)
             self.assertEqual(report["run_count"], 2)
             self.assertEqual(report["succeeded_count"], 2)
             self.assertEqual(report["failed_count"], 0)
@@ -225,6 +234,7 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertEqual({item["variant"] for item in report["aggregates"]}, {"page", "structure"})
             self.assertEqual(report["comparisons"][0]["variant"], "structure")
             self.assertEqual(report["samples"][0]["sample_id"], "sample-table")
+            self.assertNotIn("sample-excluded", json.dumps(report, ensure_ascii=False))
             self.assertEqual(report["samples"][0]["pdf_type"], "table-heavy")
             self.assertEqual(report["samples"][0]["tags"], ["table", "entity"])
             self.assertEqual(report["samples"][0]["include_in_patent_batch"], "是")
@@ -233,6 +243,7 @@ class BatchExperimentTests(unittest.TestCase):
 
             loaded = json.loads(summary_json.read_text(encoding="utf-8"))
             self.assertEqual(loaded["records"][0]["status"], "succeeded")
+            self.assertEqual(loaded["sample_filter"]["skipped_sample_count"], 1)
             self.assertEqual(loaded["records"][0]["pdf_type"], "table-heavy")
             self.assertEqual(loaded["records"][0]["include_in_patent_batch"], "是")
             self.assertIn("metrics", loaded["records"][0])
@@ -277,8 +288,11 @@ class BatchExperimentTests(unittest.TestCase):
             summary_text = summary_md.read_text(encoding="utf-8")
             self.assertIn("OCR structured table gate", summary_text)
             self.assertIn("批量实验汇总", summary_text)
+            self.assertIn("仅运行人工纳入样本：是", summary_text)
+            self.assertIn("跳过样本数：1", summary_text)
             self.assertIn("续表拒绝类别", summary_text)
             self.assertIn("平均合并候选", summary_text)
+            self.assertIn("确认作为表格样本", summary_text)
             review_text = review_csv.read_text(encoding="utf-8-sig")
             self.assertIn("human_score", review_text)
             self.assertIn("human_score_markdown", review_text)
