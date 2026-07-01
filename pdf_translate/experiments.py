@@ -57,7 +57,29 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "split_boundary_count",
         "protected_boundary_count",
         "ocr_task_count",
+        "ocr_structured_contract_task_count",
+        "ocr_table_context_task_count",
+        "ocr_table_context_ready_task_count",
+        "ocr_structured_result_writeback_count",
+        "ocr_candidate_qa_count",
+        "ocr_candidate_promotable_count",
+        "ocr_candidate_needs_review_count",
+        "ocr_candidate_blocked_count",
+        "ocr_table_context_candidate_count",
+        "ocr_structured_contract_candidate_count",
+        "ocr_structured_result_candidate_count",
+        "ocr_structured_cell_count",
+        "ocr_cell_bbox_count",
+        "ocr_structured_table_candidate_count",
+        "ocr_structured_table_gate_passed_count",
+        "ocr_structured_table_gate_review_count",
+        "ocr_structured_table_gate_blocked_count",
+        "ocr_structured_table_missing_locked_token_count",
+        "ocr_structured_table_row_col_mismatch_count",
+        "ocr_structured_table_missing_cell_bboxes_count",
+        "ocr_candidate_promotion_eligible_count",
         "ocr_candidate_promoted_count",
+        "ocr_candidate_promotion_skipped_count",
         "repair_request_count",
         "repair_merge_applied_count",
         "repair_merge_table_targeted_patch_count",
@@ -85,7 +107,20 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "entity_missing_rate",
         "routed_page_rate",
         "ocr_ready_task_rate",
+        "ocr_structured_contract_task_rate",
+        "ocr_table_context_task_rate",
+        "ocr_table_context_ready_rate",
+        "ocr_structured_result_writeback_rate",
+        "ocr_structured_result_candidate_rate",
+        "ocr_structured_table_gate_pass_rate",
+        "ocr_structured_table_gate_review_rate",
+        "ocr_structured_table_structure_review_rate",
+        "ocr_structured_table_row_col_match_rate",
+        "ocr_table_cell_bbox_coverage_rate",
+        "ocr_candidate_promotable_rate",
+        "ocr_candidate_blocked_rate",
         "ocr_candidate_promotion_rate",
+        "ocr_candidate_eligible_promotion_rate",
         "qa_issue_per_chunk",
         "repair_merge_apply_rate",
         "repair_merge_table_targeted_patch_rate",
@@ -111,6 +146,15 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "structure_hint_merged_cell_candidate_reason_counts",
         "table_merged_cell_candidate_type_counts",
         "table_merged_cell_candidate_reason_counts",
+        "ocr_task_structure_target_counts",
+        "ocr_writeback_structured_result_field_counts",
+        "ocr_candidate_status_counts",
+        "ocr_candidate_issue_counts",
+        "ocr_candidate_structured_result_field_counts",
+        "ocr_candidate_structured_table_gate_counts",
+        "ocr_candidate_structured_table_gate_issue_counts",
+        "ocr_candidate_promotion_status_counts",
+        "ocr_candidate_promotion_skip_counts",
         "repair_merge_strategy_counts",
         "repair_merge_applied_strategy_counts",
     ],
@@ -120,9 +164,12 @@ COMPARISON_FIELDS = [
     ("quality", "translation_issue_count"),
     ("quality", "table_shape_error_count"),
     ("quality", "table_cell_token_error_count"),
+    ("quality", "ocr_structured_table_gate_review_count"),
     ("rates", "split_boundary_rate"),
     ("rates", "protected_boundary_rate"),
     ("rates", "active_split_reduction_rate_vs_baseline"),
+    ("rates", "ocr_structured_table_gate_pass_rate"),
+    ("rates", "ocr_table_cell_bbox_coverage_rate"),
     ("performance", "total_elapsed_ms"),
     ("performance", "translation_request_count"),
     ("performance", "estimated_total_cost"),
@@ -533,6 +580,35 @@ def write_batch_experiment_markdown(report: dict[str, Any], path: Path) -> Path:
     lines.extend(
         [
             "",
+            "## OCR structured table gate",
+            "",
+            "| Variant | Avg structured table candidates | Avg gate pass rate | Avg review count | Avg bbox coverage rate | Gate issues |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for item in report.get("aggregates", []):
+        averages = item.get("averages", {})
+        quality = averages.get("quality", {})
+        rates = averages.get("rates", {})
+        breakdowns = item.get("breakdowns", {}) if isinstance(item.get("breakdowns"), dict) else {}
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(item.get("variant", "")),
+                    _format_number(quality.get("ocr_structured_table_candidate_count", 0)),
+                    _format_number(rates.get("ocr_structured_table_gate_pass_rate", 0)),
+                    _format_number(quality.get("ocr_structured_table_gate_review_count", 0)),
+                    _format_number(rates.get("ocr_table_cell_bbox_coverage_rate", 0)),
+                    _format_counter(breakdowns.get("ocr_candidate_structured_table_gate_issue_counts")),
+                ]
+            )
+            + " |"
+        )
+
+    lines.extend(
+        [
+            "",
             "## 样本标签",
             "",
             "| 样本 | 类型 | 标签 | 备注 |",
@@ -628,6 +704,16 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
         "table_merged_cell_candidate_types",
         "table_chain_reject_reason_count",
         "table_chain_reject_reason_categories",
+        "ocr_structured_contract_task_count",
+        "ocr_table_context_task_count",
+        "ocr_structured_result_candidate_count",
+        "ocr_structured_table_candidate_count",
+        "ocr_structured_table_gate_passed_count",
+        "ocr_structured_table_gate_review_count",
+        "ocr_structured_table_gate_pass_rate",
+        "ocr_table_cell_bbox_coverage_rate",
+        "ocr_candidate_structured_fields",
+        "ocr_structured_table_gate_issues",
         "split_boundary_rate",
         "protected_boundary_rate",
         "total_elapsed_ms",
@@ -650,6 +736,7 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
             quality = metrics.get("quality", {}) if isinstance(metrics, dict) else {}
             rates = metrics.get("rates", {}) if isinstance(metrics, dict) else {}
             performance = metrics.get("performance", {}) if isinstance(metrics, dict) else {}
+            breakdowns = metrics.get("breakdowns", {}) if isinstance(metrics, dict) else {}
             files = record.get("files", {})
             writer.writerow(
                 {
@@ -664,17 +751,37 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
                     "table_cell_token_error_count": quality.get("table_cell_token_error_count", ""),
                     "table_merged_cell_candidate_count": quality.get("table_merged_cell_candidate_count", ""),
                     "table_merged_cell_candidate_types": _format_counter(
-                        (metrics.get("breakdowns", {}) if isinstance(metrics, dict) else {}).get(
-                            "table_merged_cell_candidate_type_counts",
-                            {},
-                        )
+                        breakdowns.get("table_merged_cell_candidate_type_counts", {})
                     ),
                     "table_chain_reject_reason_count": quality.get("table_chain_reject_reason_count", ""),
                     "table_chain_reject_reason_categories": _format_counter(
-                        (metrics.get("breakdowns", {}) if isinstance(metrics, dict) else {}).get(
-                            "table_chain_reject_reason_category_counts",
-                            {},
-                        )
+                        breakdowns.get("table_chain_reject_reason_category_counts", {})
+                    ),
+                    "ocr_structured_contract_task_count": quality.get("ocr_structured_contract_task_count", ""),
+                    "ocr_table_context_task_count": quality.get("ocr_table_context_task_count", ""),
+                    "ocr_structured_result_candidate_count": quality.get(
+                        "ocr_structured_result_candidate_count",
+                        "",
+                    ),
+                    "ocr_structured_table_candidate_count": quality.get(
+                        "ocr_structured_table_candidate_count",
+                        "",
+                    ),
+                    "ocr_structured_table_gate_passed_count": quality.get(
+                        "ocr_structured_table_gate_passed_count",
+                        "",
+                    ),
+                    "ocr_structured_table_gate_review_count": quality.get(
+                        "ocr_structured_table_gate_review_count",
+                        "",
+                    ),
+                    "ocr_structured_table_gate_pass_rate": rates.get("ocr_structured_table_gate_pass_rate", ""),
+                    "ocr_table_cell_bbox_coverage_rate": rates.get("ocr_table_cell_bbox_coverage_rate", ""),
+                    "ocr_candidate_structured_fields": _format_counter(
+                        breakdowns.get("ocr_candidate_structured_result_field_counts", {})
+                    ),
+                    "ocr_structured_table_gate_issues": _format_counter(
+                        breakdowns.get("ocr_candidate_structured_table_gate_issue_counts", {})
                     ),
                     "split_boundary_rate": rates.get("split_boundary_rate", ""),
                     "protected_boundary_rate": rates.get("protected_boundary_rate", ""),

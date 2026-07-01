@@ -964,10 +964,13 @@ def build_experiment_metrics(
                 ocr_structured_table_candidate_count,
             ),
             "ocr_structured_table_row_col_match_rate": _rate(
-                ocr_structured_table_candidate_count - ocr_structured_table_row_col_mismatch_count,
+                max(ocr_structured_table_candidate_count - ocr_structured_table_row_col_mismatch_count, 0),
                 ocr_structured_table_candidate_count,
             ),
-            "ocr_table_cell_bbox_coverage_rate": _rate(ocr_cell_bbox_count, ocr_structured_cell_count),
+            "ocr_table_cell_bbox_coverage_rate": _rate(
+                min(ocr_cell_bbox_count, ocr_structured_cell_count),
+                ocr_structured_cell_count,
+            ),
             "ocr_candidate_promotable_rate": _rate(ocr_candidate_promotable_count, ocr_candidate_qa_count),
             "ocr_candidate_blocked_rate": _rate(ocr_candidate_blocked_count, ocr_candidate_qa_count),
             "ocr_candidate_promotion_rate": _rate(ocr_candidate_promoted_count, ocr_candidate_qa_count),
