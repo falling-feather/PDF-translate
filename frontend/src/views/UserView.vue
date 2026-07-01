@@ -158,6 +158,17 @@ function jobIssueTitle(j) {
   return j?.status === "cancelled" ? "任务已终止" : "任务失败";
 }
 
+function artifactSummary(j) {
+  if (!j) return "";
+  const ready = [];
+  if (j.input_pdf_ready) ready.push("原文 PDF");
+  if (j.partial_output_ready) ready.push("译文 MD");
+  if (j.translated_pdf_ready) ready.push("译文 PDF");
+  if (j.bilingual_html_ready) ready.push("双语 HTML");
+  if (j.bundle_zip_ready) ready.push("资料包 ZIP");
+  return ready.length ? `可下载：${ready.join(" / ")}` : "";
+}
+
 async function loadBackends() {
   const r = await fetch("/api/user/backends", { headers: authHeaders() });
   if (!r.ok) return;
@@ -670,6 +681,7 @@ onUnmounted(() => {
               <p class="muted small">
                 状态 <strong>{{ taskMap[tid].status }}</strong> · 阶段 <code>{{ taskMap[tid].phase }}</code>
               </p>
+              <p v-if="artifactSummary(taskMap[tid])" class="muted small">{{ artifactSummary(taskMap[tid]) }}</p>
               <p class="muted small" v-if="elapsedText(taskMap[tid])">已运行/总用时 {{ elapsedText(taskMap[tid]) }}</p>
               <p class="muted msg">{{ taskMap[tid].message }}</p>
 
@@ -690,6 +702,15 @@ onUnmounted(() => {
                 </button>
                 <button type="button" class="btn" @click="downloadFrom(`/api/jobs/${tid}/download/full.md`, taskMap[tid].suggested_download_filename || 'translated.md')">
                   译文 .md
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn"
+                  :disabled="!taskMap[tid].translated_pdf_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/translated.pdf`, `${tid}_translated.pdf`)"
+                >
+                  译文 PDF
                 </button>
                 <button
                   v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"

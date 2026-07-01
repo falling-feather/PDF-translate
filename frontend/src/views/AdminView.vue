@@ -161,6 +161,16 @@ function artifactWarnings(job) {
   return warnings.join("、");
 }
 
+function artifactReadySummary(job) {
+  const ready = [];
+  if (job.input_pdf_ready) ready.push("原文PDF");
+  if (job.partial_output_ready) ready.push("MD");
+  if (job.translated_pdf_ready) ready.push("译文PDF");
+  if (job.bilingual_html_ready) ready.push("HTML");
+  if (job.bundle_zip_ready) ready.push("ZIP");
+  return ready.length ? `可用：${ready.join(" / ")}` : "暂无可下载产物";
+}
+
 function toggleAuditDetail(id) {
   const cur = { ...auditExpanded.value };
   cur[id] = !cur[id];
@@ -517,11 +527,13 @@ onMounted(() => {
               <td class="muted nowrap">{{ j.created_at }}</td>
               <td>
                 <span class="artifact-pill" :class="artifactClass(j)">{{ artifactLabel(j) }}</span>
+                <span class="muted small artifact-note">{{ artifactReadySummary(j) }}</span>
                 <span v-if="artifactWarnings(j)" class="muted small artifact-note">{{ artifactWarnings(j) }}</span>
               </td>
               <td class="nowrap">
-                <button type="button" class="linkish" :disabled="!j.input_pdf_ready" @click="adminDownload(j.job_id, 'input', 'input.pdf')">PDF</button>
+                <button type="button" class="linkish" :disabled="!j.input_pdf_ready" @click="adminDownload(j.job_id, 'input', 'input.pdf')">原PDF</button>
                 <button type="button" class="linkish" :disabled="!j.partial_output_ready" @click="adminDownload(j.job_id, 'output_md', 'translated.md')">MD</button>
+                <button type="button" class="linkish" :disabled="!j.translated_pdf_ready" @click="adminDownload(j.job_id, 'output_pdf', 'translated.pdf')">译PDF</button>
                 <button type="button" class="linkish" :disabled="!j.bundle_zip_ready" @click="adminDownload(j.job_id, 'bundle_zip', j.job_id + '.zip')">ZIP</button>
               </td>
             </tr>
