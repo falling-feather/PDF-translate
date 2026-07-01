@@ -13,10 +13,19 @@ import fitz
 
 from pdf_translate import pipeline
 from pdf_translate.config import AppConfig
+from pdf_translate.extractors.document_ir import extract_entity_candidates
 
 SCHEMA_VERSION = "batch-experiment-v1"
 EVIDENCE_SCHEMA_VERSION = "batch-experiment-evidence-v1"
 SAMPLE_MANIFEST_SCHEMA_VERSION = "experiment-sample-manifest-v1"
+SAMPLE_COVERAGE_REQUIREMENTS = (
+    {"category": "normal", "label": "普通英文论文", "minimum": 10},
+    {"category": "table-heavy", "label": "表格密集论文", "minimum": 10},
+    {"category": "formula-heavy", "label": "公式密集论文", "minimum": 5},
+    {"category": "multi-column", "label": "多栏复杂论文", "minimum": 5},
+    {"category": "scanned", "label": "扫描/低文本论文", "minimum": 5},
+    {"category": "annotation-entity-heavy", "label": "注释/实体密集论文", "minimum": 5},
+)
 
 REVIEW_SCORE_FIELDS = [
     "human_score_markdown",
@@ -347,6 +356,33 @@ def _formula_marker_count(text: str) -> int:
     return symbol_count + equation_labels
 
 
+def _figure_caption_keyword_count(text: str) -> int:
+    return len(re.findall(r"\bfig(?:ure)?\.?\s*\d+|图\s*\d+", text, flags=re.IGNORECASE))
+
+
+def _annotation_marker_count(text: str) -> int:
+    keyword_count = len(
+        re.findall(
+            r"\b(?:corresponding author|author contributions?|conflicts? of interest|"
+            r"supplementary|present address|equal contribution|footnotes?|e-?mail|affiliations?)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+    footnote_like = 0
+    for line in _sample_text_lines(text):
+        if re.match(
+            r"^\s*(?:\d{1,2}|[*†‡])[\).]?\s+"
+            r"(?:Department|School|College|University|Institute|Laborator|Corresponding|"
+            r"Email|E-mail|These authors|Present address|Author contributions?|Conflict|"
+            r"Supplementary|Note\b|p\s*[<=>])",
+            line,
+            flags=re.IGNORECASE,
+        ):
+            footnote_like += 1
+    return keyword_count + footnote_like
+
+
 def _multi_column_block_page(page: fitz.Page) -> bool:
     width = float(page.rect.width or 1)
     blocks = page.get_text("blocks") or []
@@ -377,6 +413,12 @@ def _sample_tags_from_metrics(metrics: dict[str, Any]) -> tuple[str, ...]:
     formula_marker_count = int(metrics.get("formula_marker_count") or 0)
     multi_column_page_count = int(metrics.get("multi_column_page_count") or 0)
     text_char_count = int(metrics.get("text_char_count") or 0)
+    annotation_marker_count = int(metrics.get("annotation_marker_count") or 0)
+    figure_caption_count = int(metrics.get("figure_caption_count") or 0)
+    entity_candidate_count = int(metrics.get("entity_candidate_count") or 0)
+    organization_candidate_count = int(metrics.get("organization_candidate_count") or 0)
+    person_candidate_count = int(metrics.get("person_candidate_count") or 0)
+    model_dataset_candidate_count = int(metrics.get("model_dataset_candidate_count") or 0)
 
     tags: list[str] = []
     if text_char_count < page_count * 80 and (image_page_count or low_text_page_count >= page_count):
@@ -387,6 +429,12 @@ def _sample_tags_from_metrics(metrics: dict[str, Any]) -> tuple[str, ...]:
         tags.append("formula")
     if multi_column_page_count >= max(1, round(page_count * 0.4)):
         tags.append("multi-column")
+    if annotation_marker_count >= max(2, page_count) or figure_caption_count >= max(3, page_count * 2):
+        tags.append("annotation")
+    if entity_candidate_count >= max(6, page_count * 3) or (
+        organization_candidate_count + person_candidate_count + model_dataset_candidate_count
+    ) >= max(3, page_count * 2):
+        tags.append("entity")
     if image_page_count:
         tags.append("image")
     if not tags:
@@ -403,7 +451,65 @@ def _sample_type_from_tags(tags: tuple[str, ...]) -> str:
         return "formula-heavy"
     if "multi-column" in tags:
         return "multi-column"
+    if "annotation" in tags or "entity" in tags:
+        return "annotation-entity-heavy"
     return "normal"
+
+
+def _sample_matches_coverage(sample: dict[str, Any], category: str) -> bool:
+    pdf_type = str(sample.get("pdf_type") or "")
+    tags = {str(tag) for tag in sample.get("tags", []) or []}
+    if category == "normal":
+        return pdf_type == "normal"
+    if category == "table-heavy":
+        return pdf_type == "table-heavy" or "table" in tags
+    if category == "formula-heavy":
+        return pdf_type == "formula-heavy" or "formula" in tags
+    if category == "multi-column":
+        return pdf_type == "multi-column" or "multi-column" in tags
+    if category == "scanned":
+        return pdf_type == "scanned" or "scanned" in tags
+    if category == "annotation-entity-heavy":
+        return pdf_type == "annotation-entity-heavy" or "annotation" in tags or "entity" in tags
+    return False
+
+
+def _build_sample_coverage(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    counts = {
+        str(requirement["category"]): sum(
+            1 for sample in samples if _sample_matches_coverage(sample, str(requirement["category"]))
+        )
+        for requirement in SAMPLE_COVERAGE_REQUIREMENTS
+    }
+    requirements: list[dict[str, Any]] = []
+    for requirement in SAMPLE_COVERAGE_REQUIREMENTS:
+        category = str(requirement["category"])
+        minimum = int(requirement["minimum"])
+        count = counts.get(category, 0)
+        missing = max(0, minimum - count)
+        requirements.append(
+            {
+                "category": category,
+                "label": requirement["label"],
+                "minimum": minimum,
+                "count": count,
+                "missing": missing,
+                "status": "met" if missing == 0 else "missing",
+            }
+        )
+    missing_counts = {item["category"]: item["missing"] for item in requirements if int(item["missing"]) > 0}
+    return {
+        "recommended_minimums": {
+            str(requirement["category"]): int(requirement["minimum"])
+            for requirement in SAMPLE_COVERAGE_REQUIREMENTS
+        },
+        "counts": counts,
+        "missing_counts": missing_counts,
+        "requirement_count": len(requirements),
+        "met_requirement_count": sum(1 for item in requirements if item["status"] == "met"),
+        "ready_for_patent_batch": not missing_counts,
+        "requirements": requirements,
+    }
 
 
 def analyze_pdf_sample(pdf: Path, *, max_pages: int = 20) -> dict[str, Any]:
@@ -419,6 +525,10 @@ def analyze_pdf_sample(pdf: Path, *, max_pages: int = 20) -> dict[str, Any]:
         table_like_row_count = 0
         formula_marker_total = 0
         multi_column_page_count = 0
+        figure_caption_total = 0
+        annotation_marker_total = 0
+        entity_keys: set[tuple[str, str]] = set()
+        entity_type_counts: dict[str, int] = {}
 
         for index in range(inspected_pages):
             page = doc[index]
@@ -435,6 +545,15 @@ def analyze_pdf_sample(pdf: Path, *, max_pages: int = 20) -> dict[str, Any]:
             table_keyword_total += _table_keyword_count(text)
             table_like_row_count += sum(1 for line in lines if _line_number_count(line) >= 3)
             formula_marker_total += _formula_marker_count(text)
+            figure_caption_total += _figure_caption_keyword_count(text)
+            annotation_marker_total += _annotation_marker_count(text)
+            for entity in extract_entity_candidates(text):
+                entity_type = str(entity.get("type") or "unknown")
+                entity_text = str(entity.get("text") or "").casefold()
+                key = (entity_type, entity_text)
+                if entity_text and key not in entity_keys:
+                    entity_keys.add(key)
+                    entity_type_counts[entity_type] = entity_type_counts.get(entity_type, 0) + 1
             if _multi_column_block_page(page):
                 multi_column_page_count += 1
 
@@ -450,6 +569,13 @@ def analyze_pdf_sample(pdf: Path, *, max_pages: int = 20) -> dict[str, Any]:
             "table_like_row_count": table_like_row_count,
             "formula_marker_count": formula_marker_total,
             "multi_column_page_count": multi_column_page_count,
+            "figure_caption_count": figure_caption_total,
+            "annotation_marker_count": annotation_marker_total,
+            "entity_candidate_count": len(entity_keys),
+            "entity_type_counts": dict(sorted(entity_type_counts.items())),
+            "organization_candidate_count": entity_type_counts.get("organization", 0),
+            "person_candidate_count": entity_type_counts.get("person", 0),
+            "model_dataset_candidate_count": entity_type_counts.get("model_or_dataset", 0),
         }
         tags = _sample_tags_from_metrics(metrics)
         pdf_type = _sample_type_from_tags(tags)
@@ -460,7 +586,8 @@ def analyze_pdf_sample(pdf: Path, *, max_pages: int = 20) -> dict[str, Any]:
             "notes": (
                 f"auto: pages={page_count}, inspected={inspected_pages}, "
                 f"chars={text_char_count}, table_rows={table_like_row_count}, "
-                f"formula_markers={formula_marker_total}, low_text_pages={low_text_page_count}"
+                f"formula_markers={formula_marker_total}, annotations={annotation_marker_total}, "
+                f"entities={len(entity_keys)}, low_text_pages={low_text_page_count}"
             ),
             "metrics": metrics,
         }
@@ -518,6 +645,7 @@ def build_sample_manifest(
         "summary": {
             "pdf_type_counts": dict(sorted(type_counts.items())),
             "tag_counts": dict(sorted(tag_counts.items())),
+            "coverage": _build_sample_coverage(samples),
         },
         "samples": samples,
     }

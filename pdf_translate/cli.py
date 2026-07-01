@@ -355,6 +355,18 @@ def cmd_experiment_samples(
     typer.echo(f"样本清单 CSV: {output.resolve()}")
     typer.echo(f"样本分析 JSON: {report_path.resolve()}")
     typer.echo(f"样本数: {manifest['sample_count']}")
+    coverage = (manifest.get("summary") or {}).get("coverage") or {}
+    if coverage:
+        typer.echo(
+            f"申请前覆盖建议: {coverage.get('met_requirement_count', 0)}/"
+            f"{coverage.get('requirement_count', 0)} 项已达建议数量"
+        )
+        missing = coverage.get("missing_counts") or {}
+        if missing:
+            typer.echo(
+                "仍需补样本: "
+                + ", ".join(f"{category}+{count}" for category, count in sorted(missing.items()))
+            )
 
 
 @app.command("experiment-evidence")

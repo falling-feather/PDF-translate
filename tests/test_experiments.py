@@ -56,6 +56,27 @@ class BatchExperimentTests(unittest.TestCase):
         path.write_bytes(doc.tobytes())
         doc.close()
 
+    @staticmethod
+    def _write_annotation_entity_pdf(path: Path) -> None:
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        text = "\n".join(
+            [
+                "Smith (2024) and Lee (2023) evaluated BERT, GPT-4, ImageNet, and CLIP.",
+                "Stanford University collaborated with Massachusetts Institute of Technology.",
+                "Fig. 1 Overview of the proposed workflow.",
+                "Fig. 2 Error analysis for entity preservation.",
+                "Fig. 3 Annotation layout examples.",
+                "* Corresponding author: scholar@stanford.edu",
+                "1 Department of Computer Science, Stanford University",
+                "2 School of Engineering, Massachusetts Institute of Technology",
+                "Author contributions: Smith designed the study and Lee verified the system.",
+            ]
+        )
+        page.insert_text((72, 72), text)
+        path.write_bytes(doc.tobytes())
+        doc.close()
+
     def test_parse_variant_specs_deduplicates_and_sets_flags(self) -> None:
         variants = parse_variant_specs("page, structure, structure+ocr+repair, structure")
 
@@ -73,26 +94,50 @@ class BatchExperimentTests(unittest.TestCase):
         try:
             table_pdf = root / "table-heavy.pdf"
             scanned_pdf = root / "scan.pdf"
+            annotation_pdf = root / "annotation-entity.pdf"
             self._write_table_heavy_pdf(table_pdf)
             self._write_scanned_like_pdf(scanned_pdf)
+            self._write_annotation_entity_pdf(annotation_pdf)
 
             manifest_path = root / "samples.csv"
             report_path = root / "samples.json"
-            manifest = write_sample_manifest([table_pdf, scanned_pdf], manifest_path, report_path=report_path)
+            manifest = write_sample_manifest(
+                [table_pdf, scanned_pdf, annotation_pdf],
+                manifest_path,
+                report_path=report_path,
+            )
 
             self.assertTrue(manifest_path.is_file())
             self.assertTrue(report_path.is_file())
             self.assertEqual(manifest["schema_version"], "experiment-sample-manifest-v1")
-            self.assertEqual(manifest["sample_count"], 2)
+            self.assertEqual(manifest["sample_count"], 3)
             by_name = {Path(sample["source_pdf"]).name: sample for sample in manifest["samples"]}
             self.assertEqual(by_name["table-heavy.pdf"]["pdf_type"], "table-heavy")
             self.assertIn("table", by_name["table-heavy.pdf"]["tags"])
             self.assertEqual(by_name["scan.pdf"]["pdf_type"], "scanned")
             self.assertIn("scanned", by_name["scan.pdf"]["tags"])
+            self.assertEqual(by_name["annotation-entity.pdf"]["pdf_type"], "annotation-entity-heavy")
+            self.assertIn("annotation", by_name["annotation-entity.pdf"]["tags"])
+            self.assertIn("entity", by_name["annotation-entity.pdf"]["tags"])
+            self.assertGreaterEqual(
+                by_name["annotation-entity.pdf"]["metrics"]["annotation_marker_count"],
+                2,
+            )
+            self.assertGreaterEqual(
+                by_name["annotation-entity.pdf"]["metrics"]["entity_candidate_count"],
+                6,
+            )
+            coverage = manifest["summary"]["coverage"]
+            self.assertEqual(coverage["counts"]["table-heavy"], 1)
+            self.assertEqual(coverage["counts"]["scanned"], 1)
+            self.assertEqual(coverage["counts"]["annotation-entity-heavy"], 1)
+            self.assertFalse(coverage["ready_for_patent_batch"])
+            self.assertIn("normal", coverage["missing_counts"])
 
             metadata = load_sample_metadata(manifest_path)
             self.assertEqual(metadata["table-heavy.pdf"]["pdf_type"], "table-heavy")
             self.assertEqual(metadata["scan.pdf"]["pdf_type"], "scanned")
+            self.assertEqual(metadata["annotation-entity.pdf"]["pdf_type"], "annotation-entity-heavy")
         finally:
             if root.exists():
                 shutil.rmtree(root)
