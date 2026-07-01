@@ -13,6 +13,7 @@ from pdf_translate.experiments import (
     parse_variant_specs,
     run_batch_experiment,
     write_batch_experiment_evidence,
+    write_sample_manifest,
 )
 from pdf_translate.server.jobs import JobRegistry
 from pdf_translate.server.security_preflight import build_security_preflight
@@ -28,6 +29,20 @@ def _default_data_base() -> Path:
 def _default_web_data_root() -> Path:
     data_base = _default_data_base()
     return Path(os.getenv("PDF_TRANSLATE_WEB_DATA", data_base / "web_jobs")).resolve()
+
+
+def _expand_pdf_sources(sources: list[Path], *, recursive: bool = False) -> list[Path]:
+    pdfs: list[Path] = []
+    seen: set[str] = set()
+    for source in sources:
+        paths = source.rglob("*.pdf") if source.is_dir() and recursive else source.glob("*.pdf") if source.is_dir() else [source]
+        for path in paths:
+            if path.is_file() and path.suffix.lower() == ".pdf":
+                key = str(path.resolve()).lower()
+                if key not in seen:
+                    pdfs.append(path)
+                    seen.add(key)
+    return sorted(pdfs, key=lambda item: str(item).lower())
 
 
 @app.command("init")
@@ -309,6 +324,37 @@ def cmd_experiment(
     typer.echo(f"Markdown 报告: {(output_dir / 'batch_experiment_summary.md').resolve()}")
     typer.echo(f"人工评分表: {(output_dir / 'batch_experiment_review.csv').resolve()}")
     typer.echo(f"成功/总数: {report['succeeded_count']}/{report['run_count']}")
+
+
+@app.command("experiment-samples")
+def cmd_experiment_samples(
+    sources: list[Path] = typer.Argument(
+        ...,
+        exists=True,
+        help="PDF 文件或包含 PDF 的目录",
+    ),
+    output: Path = typer.Option(
+        ...,
+        "--output",
+        "-o",
+        help="写出的样本清单 CSV，可直接传给 experiment --sample-manifest",
+    ),
+    report: Path | None = typer.Option(
+        None,
+        "--report",
+        help="可选 JSON 分析报告路径；缺省使用 CSV 同名 .json",
+    ),
+    recursive: bool = typer.Option(False, "--recursive", "-r", help="目录输入时递归扫描 PDF"),
+    max_pages: int = typer.Option(20, "--max-pages", min=1, help="每篇 PDF 最多检查的页数"),
+) -> None:
+    pdfs = _expand_pdf_sources(sources, recursive=recursive)
+    if not pdfs:
+        raise typer.BadParameter("no PDF files found")
+    report_path = report or output.with_suffix(".json")
+    manifest = write_sample_manifest(pdfs, output, report_path=report_path, max_pages=max_pages)
+    typer.echo(f"样本清单 CSV: {output.resolve()}")
+    typer.echo(f"样本分析 JSON: {report_path.resolve()}")
+    typer.echo(f"样本数: {manifest['sample_count']}")
 
 
 @app.command("experiment-evidence")

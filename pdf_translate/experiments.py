@@ -9,11 +9,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+import fitz
+
 from pdf_translate import pipeline
 from pdf_translate.config import AppConfig
 
 SCHEMA_VERSION = "batch-experiment-v1"
 EVIDENCE_SCHEMA_VERSION = "batch-experiment-evidence-v1"
+SAMPLE_MANIFEST_SCHEMA_VERSION = "experiment-sample-manifest-v1"
 
 REVIEW_SCORE_FIELDS = [
     "human_score_markdown",
@@ -324,6 +327,228 @@ def _build_samples(pdfs: list[Path], sample_metadata: dict[str, Any] | None = No
             )
         )
     return samples
+
+
+def _sample_text_lines(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _line_number_count(line: str) -> int:
+    return len(re.findall(r"(?<![A-Za-z])[-+]?\d+(?:\.\d+)?%?", line))
+
+
+def _table_keyword_count(text: str) -> int:
+    return len(re.findall(r"\b(?:table|tab\.)\s*\d+|表\s*\d+", text, flags=re.IGNORECASE))
+
+
+def _formula_marker_count(text: str) -> int:
+    symbol_count = len(re.findall(r"[=±×÷≤≥≈∑∫√∞αβγδθλμσπΩΔ]", text))
+    equation_labels = len(re.findall(r"(?:^|\s)\(\d{1,3}\)(?:\s|$)", text))
+    return symbol_count + equation_labels
+
+
+def _multi_column_block_page(page: fitz.Page) -> bool:
+    width = float(page.rect.width or 1)
+    blocks = page.get_text("blocks") or []
+    left = 0
+    right = 0
+    for block in blocks:
+        if len(block) < 5:
+            continue
+        text = str(block[4] or "").strip()
+        if len(text) < 30:
+            continue
+        x0 = float(block[0])
+        x1 = float(block[2])
+        center = (x0 + x1) / 2
+        if center < width * 0.45:
+            left += 1
+        elif center > width * 0.55:
+            right += 1
+    return left >= 2 and right >= 2
+
+
+def _sample_tags_from_metrics(metrics: dict[str, Any]) -> tuple[str, ...]:
+    page_count = max(int(metrics.get("page_count") or 0), 1)
+    low_text_page_count = int(metrics.get("low_text_page_count") or 0)
+    image_page_count = int(metrics.get("image_page_count") or 0)
+    table_keyword_count = int(metrics.get("table_keyword_count") or 0)
+    table_like_row_count = int(metrics.get("table_like_row_count") or 0)
+    formula_marker_count = int(metrics.get("formula_marker_count") or 0)
+    multi_column_page_count = int(metrics.get("multi_column_page_count") or 0)
+    text_char_count = int(metrics.get("text_char_count") or 0)
+
+    tags: list[str] = []
+    if text_char_count < page_count * 80 and (image_page_count or low_text_page_count >= page_count):
+        tags.append("scanned")
+    if table_keyword_count >= 2 or table_like_row_count >= max(3, page_count * 2):
+        tags.append("table")
+    if formula_marker_count >= max(8, page_count * 4):
+        tags.append("formula")
+    if multi_column_page_count >= max(1, round(page_count * 0.4)):
+        tags.append("multi-column")
+    if image_page_count:
+        tags.append("image")
+    if not tags:
+        tags.append("normal")
+    return tuple(dict.fromkeys(tags))
+
+
+def _sample_type_from_tags(tags: tuple[str, ...]) -> str:
+    if "scanned" in tags:
+        return "scanned"
+    if "table" in tags:
+        return "table-heavy"
+    if "formula" in tags:
+        return "formula-heavy"
+    if "multi-column" in tags:
+        return "multi-column"
+    return "normal"
+
+
+def analyze_pdf_sample(pdf: Path, *, max_pages: int = 20) -> dict[str, Any]:
+    doc = fitz.open(pdf)
+    try:
+        page_count = len(doc)
+        inspected_pages = min(page_count, max_pages)
+        text_char_count = 0
+        low_text_page_count = 0
+        image_page_count = 0
+        image_count = 0
+        table_keyword_total = 0
+        table_like_row_count = 0
+        formula_marker_total = 0
+        multi_column_page_count = 0
+
+        for index in range(inspected_pages):
+            page = doc[index]
+            text = page.get_text("text") or ""
+            lines = _sample_text_lines(text)
+            text_chars = len(text.strip())
+            text_char_count += text_chars
+            if text_chars < 80:
+                low_text_page_count += 1
+            page_images = len(page.get_images(full=True))
+            image_count += page_images
+            if page_images:
+                image_page_count += 1
+            table_keyword_total += _table_keyword_count(text)
+            table_like_row_count += sum(1 for line in lines if _line_number_count(line) >= 3)
+            formula_marker_total += _formula_marker_count(text)
+            if _multi_column_block_page(page):
+                multi_column_page_count += 1
+
+        metrics = {
+            "page_count": page_count,
+            "inspected_page_count": inspected_pages,
+            "text_char_count": text_char_count,
+            "avg_text_chars_per_page": round(text_char_count / inspected_pages, 2) if inspected_pages else 0,
+            "low_text_page_count": low_text_page_count,
+            "image_page_count": image_page_count,
+            "image_count": image_count,
+            "table_keyword_count": table_keyword_total,
+            "table_like_row_count": table_like_row_count,
+            "formula_marker_count": formula_marker_total,
+            "multi_column_page_count": multi_column_page_count,
+        }
+        tags = _sample_tags_from_metrics(metrics)
+        pdf_type = _sample_type_from_tags(tags)
+        return {
+            "source_pdf": str(pdf),
+            "pdf_type": pdf_type,
+            "tags": list(tags),
+            "notes": (
+                f"auto: pages={page_count}, inspected={inspected_pages}, "
+                f"chars={text_char_count}, table_rows={table_like_row_count}, "
+                f"formula_markers={formula_marker_total}, low_text_pages={low_text_page_count}"
+            ),
+            "metrics": metrics,
+        }
+    finally:
+        doc.close()
+
+
+def _relative_manifest_path(path: Path, base_dir: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(base_dir.resolve())).replace("\\", "/")
+    except ValueError:
+        return str(path.resolve()).replace("\\", "/")
+
+
+def build_sample_manifest(
+    pdfs: list[Path],
+    *,
+    base_dir: Path | None = None,
+    max_pages: int = 20,
+) -> dict[str, Any]:
+    base = base_dir or Path.cwd()
+    seen_ids: dict[str, int] = {}
+    samples: list[dict[str, Any]] = []
+    for index, pdf in enumerate(pdfs, start=1):
+        analysis = analyze_pdf_sample(pdf, max_pages=max_pages)
+        sample_id = _safe_id(f"{index:03d}-{pdf.stem}")
+        if sample_id in seen_ids:
+            seen_ids[sample_id] += 1
+            sample_id = f"{sample_id}-{seen_ids[sample_id]}"
+        else:
+            seen_ids[sample_id] = 1
+        samples.append(
+            {
+                "source_pdf": _relative_manifest_path(pdf, base),
+                "sample_id": sample_id,
+                "pdf_type": analysis["pdf_type"],
+                "tags": analysis["tags"],
+                "notes": analysis["notes"],
+                "metrics": analysis["metrics"],
+            }
+        )
+
+    type_counts: dict[str, int] = {}
+    tag_counts: dict[str, int] = {}
+    for sample in samples:
+        pdf_type = str(sample.get("pdf_type") or "unknown")
+        type_counts[pdf_type] = type_counts.get(pdf_type, 0) + 1
+        for tag in sample.get("tags", []) or []:
+            tag_counts[str(tag)] = tag_counts.get(str(tag), 0) + 1
+
+    return {
+        "schema_version": SAMPLE_MANIFEST_SCHEMA_VERSION,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "sample_count": len(samples),
+        "summary": {
+            "pdf_type_counts": dict(sorted(type_counts.items())),
+            "tag_counts": dict(sorted(tag_counts.items())),
+        },
+        "samples": samples,
+    }
+
+
+def write_sample_manifest(
+    pdfs: list[Path],
+    path: Path,
+    *,
+    report_path: Path | None = None,
+    max_pages: int = 20,
+) -> dict[str, Any]:
+    manifest = build_sample_manifest(pdfs, base_dir=path.parent, max_pages=max_pages)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["source_pdf", "sample_id", "pdf_type", "tags", "notes"])
+        writer.writeheader()
+        for sample in manifest["samples"]:
+            writer.writerow(
+                {
+                    "source_pdf": sample["source_pdf"],
+                    "sample_id": sample["sample_id"],
+                    "pdf_type": sample["pdf_type"],
+                    "tags": ";".join(sample.get("tags", []) or []),
+                    "notes": sample["notes"],
+                }
+            )
+    if report_path:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return manifest
 
 
 def parse_variant_spec(spec: str) -> ExperimentVariant:

@@ -14,6 +14,7 @@ from pdf_translate.experiments import (
     parse_variant_specs,
     run_batch_experiment,
     write_batch_experiment_evidence,
+    write_sample_manifest,
 )
 
 
@@ -28,6 +29,33 @@ class BatchExperimentTests(unittest.TestCase):
         path.write_bytes(doc.tobytes())
         doc.close()
 
+    @staticmethod
+    def _write_table_heavy_pdf(path: Path) -> None:
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        text = "\n".join(
+            [
+                "Table 1: Main results",
+                "Model Acc F1 N",
+                "A 91.2 88.1 120",
+                "B 92.4 89.7 120",
+                "Table 2: Robustness",
+                "Group Mean SD N",
+                "X 10.2 1.1 40",
+                "Y 11.5 1.4 40",
+            ]
+        )
+        page.insert_text((72, 72), text)
+        path.write_bytes(doc.tobytes())
+        doc.close()
+
+    @staticmethod
+    def _write_scanned_like_pdf(path: Path) -> None:
+        doc = fitz.open()
+        doc.new_page(width=595, height=842)
+        path.write_bytes(doc.tobytes())
+        doc.close()
+
     def test_parse_variant_specs_deduplicates_and_sets_flags(self) -> None:
         variants = parse_variant_specs("page, structure, structure+ocr+repair, structure")
 
@@ -36,6 +64,41 @@ class BatchExperimentTests(unittest.TestCase):
         self.assertEqual(variants[1].chunk_strategy, "structure")
         self.assertTrue(variants[2].execute_ocr)
         self.assertTrue(variants[2].execute_repair_requests)
+
+    def test_write_sample_manifest_classifies_pdf_samples(self) -> None:
+        root = Path.cwd() / "test-output" / "sample-manifest"
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True)
+        try:
+            table_pdf = root / "table-heavy.pdf"
+            scanned_pdf = root / "scan.pdf"
+            self._write_table_heavy_pdf(table_pdf)
+            self._write_scanned_like_pdf(scanned_pdf)
+
+            manifest_path = root / "samples.csv"
+            report_path = root / "samples.json"
+            manifest = write_sample_manifest([table_pdf, scanned_pdf], manifest_path, report_path=report_path)
+
+            self.assertTrue(manifest_path.is_file())
+            self.assertTrue(report_path.is_file())
+            self.assertEqual(manifest["schema_version"], "experiment-sample-manifest-v1")
+            self.assertEqual(manifest["sample_count"], 2)
+            by_name = {Path(sample["source_pdf"]).name: sample for sample in manifest["samples"]}
+            self.assertEqual(by_name["table-heavy.pdf"]["pdf_type"], "table-heavy")
+            self.assertIn("table", by_name["table-heavy.pdf"]["tags"])
+            self.assertEqual(by_name["scan.pdf"]["pdf_type"], "scanned")
+            self.assertIn("scanned", by_name["scan.pdf"]["tags"])
+
+            metadata = load_sample_metadata(manifest_path)
+            self.assertEqual(metadata["table-heavy.pdf"]["pdf_type"], "table-heavy")
+            self.assertEqual(metadata["scan.pdf"]["pdf_type"], "scanned")
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
 
     def test_run_batch_experiment_writes_patent_evidence_summary(self) -> None:
         root = Path.cwd() / "test-output" / "batch-experiment"
