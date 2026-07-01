@@ -101,14 +101,17 @@ class BatchExperimentTests(unittest.TestCase):
 
             manifest_path = root / "samples.csv"
             report_path = root / "samples.json"
+            markdown_path = root / "samples.md"
             manifest = write_sample_manifest(
                 [table_pdf, scanned_pdf, annotation_pdf],
                 manifest_path,
                 report_path=report_path,
+                markdown_path=markdown_path,
             )
 
             self.assertTrue(manifest_path.is_file())
             self.assertTrue(report_path.is_file())
+            self.assertTrue(markdown_path.is_file())
             self.assertEqual(manifest["schema_version"], "experiment-sample-manifest-v1")
             self.assertEqual(manifest["sample_count"], 3)
             by_name = {Path(sample["source_pdf"]).name: sample for sample in manifest["samples"]}
@@ -133,6 +136,12 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertEqual(coverage["counts"]["annotation-entity-heavy"], 1)
             self.assertFalse(coverage["ready_for_patent_batch"])
             self.assertIn("normal", coverage["missing_counts"])
+            markdown_text = markdown_path.read_text(encoding="utf-8")
+            self.assertIn("# 跑批样本覆盖度报告", markdown_text)
+            self.assertIn("注释/实体密集论文", markdown_text)
+            self.assertIn("annotation-entity-heavy", markdown_text)
+            self.assertIn("annotations=", markdown_text)
+            self.assertIn("entities=", markdown_text)
 
             metadata = load_sample_metadata(manifest_path)
             self.assertEqual(metadata["table-heavy.pdf"]["pdf_type"], "table-heavy")

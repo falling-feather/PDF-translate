@@ -512,6 +512,101 @@ def _build_sample_coverage(samples: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _markdown_cell(value: Any) -> str:
+    text = str(value or "").replace("\n", " ").replace("\r", " ")
+    return text.replace("|", "\\|")
+
+
+def _sample_metric_summary(metrics: dict[str, Any]) -> str:
+    parts = [
+        f"pages={metrics.get('page_count', 0)}",
+        f"chars={metrics.get('text_char_count', 0)}",
+        f"tables={metrics.get('table_like_row_count', 0)}",
+        f"formula={metrics.get('formula_marker_count', 0)}",
+        f"low_text={metrics.get('low_text_page_count', 0)}",
+        f"annotations={metrics.get('annotation_marker_count', 0)}",
+        f"entities={metrics.get('entity_candidate_count', 0)}",
+    ]
+    return ", ".join(parts)
+
+
+def write_sample_manifest_markdown(manifest: dict[str, Any], path: Path) -> Path:
+    summary = manifest.get("summary", {}) if isinstance(manifest.get("summary"), dict) else {}
+    coverage = summary.get("coverage", {}) if isinstance(summary.get("coverage"), dict) else {}
+    lines = [
+        "# 跑批样本覆盖度报告",
+        "",
+        f"- 生成时间：{manifest.get('created_at', '')}",
+        f"- 样本数：{manifest.get('sample_count', 0)}",
+    ]
+    if coverage:
+        lines.extend(
+            [
+                f"- 覆盖建议达成：{coverage.get('met_requirement_count', 0)}/"
+                f"{coverage.get('requirement_count', 0)}",
+                f"- 是否达到申请前建议样本量：{'是' if coverage.get('ready_for_patent_batch') else '否'}",
+            ]
+        )
+
+    lines.extend(["", "## 覆盖度缺口", "", "| 类型 | 建议数量 | 当前数量 | 仍缺 | 状态 |", "| --- | ---: | ---: | ---: | --- |"])
+    for item in (coverage.get("requirements", []) if isinstance(coverage.get("requirements"), list) else []):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_cell(item.get("label") or item.get("category")),
+                    str(item.get("minimum", 0)),
+                    str(item.get("count", 0)),
+                    str(item.get("missing", 0)),
+                    _markdown_cell("已满足" if item.get("status") == "met" else "需补样本"),
+                ]
+            )
+            + " |"
+        )
+
+    lines.extend(["", "## 类型分布", "", "| 类型 | 数量 |", "| --- | ---: |"])
+    for pdf_type, count in (summary.get("pdf_type_counts") or {}).items():
+        lines.append(f"| {_markdown_cell(pdf_type)} | {count} |")
+
+    lines.extend(["", "## 标签分布", "", "| 标签 | 数量 |", "| --- | ---: |"])
+    for tag, count in (summary.get("tag_counts") or {}).items():
+        lines.append(f"| {_markdown_cell(tag)} | {count} |")
+
+    lines.extend(
+        [
+            "",
+            "## 样本清单",
+            "",
+            "| 样本 ID | 文件 | 类型 | 标签 | 关键指标 | 备注 |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for sample in (manifest.get("samples", []) if isinstance(manifest.get("samples"), list) else []):
+        if not isinstance(sample, dict):
+            continue
+        metrics = sample.get("metrics", {}) if isinstance(sample.get("metrics"), dict) else {}
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_cell(sample.get("sample_id")),
+                    _markdown_cell(sample.get("source_pdf")),
+                    _markdown_cell(sample.get("pdf_type")),
+                    _markdown_cell(", ".join(sample.get("tags", []) or [])),
+                    _markdown_cell(_sample_metric_summary(metrics)),
+                    _markdown_cell(sample.get("notes")),
+                ]
+            )
+            + " |"
+        )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 def analyze_pdf_sample(pdf: Path, *, max_pages: int = 20) -> dict[str, Any]:
     doc = fitz.open(pdf)
     try:
@@ -656,6 +751,7 @@ def write_sample_manifest(
     path: Path,
     *,
     report_path: Path | None = None,
+    markdown_path: Path | None = None,
     max_pages: int = 20,
 ) -> dict[str, Any]:
     manifest = build_sample_manifest(pdfs, base_dir=path.parent, max_pages=max_pages)
@@ -676,6 +772,8 @@ def write_sample_manifest(
     if report_path:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    if markdown_path:
+        write_sample_manifest_markdown(manifest, markdown_path)
     return manifest
 
 

@@ -344,6 +344,11 @@ def cmd_experiment_samples(
         "--report",
         help="可选 JSON 分析报告路径；缺省使用 CSV 同名 .json",
     ),
+    markdown_report: Path | None = typer.Option(
+        None,
+        "--markdown-report",
+        help="可选 Markdown 覆盖度报告路径；缺省使用 CSV 同名 .md",
+    ),
     recursive: bool = typer.Option(False, "--recursive", "-r", help="目录输入时递归扫描 PDF"),
     max_pages: int = typer.Option(20, "--max-pages", min=1, help="每篇 PDF 最多检查的页数"),
 ) -> None:
@@ -351,9 +356,17 @@ def cmd_experiment_samples(
     if not pdfs:
         raise typer.BadParameter("no PDF files found")
     report_path = report or output.with_suffix(".json")
-    manifest = write_sample_manifest(pdfs, output, report_path=report_path, max_pages=max_pages)
+    markdown_path = markdown_report or output.with_suffix(".md")
+    manifest = write_sample_manifest(
+        pdfs,
+        output,
+        report_path=report_path,
+        markdown_path=markdown_path,
+        max_pages=max_pages,
+    )
     typer.echo(f"样本清单 CSV: {output.resolve()}")
     typer.echo(f"样本分析 JSON: {report_path.resolve()}")
+    typer.echo(f"覆盖度 Markdown: {markdown_path.resolve()}")
     typer.echo(f"样本数: {manifest['sample_count']}")
     coverage = (manifest.get("summary") or {}).get("coverage") or {}
     if coverage:
