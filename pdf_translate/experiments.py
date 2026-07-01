@@ -208,6 +208,25 @@ class ExperimentSample:
     pdf_type: str = ""
     tags: tuple[str, ...] = ()
     notes: str = ""
+    include_in_patent_batch: str = ""
+    reviewer: str = ""
+    review_notes: str = ""
+
+
+SAMPLE_MANIFEST_CSV_FIELDS = [
+    "source_pdf",
+    "sample_id",
+    "pdf_type",
+    "tags",
+    "notes",
+    "suggested_pdf_type",
+    "suggested_tags",
+    "confirmed_pdf_type",
+    "confirmed_tags",
+    "include_in_patent_batch",
+    "reviewer",
+    "review_notes",
+]
 
 
 def _safe_id(value: str) -> str:
@@ -223,6 +242,17 @@ def _split_tags(value: Any) -> tuple[str, ...]:
         return ()
     parts = re.split(r"[;,，；|]", value)
     return tuple(part.strip() for part in parts if part.strip())
+
+
+def _first_present(row: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if isinstance(value, str):
+            if value.strip():
+                return value
+        elif value:
+            return value
+    return ""
 
 
 def _metadata_key(value: str | Path) -> str:
@@ -260,9 +290,18 @@ def load_sample_metadata(path: Path) -> dict[str, Any]:
         source_text = str(source_pdf).strip() if source_pdf else ""
         item = {
             "sample_id": sample_id,
-            "pdf_type": str(row.get("pdf_type") or row.get("type") or "").strip(),
-            "tags": _split_tags(row.get("tags") or row.get("labels") or ""),
+            "pdf_type": str(
+                _first_present(row, "confirmed_pdf_type", "pdf_type", "type", "suggested_pdf_type")
+            ).strip(),
+            "tags": _split_tags(_first_present(row, "confirmed_tags", "tags", "labels", "suggested_tags")),
             "notes": str(row.get("notes") or row.get("remark") or "").strip(),
+            "suggested_pdf_type": str(row.get("suggested_pdf_type") or "").strip(),
+            "suggested_tags": _split_tags(row.get("suggested_tags") or ""),
+            "confirmed_pdf_type": str(row.get("confirmed_pdf_type") or "").strip(),
+            "confirmed_tags": _split_tags(row.get("confirmed_tags") or ""),
+            "include_in_patent_batch": str(row.get("include_in_patent_batch") or "").strip(),
+            "reviewer": str(row.get("reviewer") or "").strip(),
+            "review_notes": str(row.get("review_notes") or "").strip(),
             "_has_source_pdf": bool(source_text),
         }
         ordered_items.append(item)
@@ -333,6 +372,9 @@ def _build_samples(pdfs: list[Path], sample_metadata: dict[str, Any] | None = No
                 pdf_type=str(item.get("pdf_type") or ""),
                 tags=tuple(item.get("tags") or ()),
                 notes=str(item.get("notes") or ""),
+                include_in_patent_batch=str(item.get("include_in_patent_batch") or ""),
+                reviewer=str(item.get("reviewer") or ""),
+                review_notes=str(item.get("review_notes") or ""),
             )
         )
     return samples
@@ -579,22 +621,25 @@ def write_sample_manifest_markdown(manifest: dict[str, Any], path: Path) -> Path
             "",
             "## 样本清单",
             "",
-            "| 样本 ID | 文件 | 类型 | 标签 | 关键指标 | 备注 |",
-            "| --- | --- | --- | --- | --- | --- |",
+            "| 样本 ID | 文件 | 建议类型 | 确认类型 | 标签 | 纳入批量 | 关键指标 | 备注 |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for sample in (manifest.get("samples", []) if isinstance(manifest.get("samples"), list) else []):
         if not isinstance(sample, dict):
             continue
         metrics = sample.get("metrics", {}) if isinstance(sample.get("metrics"), dict) else {}
+        display_tags = sample.get("confirmed_tags") or sample.get("tags") or []
         lines.append(
             "| "
             + " | ".join(
                 [
                     _markdown_cell(sample.get("sample_id")),
                     _markdown_cell(sample.get("source_pdf")),
-                    _markdown_cell(sample.get("pdf_type")),
-                    _markdown_cell(", ".join(sample.get("tags", []) or [])),
+                    _markdown_cell(sample.get("suggested_pdf_type") or sample.get("pdf_type")),
+                    _markdown_cell(sample.get("confirmed_pdf_type")),
+                    _markdown_cell(", ".join(display_tags)),
+                    _markdown_cell(sample.get("include_in_patent_batch")),
                     _markdown_cell(_sample_metric_summary(metrics)),
                     _markdown_cell(sample.get("notes")),
                 ]
@@ -721,6 +766,13 @@ def build_sample_manifest(
                 "pdf_type": analysis["pdf_type"],
                 "tags": analysis["tags"],
                 "notes": analysis["notes"],
+                "suggested_pdf_type": analysis["pdf_type"],
+                "suggested_tags": analysis["tags"],
+                "confirmed_pdf_type": "",
+                "confirmed_tags": [],
+                "include_in_patent_batch": "",
+                "reviewer": "",
+                "review_notes": "",
                 "metrics": analysis["metrics"],
             }
         )
@@ -757,7 +809,7 @@ def write_sample_manifest(
     manifest = build_sample_manifest(pdfs, base_dir=path.parent, max_pages=max_pages)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["source_pdf", "sample_id", "pdf_type", "tags", "notes"])
+        writer = csv.DictWriter(f, fieldnames=SAMPLE_MANIFEST_CSV_FIELDS)
         writer.writeheader()
         for sample in manifest["samples"]:
             writer.writerow(
@@ -767,6 +819,13 @@ def write_sample_manifest(
                     "pdf_type": sample["pdf_type"],
                     "tags": ";".join(sample.get("tags", []) or []),
                     "notes": sample["notes"],
+                    "suggested_pdf_type": sample.get("suggested_pdf_type", ""),
+                    "suggested_tags": ";".join(sample.get("suggested_tags", []) or []),
+                    "confirmed_pdf_type": sample.get("confirmed_pdf_type", ""),
+                    "confirmed_tags": ";".join(sample.get("confirmed_tags", []) or []),
+                    "include_in_patent_batch": sample.get("include_in_patent_batch", ""),
+                    "reviewer": sample.get("reviewer", ""),
+                    "review_notes": sample.get("review_notes", ""),
                 }
             )
     if report_path:
@@ -1149,6 +1208,9 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
         "source_pdf",
         "pdf_type",
         "tags",
+        "sample_include_in_patent_batch",
+        "sample_reviewer",
+        "sample_review_notes",
         "variant",
         "status",
         "translation_issue_count",
@@ -1198,6 +1260,9 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
                     "source_pdf": record.get("source_pdf", ""),
                     "pdf_type": record.get("pdf_type", ""),
                     "tags": ";".join(record.get("tags", []) or []),
+                    "sample_include_in_patent_batch": record.get("include_in_patent_batch", ""),
+                    "sample_reviewer": record.get("reviewer", ""),
+                    "sample_review_notes": record.get("review_notes", ""),
                     "variant": record.get("variant", ""),
                     "status": record.get("status", ""),
                     "translation_issue_count": quality.get("translation_issue_count", ""),
@@ -1687,6 +1752,9 @@ def run_batch_experiment(
                 "pdf_type": sample.pdf_type,
                 "tags": list(sample.tags),
                 "notes": sample.notes,
+                "include_in_patent_batch": sample.include_in_patent_batch,
+                "reviewer": sample.reviewer,
+                "review_notes": sample.review_notes,
             }
             for sample in samples
         ],
@@ -1708,6 +1776,9 @@ def run_batch_experiment(
                 "pdf_type": sample.pdf_type,
                 "tags": list(sample.tags),
                 "notes": sample.notes,
+                "include_in_patent_batch": sample.include_in_patent_batch,
+                "reviewer": sample.reviewer,
+                "review_notes": sample.review_notes,
                 "variant": variant.name,
                 "chunk_strategy": variant.chunk_strategy,
                 "execute_ocr": variant.execute_ocr,

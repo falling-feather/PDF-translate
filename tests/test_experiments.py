@@ -142,11 +142,34 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("annotation-entity-heavy", markdown_text)
             self.assertIn("annotations=", markdown_text)
             self.assertIn("entities=", markdown_text)
+            csv_text = manifest_path.read_text(encoding="utf-8-sig")
+            self.assertIn("confirmed_pdf_type", csv_text)
+            self.assertIn("include_in_patent_batch", csv_text)
 
             metadata = load_sample_metadata(manifest_path)
             self.assertEqual(metadata["table-heavy.pdf"]["pdf_type"], "table-heavy")
             self.assertEqual(metadata["scan.pdf"]["pdf_type"], "scanned")
             self.assertEqual(metadata["annotation-entity.pdf"]["pdf_type"], "annotation-entity-heavy")
+
+            with manifest_path.open("r", encoding="utf-8-sig", newline="") as f:
+                rows = list(csv.DictReader(f))
+            for row in rows:
+                if row["source_pdf"].endswith("annotation-entity.pdf"):
+                    row["confirmed_pdf_type"] = "normal"
+                    row["confirmed_tags"] = "normal;manual-confirmed"
+                    row["include_in_patent_batch"] = "否"
+                    row["reviewer"] = "导师"
+                    row["review_notes"] = "确认不作为注释实体密集样本"
+            with manifest_path.open("w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(rows)
+            confirmed_metadata = load_sample_metadata(manifest_path)
+            self.assertEqual(confirmed_metadata["annotation-entity.pdf"]["pdf_type"], "normal")
+            self.assertEqual(confirmed_metadata["annotation-entity.pdf"]["tags"], ("normal", "manual-confirmed"))
+            self.assertEqual(confirmed_metadata["annotation-entity.pdf"]["include_in_patent_batch"], "否")
+            self.assertEqual(confirmed_metadata["annotation-entity.pdf"]["reviewer"], "导师")
+            self.assertEqual(confirmed_metadata["annotation-entity.pdf"]["review_notes"], "确认不作为注释实体密集样本")
         finally:
             if root.exists():
                 shutil.rmtree(root)
@@ -165,8 +188,10 @@ class BatchExperimentTests(unittest.TestCase):
 
             metadata_path = root / "samples.csv"
             metadata_path.write_text(
-                "source_pdf,sample_id,pdf_type,tags,notes\n"
-                "sample.pdf,sample-table,table-heavy,table;entity,用于表格与实体保留实验\n",
+                "source_pdf,sample_id,pdf_type,tags,confirmed_pdf_type,confirmed_tags,"
+                "include_in_patent_batch,reviewer,review_notes,notes\n"
+                "sample.pdf,sample-table,normal,normal,table-heavy,table;entity,"
+                "是,导师,确认作为表格样本,用于表格与实体保留实验\n",
                 encoding="utf-8",
             )
 
@@ -202,10 +227,14 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertEqual(report["samples"][0]["sample_id"], "sample-table")
             self.assertEqual(report["samples"][0]["pdf_type"], "table-heavy")
             self.assertEqual(report["samples"][0]["tags"], ["table", "entity"])
+            self.assertEqual(report["samples"][0]["include_in_patent_batch"], "是")
+            self.assertEqual(report["samples"][0]["reviewer"], "导师")
+            self.assertEqual(report["samples"][0]["review_notes"], "确认作为表格样本")
 
             loaded = json.loads(summary_json.read_text(encoding="utf-8"))
             self.assertEqual(loaded["records"][0]["status"], "succeeded")
             self.assertEqual(loaded["records"][0]["pdf_type"], "table-heavy")
+            self.assertEqual(loaded["records"][0]["include_in_patent_batch"], "是")
             self.assertIn("metrics", loaded["records"][0])
             self.assertIn("translation_issue_count", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("structure_hint_chunk_count", loaded["records"][0]["metrics"]["quality"])
@@ -269,11 +298,16 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("translated_pdf", review_text)
             self.assertIn("table-heavy", review_text)
             self.assertIn("sample-table", review_text)
+            self.assertIn("sample_include_in_patent_batch", review_text)
+            self.assertIn("sample_review_notes", review_text)
             with review_csv.open("r", encoding="utf-8-sig", newline="") as review_file:
                 review_rows = list(csv.DictReader(review_file))
             self.assertEqual(len(review_rows), 2)
             self.assertEqual(review_rows[0]["include_in_patent_evidence"], "")
             self.assertEqual(review_rows[0]["human_score_pdf"], "")
+            self.assertEqual(review_rows[0]["sample_include_in_patent_batch"], "是")
+            self.assertEqual(review_rows[0]["sample_reviewer"], "导师")
+            self.assertEqual(review_rows[0]["sample_review_notes"], "确认作为表格样本")
             self.assertIn("ocr_structured_table_gate_pass_rate", review_rows[0])
             review_rows[0].update(
                 {
