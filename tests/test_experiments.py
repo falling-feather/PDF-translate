@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import shutil
 import unittest
@@ -118,11 +119,25 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("平均合并候选", summary_text)
             review_text = review_csv.read_text(encoding="utf-8-sig")
             self.assertIn("human_score", review_text)
+            self.assertIn("human_score_markdown", review_text)
+            self.assertIn("human_score_html", review_text)
+            self.assertIn("human_score_pdf", review_text)
+            self.assertIn("human_score_table_readability", review_text)
+            self.assertIn("human_score_figure_footnote_layout", review_text)
+            self.assertIn("human_score_terminology_consistency", review_text)
+            self.assertIn("human_score_structure_coherence", review_text)
+            self.assertIn("include_in_patent_evidence", review_text)
+            self.assertIn("patent_evidence_notes", review_text)
             self.assertIn("table_merged_cell_candidate_types", review_text)
             self.assertIn("table_chain_reject_reason_categories", review_text)
             self.assertIn("translated_pdf", review_text)
             self.assertIn("table-heavy", review_text)
             self.assertIn("sample-table", review_text)
+            with review_csv.open("r", encoding="utf-8-sig", newline="") as review_file:
+                review_rows = list(csv.DictReader(review_file))
+            self.assertEqual(len(review_rows), 2)
+            self.assertEqual(review_rows[0]["include_in_patent_evidence"], "")
+            self.assertEqual(review_rows[0]["human_score_pdf"], "")
         finally:
             if root.exists():
                 shutil.rmtree(root)

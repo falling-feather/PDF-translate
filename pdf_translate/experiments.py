@@ -14,6 +14,21 @@ from pdf_translate.config import AppConfig
 
 SCHEMA_VERSION = "batch-experiment-v1"
 
+REVIEW_SCORE_FIELDS = [
+    "human_score_markdown",
+    "human_score_html",
+    "human_score_pdf",
+    "human_score_table_readability",
+    "human_score_figure_footnote_layout",
+    "human_score_terminology_consistency",
+    "human_score_structure_coherence",
+]
+
+REVIEW_DECISION_FIELDS = [
+    "include_in_patent_evidence",
+    "patent_evidence_notes",
+]
+
 SUMMARY_FIELDS: dict[str, list[str]] = {
     "quality": [
         "page_count",
@@ -621,6 +636,8 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
         "translated_pdf",
         "bilingual_html",
         "human_score",
+        *REVIEW_SCORE_FIELDS,
+        *REVIEW_DECISION_FIELDS,
         "reviewer",
         "review_notes",
     ]
@@ -667,6 +684,9 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
                     "translated_pdf": files.get("translated_pdf", ""),
                     "bilingual_html": files.get("bilingual_html", ""),
                     "human_score": "",
+                    **{field: "" for field in REVIEW_SCORE_FIELDS},
+                    "include_in_patent_evidence": "",
+                    "patent_evidence_notes": "",
                     "reviewer": "",
                     "review_notes": "",
                 }
