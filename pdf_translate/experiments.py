@@ -1151,6 +1151,36 @@ def write_batch_experiment_markdown(report: dict[str, Any], path: Path) -> Path:
     lines.extend(
         [
             "",
+            "## OCR structured formula gate",
+            "",
+            "| Variant | Avg structured formula candidates | Avg gate pass rate | Avg review count | Avg formula tokens | Avg equation labels | Gate issues |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for item in report.get("aggregates", []):
+        averages = item.get("averages", {})
+        quality = averages.get("quality", {})
+        rates = averages.get("rates", {})
+        breakdowns = item.get("breakdowns", {}) if isinstance(item.get("breakdowns"), dict) else {}
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(item.get("variant", "")),
+                    _format_number(quality.get("ocr_structured_formula_candidate_count", 0)),
+                    _format_number(rates.get("ocr_structured_formula_gate_pass_rate", 0)),
+                    _format_number(quality.get("ocr_structured_formula_gate_review_count", 0)),
+                    _format_number(quality.get("ocr_structured_formula_token_count", 0)),
+                    _format_number(quality.get("ocr_structured_formula_equation_label_count", 0)),
+                    _format_counter(breakdowns.get("ocr_candidate_structured_formula_gate_issue_counts")),
+                ]
+            )
+            + " |"
+        )
+
+    lines.extend(
+        [
+            "",
             "## 样本标签",
             "",
             "| 样本 | 类型 | 标签 | 纳入批量 | 确认人 | 确认备注 | 备注 |",
@@ -1476,6 +1506,10 @@ def _review_group_summary(rows: list[dict[str, Any]], field: str) -> list[dict[s
                     group_rows,
                     "ocr_structured_table_gate_pass_rate",
                 ),
+                "ocr_structured_formula_gate_pass_rate": _score_average(
+                    group_rows,
+                    "ocr_structured_formula_gate_pass_rate",
+                ),
                 "ocr_table_cell_bbox_coverage_rate": _score_average(
                     group_rows,
                     "ocr_table_cell_bbox_coverage_rate",
@@ -1517,6 +1551,8 @@ def _selected_record_metrics(record: dict[str, Any]) -> dict[str, Any]:
         "table_cell_token_error_count": quality.get("table_cell_token_error_count"),
         "ocr_structured_table_gate_pass_rate": rates.get("ocr_structured_table_gate_pass_rate"),
         "ocr_table_cell_bbox_coverage_rate": rates.get("ocr_table_cell_bbox_coverage_rate"),
+        "ocr_structured_formula_gate_pass_rate": rates.get("ocr_structured_formula_gate_pass_rate"),
+        "ocr_structured_formula_candidate_count": quality.get("ocr_structured_formula_candidate_count"),
         "split_boundary_rate": rates.get("split_boundary_rate"),
         "protected_boundary_rate": rates.get("protected_boundary_rate"),
         "total_elapsed_ms": performance.get("total_elapsed_ms"),
@@ -1603,6 +1639,21 @@ def build_batch_experiment_evidence(
                     "structured_table_gate_issues": _parse_counter_text(
                         row.get("ocr_structured_table_gate_issues")
                     ),
+                    "structured_formula_candidate_count": _review_number(
+                        row.get("ocr_structured_formula_candidate_count")
+                    ),
+                    "structured_formula_gate_pass_rate": _review_number(
+                        row.get("ocr_structured_formula_gate_pass_rate")
+                    ),
+                    "structured_formula_token_count": _review_number(
+                        row.get("ocr_structured_formula_token_count")
+                    ),
+                    "structured_formula_equation_label_count": _review_number(
+                        row.get("ocr_structured_formula_equation_label_count")
+                    ),
+                    "structured_formula_gate_issues": _parse_counter_text(
+                        row.get("ocr_structured_formula_gate_issues")
+                    ),
                 },
                 "metrics": _selected_record_metrics(record) if isinstance(record, dict) else {},
                 "files": files if isinstance(files, dict) else {},
@@ -1619,6 +1670,15 @@ def build_batch_experiment_evidence(
         or _review_number(row.get("ocr_structured_table_gate_pass_rate")) is not None
         or _review_number(row.get("ocr_table_cell_bbox_coverage_rate")) is not None
         or _review_text(row.get("ocr_structured_table_gate_issues"))
+    ]
+    ocr_formula_rows = [
+        row
+        for row in review_rows
+        if _review_number(row.get("ocr_structured_formula_candidate_count"))
+        or _review_number(row.get("ocr_structured_formula_gate_pass_rate")) is not None
+        or _review_number(row.get("ocr_structured_formula_token_count")) is not None
+        or _review_number(row.get("ocr_structured_formula_equation_label_count")) is not None
+        or _review_text(row.get("ocr_structured_formula_gate_issues"))
     ]
 
     return {
@@ -1651,6 +1711,27 @@ def build_batch_experiment_evidence(
             "gate_pass_rate": _score_average(ocr_rows, "ocr_structured_table_gate_pass_rate"),
             "bbox_coverage_rate": _score_average(ocr_rows, "ocr_table_cell_bbox_coverage_rate"),
             "gate_issue_counts": _merge_counter_texts(review_rows, "ocr_structured_table_gate_issues"),
+        },
+        "ocr_structured_formula_gate_summary": {
+            "row_count": len(ocr_formula_rows),
+            "structured_formula_candidate_count_total": _review_sum(
+                review_rows,
+                "ocr_structured_formula_candidate_count",
+            ),
+            "structured_formula_gate_review_count_total": _review_sum(
+                review_rows,
+                "ocr_structured_formula_gate_review_count",
+            ),
+            "structured_formula_token_count_total": _review_sum(
+                review_rows,
+                "ocr_structured_formula_token_count",
+            ),
+            "structured_formula_equation_label_count_total": _review_sum(
+                review_rows,
+                "ocr_structured_formula_equation_label_count",
+            ),
+            "gate_pass_rate": _score_average(ocr_formula_rows, "ocr_structured_formula_gate_pass_rate"),
+            "gate_issue_counts": _merge_counter_texts(review_rows, "ocr_structured_formula_gate_issues"),
         },
         "run_failures": run_failures,
         "evidence_candidates": evidence_candidates,
@@ -1693,8 +1774,8 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
             "",
             "## 策略汇总",
             "",
-            "| 策略 | 运行数 | 已评审 | 纳入证据 | 总分均值 | 表格可读性 | 结构连贯性 | OCR 门禁通过率 |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| 策略 | 运行数 | 已评审 | 纳入证据 | 总分均值 | 表格可读性 | 结构连贯性 | OCR 表格通过率 | OCR 公式通过率 |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for item in evidence.get("variant_summary", []):
@@ -1712,22 +1793,30 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
                     _format_number((item.get("table_readability_score") or {}).get("average", 0)),
                     _format_number((item.get("structure_coherence_score") or {}).get("average", 0)),
                     _format_number((item.get("ocr_structured_table_gate_pass_rate") or {}).get("average", 0)),
+                    _format_number((item.get("ocr_structured_formula_gate_pass_rate") or {}).get("average", 0)),
                 ]
             )
             + " |"
         )
 
     ocr_summary = evidence.get("ocr_structured_table_gate_summary", {})
+    formula_ocr_summary = evidence.get("ocr_structured_formula_gate_summary", {})
     lines.extend(
         [
             "",
             "## OCR 结构门禁",
             "",
             f"- 结构化表格候选总数：{ocr_summary.get('structured_table_candidate_count_total', 0)}",
-            f"- 结构门禁复核总数：{ocr_summary.get('structured_table_gate_review_count_total', 0)}",
-            f"- 门禁通过率均值：{_format_number((ocr_summary.get('gate_pass_rate') or {}).get('average', 0))}",
-            f"- bbox 覆盖率均值：{_format_number((ocr_summary.get('bbox_coverage_rate') or {}).get('average', 0))}",
-            f"- 门禁问题分布：{_format_counter(ocr_summary.get('gate_issue_counts'))}",
+            f"- 表格门禁复核总数：{ocr_summary.get('structured_table_gate_review_count_total', 0)}",
+            f"- 表格门禁通过率均值：{_format_number((ocr_summary.get('gate_pass_rate') or {}).get('average', 0))}",
+            f"- 表格 bbox 覆盖率均值：{_format_number((ocr_summary.get('bbox_coverage_rate') or {}).get('average', 0))}",
+            f"- 表格门禁问题分布：{_format_counter(ocr_summary.get('gate_issue_counts'))}",
+            f"- 结构化公式候选总数：{formula_ocr_summary.get('structured_formula_candidate_count_total', 0)}",
+            f"- 公式门禁复核总数：{formula_ocr_summary.get('structured_formula_gate_review_count_total', 0)}",
+            f"- 公式门禁通过率均值：{_format_number((formula_ocr_summary.get('gate_pass_rate') or {}).get('average', 0))}",
+            f"- 公式 token 回流总数：{formula_ocr_summary.get('structured_formula_token_count_total', 0)}",
+            f"- 公式编号回流总数：{formula_ocr_summary.get('structured_formula_equation_label_count_total', 0)}",
+            f"- 公式门禁问题分布：{_format_counter(formula_ocr_summary.get('gate_issue_counts'))}",
             "",
             "## 纳入证据候选",
             "",

@@ -274,19 +274,30 @@ class BatchExperimentTests(unittest.TestCase):
                 "ocr_candidate_structured_table_gate_issue_counts",
                 loaded["records"][0]["metrics"]["breakdowns"],
             )
+            self.assertIn("ocr_structured_formula_candidate_count", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("ocr_structured_formula_gate_review_count", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("ocr_structured_formula_token_count", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("ocr_structured_formula_gate_pass_rate", loaded["records"][0]["metrics"]["rates"])
+            self.assertIn(
+                "ocr_candidate_structured_formula_gate_issue_counts",
+                loaded["records"][0]["metrics"]["breakdowns"],
+            )
             self.assertIn("breakdowns", loaded["aggregates"][0])
             self.assertIn("structure_hint_merged_cell_candidate_type_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("table_merged_cell_candidate_type_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("repair_merge_strategy_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("table_chain_reject_reason_category_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("ocr_candidate_structured_table_gate_issue_counts", loaded["aggregates"][0]["breakdowns"])
+            self.assertIn("ocr_candidate_structured_formula_gate_issue_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("rates.ocr_structured_table_gate_pass_rate", loaded["comparisons"][0]["deltas"])
+            self.assertIn("rates.ocr_structured_formula_gate_pass_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("total_elapsed_ms", loaded["records"][0]["metrics"]["performance"])
             self.assertIn("runs/sample-table/page/output/experiment_metrics.json", summary_json.read_text(encoding="utf-8"))
             self.assertIn("translated_pdf", loaded["records"][0]["files"])
             self.assertIn("runs/sample-table/page/output/translated_full.pdf", summary_json.read_text(encoding="utf-8"))
             summary_text = summary_md.read_text(encoding="utf-8")
             self.assertIn("OCR structured table gate", summary_text)
+            self.assertIn("OCR structured formula gate", summary_text)
             self.assertIn("批量实验汇总", summary_text)
             self.assertIn("仅运行人工纳入样本：是", summary_text)
             self.assertIn("跳过样本数：1", summary_text)
@@ -309,6 +320,9 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("ocr_structured_table_gate_pass_rate", review_text)
             self.assertIn("ocr_table_cell_bbox_coverage_rate", review_text)
             self.assertIn("ocr_structured_table_gate_issues", review_text)
+            self.assertIn("ocr_structured_formula_candidate_count", review_text)
+            self.assertIn("ocr_structured_formula_gate_pass_rate", review_text)
+            self.assertIn("ocr_structured_formula_gate_issues", review_text)
             self.assertIn("translated_pdf", review_text)
             self.assertIn("table-heavy", review_text)
             self.assertIn("sample-table", review_text)
@@ -323,19 +337,26 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertEqual(review_rows[0]["sample_reviewer"], "导师")
             self.assertEqual(review_rows[0]["sample_review_notes"], "确认作为表格样本")
             self.assertIn("ocr_structured_table_gate_pass_rate", review_rows[0])
+            self.assertIn("ocr_structured_formula_gate_pass_rate", review_rows[0])
             review_rows[0].update(
                 {
                     "human_score": "4.5",
                     "human_score_table_readability": "4",
                     "human_score_structure_coherence": "5",
                     "include_in_patent_evidence": "是",
-                    "patent_evidence_notes": "结构化表格 OCR 门禁可作为证据",
+                    "patent_evidence_notes": "结构化表格与公式 OCR 门禁可作为证据",
                     "reviewer": "导师",
                     "ocr_structured_table_candidate_count": "2",
                     "ocr_structured_table_gate_review_count": "1",
                     "ocr_structured_table_gate_pass_rate": "0.75",
                     "ocr_table_cell_bbox_coverage_rate": "0.5",
                     "ocr_structured_table_gate_issues": "structured_table_missing_cell_bboxes:1",
+                    "ocr_structured_formula_candidate_count": "3",
+                    "ocr_structured_formula_gate_review_count": "1",
+                    "ocr_structured_formula_gate_pass_rate": "0.667",
+                    "ocr_structured_formula_token_count": "8",
+                    "ocr_structured_formula_equation_label_count": "2",
+                    "ocr_structured_formula_gate_issues": "structured_formula_missing_equation_labels:1",
                 }
             )
             with review_csv.open("w", encoding="utf-8-sig", newline="") as review_file:
@@ -357,9 +378,29 @@ class BatchExperimentTests(unittest.TestCase):
                 ],
                 1,
             )
+            self.assertEqual(
+                evidence["ocr_structured_formula_gate_summary"]["gate_issue_counts"][
+                    "structured_formula_missing_equation_labels"
+                ],
+                1,
+            )
+            self.assertEqual(
+                evidence["ocr_structured_formula_gate_summary"]["structured_formula_candidate_count_total"],
+                3,
+            )
+            self.assertEqual(
+                evidence["ocr_structured_formula_gate_summary"]["structured_formula_token_count_total"],
+                8,
+            )
+            self.assertEqual(
+                evidence["evidence_candidates"][0]["ocr"]["structured_formula_candidate_count"],
+                3.0,
+            )
             self.assertEqual(evidence["evidence_candidates"][0]["reviewer"], "导师")
             self.assertIn("translated_pdf", evidence["evidence_candidates"][0]["files"])
-            self.assertIn("结构化表格 OCR 门禁可作为证据", evidence_md.read_text(encoding="utf-8"))
+            evidence_text = evidence_md.read_text(encoding="utf-8")
+            self.assertIn("结构化表格与公式 OCR 门禁可作为证据", evidence_text)
+            self.assertIn("结构化公式候选总数：3", evidence_text)
         finally:
             if root.exists():
                 shutil.rmtree(root)
