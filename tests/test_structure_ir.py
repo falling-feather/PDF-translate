@@ -2164,11 +2164,174 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(payload["results"][0]["text"], "Recognized figure text")
             self.assertEqual(payload["results"][0]["confidence"], 0.6)
             self.assertIn("confidence_estimated", payload["results"][0]["warnings"])
+            self.assertNotIn("structured_cells", payload["results"][0])
+            self.assertEqual(payload["execution"]["commands"][0]["output_format"], "text")
             self.assertEqual(payload["results"][1]["status"], "skipped")
             self.assertEqual(seen[0][0][0], "fake-tesseract")
             self.assertEqual(Path(seen[0][0][1]), crop_path)
             self.assertEqual(seen[0][0][-1], "6")
             self.assertEqual(seen[0][1], 7)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
+    def test_local_ocr_executor_allows_task_recommended_engines(self) -> None:
+        root = Path.cwd() / "test-output" / "ocr-executor-local-engines"
+        if root.exists():
+            shutil.rmtree(root)
+        try:
+            crop_path = root / "output" / "vision_crops" / "page-0001" / "p1-b0000-table.png"
+            crop_path.parent.mkdir(parents=True)
+            crop_path.write_bytes(b"fake table image")
+            manifest = {
+                "schema_version": "ocr-task-manifest-v1",
+                "doc_id": "ocr-executor-local-engines",
+                "tasks": [
+                    {
+                        "task_id": "ocr-p0001-table",
+                        "page_no": 1,
+                        "scope": "region",
+                        "status": "pending_engine",
+                        "recommended_engine": "local_table_ocr",
+                        "input_path": "vision_crops/page-0001/p1-b0000-table.png",
+                        "block_id": "p1-b0000",
+                        "bbox": [60, 540, 500, 620],
+                    }
+                ],
+            }
+
+            def fake_runner(command: list[str], timeout_seconds: int) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(command, 0, stdout="Metric Accuracy\n", stderr="")
+
+            payload = execute_ocr_tasks(
+                manifest,
+                root,
+                engine="local_table_ocr",
+                command="fake-table-ocr",
+                command_runner=fake_runner,
+            )
+
+            self.assertTrue(payload["execution"]["summary"]["engine_available"])
+            self.assertEqual(payload["execution"]["engine"]["type"], "local_table_ocr")
+            self.assertEqual(payload["results"][0]["status"], "succeeded")
+            self.assertNotIn("unsupported_ocr_engine", payload["results"][0]["warnings"])
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
+    def test_local_ocr_executor_accepts_structured_json_stdout(self) -> None:
+        root = Path.cwd() / "test-output" / "ocr-executor-structured-json"
+        if root.exists():
+            shutil.rmtree(root)
+        try:
+            table_crop = root / "output" / "vision_crops" / "page-0001" / "p1-b0000-table.png"
+            formula_crop = root / "output" / "vision_crops" / "page-0001" / "p1-b0001-formula.png"
+            table_crop.parent.mkdir(parents=True)
+            table_crop.write_bytes(b"fake table image")
+            formula_crop.write_bytes(b"fake formula image")
+            manifest = {
+                "schema_version": "ocr-task-manifest-v1",
+                "doc_id": "ocr-executor-structured-json",
+                "tasks": [
+                    {
+                        "task_id": "ocr-p0001-table",
+                        "page_no": 1,
+                        "scope": "region",
+                        "status": "pending_engine",
+                        "recommended_engine": "local_table_ocr",
+                        "input_path": "vision_crops/page-0001/p1-b0000-table.png",
+                        "block_id": "p1-b0000",
+                        "bbox": [60, 540, 500, 620],
+                    },
+                    {
+                        "task_id": "ocr-p0001-formula",
+                        "page_no": 1,
+                        "scope": "region",
+                        "status": "pending_engine",
+                        "recommended_engine": "local_formula_ocr",
+                        "input_path": "vision_crops/page-0001/p1-b0001-formula.png",
+                        "block_id": "p1-b0001",
+                        "bbox": [80, 220, 520, 300],
+                    },
+                ],
+            }
+
+            def fake_runner(command: list[str], timeout_seconds: int) -> subprocess.CompletedProcess[str]:
+                input_path = str(command[1])
+                if "table" in input_path:
+                    stdout = json.dumps(
+                        {
+                            "schema_version": "ocr-results-v1",
+                            "results": [
+                                {
+                                    "task_id": "ocr-p0001-table",
+                                    "status": "succeeded",
+                                    "text": "Metric Accuracy\nA 91.2",
+                                    "confidence": 0.94,
+                                    "engine": "unit_structured_ocr",
+                                    "structured_cells": [
+                                        {"row": 0, "col": 0, "text": "Metric"},
+                                        {"row": 0, "col": 1, "text": "Accuracy"},
+                                        {"row": 1, "col": 0, "text": "A"},
+                                        {"row": 1, "col": 1, "text": "91.2"},
+                                    ],
+                                    "cell_bboxes": [
+                                        {"row": 0, "col": 0, "bbox": [60, 540, 260, 580]},
+                                        {"row": 0, "col": 1, "bbox": [260, 540, 500, 580]},
+                                        {"row": 1, "col": 0, "bbox": [60, 580, 260, 620]},
+                                        {"row": 1, "col": 1, "bbox": [260, 580, 500, 620]},
+                                    ],
+                                }
+                            ],
+                        }
+                    )
+                else:
+                    stdout = json.dumps(
+                        {
+                            "text": "L_i = sum_j x_ij (1)",
+                            "formula_latex": r"L_i = \sum_j x_{ij}",
+                            "formula_tokens": ["L_i", "=", r"\sum", "x_{ij}", "(1)"],
+                            "equation_labels": ["(1)"],
+                            "formula_confidence": 0.92,
+                        }
+                    )
+                return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+            payload = execute_ocr_tasks(
+                manifest,
+                root,
+                engine="structured_json_cli",
+                command="fake-structured-ocr",
+                command_runner=fake_runner,
+                language="eng",
+                timeout_seconds=9,
+            )
+
+            self.assertEqual(payload["execution"]["summary"]["attempted_task_count"], 2)
+            self.assertEqual(payload["execution"]["summary"]["succeeded_task_count"], 2)
+            self.assertEqual(payload["execution"]["engine"]["type"], "structured_json_cli")
+            self.assertEqual(payload["execution"]["commands"][0]["output_format"], "json")
+            self.assertEqual(payload["execution"]["commands"][1]["output_format"], "json")
+            table_result = payload["results"][0]
+            formula_result = payload["results"][1]
+            self.assertEqual(table_result["engine"], "unit_structured_ocr")
+            self.assertEqual(table_result["structured_cells"][3]["text"], "91.2")
+            self.assertEqual(table_result["cell_bboxes"][0]["bbox"], [60, 540, 260, 580])
+            self.assertEqual(formula_result["task_id"], "ocr-p0001-formula")
+            self.assertEqual(formula_result["block_id"], "p1-b0001")
+            self.assertEqual(formula_result["confidence"], 0.6)
+            self.assertIn("confidence_estimated", formula_result["warnings"])
+            self.assertIn("structured_json_output", formula_result["warnings"])
+            self.assertEqual(formula_result["formula_latex"], r"L_i = \sum_j x_{ij}")
+            self.assertEqual(formula_result["formula_tokens"][0], "L_i")
+            self.assertEqual(formula_result["equation_labels"], ["(1)"])
+            self.assertEqual(formula_result["formula_confidence"], 0.92)
         finally:
             if root.exists():
                 shutil.rmtree(root)

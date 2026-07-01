@@ -14,7 +14,10 @@ DEFAULT_ENGINE = "tesseract_cli"
 DEFAULT_LANGUAGE = "eng"
 DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_CONFIDENCE = 0.6
-SUPPORTED_ENGINES = {DEFAULT_ENGINE}
+STRUCTURED_JSON_ENGINE = "structured_json_cli"
+TASK_RECOMMENDED_ENGINES = {"local_ocr", "local_table_ocr", "local_formula_ocr"}
+SUPPORTED_ENGINES = {DEFAULT_ENGINE, STRUCTURED_JSON_ENGINE, *TASK_RECOMMENDED_ENGINES}
+PAYLOAD_LEVEL_JSON_KEYS = {"schema_version", "source", "summary", "execution", "results"}
 
 CommandRunner = Callable[[list[str], int], subprocess.CompletedProcess[str]]
 
@@ -54,6 +57,96 @@ def _default_runner(command: list[str], timeout_seconds: int) -> subprocess.Comp
         timeout=timeout_seconds,
         check=False,
     )
+
+
+def _json_copy(value: Any) -> Any:
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def _as_float(value: Any, fallback: float) -> float:
+    if isinstance(value, bool):
+        return fallback
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return fallback
+    return fallback
+
+
+def _normalized_warnings(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item)]
+
+
+def _select_json_result(raw: Any, task_id: str) -> dict[str, Any] | None:
+    if isinstance(raw, dict) and isinstance(raw.get("results"), list):
+        candidates = [item for item in raw["results"] if isinstance(item, dict)]
+    elif isinstance(raw, list):
+        candidates = [item for item in raw if isinstance(item, dict)]
+    elif isinstance(raw, dict):
+        candidates = [raw]
+    else:
+        candidates = []
+    if not candidates:
+        return None
+    for item in candidates:
+        item_task_id = str(item.get("task_id") or "")
+        if item_task_id and item_task_id == task_id:
+            return item
+    return candidates[0]
+
+
+def _structured_result_from_stdout(
+    task: dict[str, Any],
+    stdout: str,
+    *,
+    engine: str,
+    language: str,
+    default_confidence: float,
+) -> dict[str, Any] | None:
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    selected = _select_json_result(parsed, str(task.get("task_id") or ""))
+    if not isinstance(selected, dict):
+        return None
+
+    warnings = _normalized_warnings(selected.get("warnings"))
+    confidence_was_supplied = selected.get("confidence") is not None
+    if not confidence_was_supplied:
+        warnings.append("confidence_estimated")
+    if "structured_json_output" not in warnings:
+        warnings.append("structured_json_output")
+
+    status = str(selected.get("status") or "succeeded")
+    result = _result(
+        task,
+        status=status,
+        text=str(selected.get("text") or "").strip(),
+        confidence=_as_float(selected.get("confidence"), default_confidence),
+        engine=str(selected.get("engine") or engine),
+        language=str(selected.get("language") or language),
+        warnings=warnings,
+    )
+    for key, value in selected.items():
+        if key in PAYLOAD_LEVEL_JSON_KEYS or key in {
+            "status",
+            "text",
+            "confidence",
+            "engine",
+            "language",
+            "warnings",
+        }:
+            continue
+        if key in {"task_id", "page_no", "block_id", "input_path", "bbox"} and value in ("", None, []):
+            continue
+        result[key] = _json_copy(value)
+    return result
 
 
 def _result(
@@ -242,6 +335,18 @@ def execute_ocr_tasks(
                 )
             )
             continue
+        structured_result = _structured_result_from_stdout(
+            task,
+            text,
+            engine=resolved_engine,
+            language=resolved_language,
+            default_confidence=default_confidence,
+        )
+        if structured_result is not None:
+            executed_commands[-1]["output_format"] = "json"
+            results.append(structured_result)
+            continue
+        executed_commands[-1]["output_format"] = "text"
         results.append(
             _result(
                 task,
