@@ -6,6 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from pdf_translate.server.secrets_store import (
+    SecretStoreError,
+    reveal_secret_value,
+    secret_encryption_config,
+    secret_value_is_encrypted,
+)
+
 SECURITY_PREFLIGHT_SCHEMA_VERSION = "security-preflight-v1"
 DEFAULT_BOOTSTRAP_ADMIN_PASSWORD = "mic820323"
 DEFAULT_MAX_UPLOAD_MB = 120
@@ -205,24 +212,60 @@ def _path_within(child: Path, parent: Path) -> bool:
         return False
 
 
-def _stored_secret_keys(db_path: Path) -> list[str]:
+def _stored_secret_state(db_path: Path, env: Mapping[str, str] | None = None) -> dict[str, Any]:
+    empty = {
+        "stored_key_names": [],
+        "encrypted_key_names": [],
+        "plaintext_key_names": [],
+        "decryptable_encrypted_key_names": [],
+        "undecryptable_encrypted_key_names": [],
+    }
     if not db_path.is_file():
-        return []
+        return empty
     try:
         with sqlite3.connect(str(db_path)) as conn:
             row = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_kv'"
             ).fetchone()
             if not row:
-                return []
+                return empty
             placeholders = ",".join("?" for _ in SECRET_SETTING_KEYS)
             rows = conn.execute(
                 f"SELECT key, value FROM app_kv WHERE key IN ({placeholders})",
                 tuple(SECRET_SETTING_KEYS),
             ).fetchall()
     except sqlite3.Error:
-        return []
-    return sorted(str(key) for key, value in rows if str(value or "").strip())
+        return empty
+    encrypted: list[str] = []
+    plaintext: list[str] = []
+    decryptable: list[str] = []
+    undecryptable: list[str] = []
+    for key, value in rows:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        name = str(key)
+        if secret_value_is_encrypted(text):
+            encrypted.append(name)
+            try:
+                reveal_secret_value(text, env)
+            except SecretStoreError:
+                undecryptable.append(name)
+            else:
+                decryptable.append(name)
+        else:
+            plaintext.append(name)
+    encrypted = sorted(encrypted)
+    plaintext = sorted(plaintext)
+    decryptable = sorted(decryptable)
+    undecryptable = sorted(undecryptable)
+    return {
+        "stored_key_names": sorted(encrypted + plaintext),
+        "encrypted_key_names": encrypted,
+        "plaintext_key_names": plaintext,
+        "decryptable_encrypted_key_names": decryptable,
+        "undecryptable_encrypted_key_names": undecryptable,
+    }
 
 
 def build_security_preflight(
@@ -333,14 +376,55 @@ def build_security_preflight(
             env_var="PDF_TRANSLATE_WEB_DATA",
         )
 
-    stored_keys = _stored_secret_keys(app_db)
-    if stored_keys:
+    secret_state = _stored_secret_state(app_db, env)
+    stored_keys = secret_state["stored_key_names"]
+    encrypted_keys = secret_state["encrypted_key_names"]
+    plaintext_keys = secret_state["plaintext_key_names"]
+    decryptable_encrypted_keys = secret_state["decryptable_encrypted_key_names"]
+    undecryptable_encrypted_keys = secret_state["undecryptable_encrypted_key_names"]
+    encryption = secret_encryption_config(env)
+    if encryption.invalid_reason:
         _add_issue(
             issues,
-            code="API_KEYS_STORED_IN_LOCAL_DB",
-            severity="medium" if production else "low",
-            message="One or more API keys are stored in local SQLite settings.",
-            next_step="Limit app.db file permissions and prefer environment variables or a secret manager for production.",
+            code="SECRET_KEY_INVALID",
+            severity="high" if production else "medium",
+            message="Secret encryption key source is configured but cannot be used.",
+            next_step="Fix PDF_TRANSLATE_SECRET_KEY_FILE or provide PDF_TRANSLATE_SECRET_KEY.",
+            env_var="PDF_TRANSLATE_SECRET_KEY_FILE",
+        )
+    if encrypted_keys and not encryption.enabled and not encryption.invalid_reason:
+        _add_issue(
+            issues,
+            code="SECRET_KEY_MISSING_FOR_ENCRYPTED_VALUES",
+            severity="high" if production else "medium",
+            message="Encrypted API keys exist in local SQLite but no secret encryption key is configured.",
+            next_step="Set PDF_TRANSLATE_SECRET_KEY or PDF_TRANSLATE_SECRET_KEY_FILE before starting the service.",
+            env_var="PDF_TRANSLATE_SECRET_KEY",
+        )
+    if encrypted_keys and encryption.enabled and undecryptable_encrypted_keys:
+        _add_issue(
+            issues,
+            code="SECRET_KEY_DECRYPT_CHECK_FAILED",
+            severity="high" if production else "medium",
+            message="One or more encrypted API keys in local SQLite cannot be decrypted with the configured key.",
+            next_step="Restore the original PDF_TRANSLATE_SECRET_KEY or re-save these API keys in the admin settings.",
+            env_var="PDF_TRANSLATE_SECRET_KEY",
+        )
+    if plaintext_keys:
+        _add_issue(
+            issues,
+            code="API_KEYS_STORED_PLAINTEXT_IN_LOCAL_DB",
+            severity="high" if production else "medium",
+            message="One or more API keys are stored as plaintext in local SQLite settings.",
+            next_step="Set PDF_TRANSLATE_SECRET_KEY and re-save these keys in the admin settings, or prefer environment variables/secret manager.",
+        )
+    elif stored_keys:
+        _add_issue(
+            issues,
+            code="API_KEYS_STORED_ENCRYPTED_IN_LOCAL_DB",
+            severity="low",
+            message="One or more API keys are stored encrypted in local SQLite settings.",
+            next_step="Keep PDF_TRANSLATE_SECRET_KEY stable and restrict app.db file permissions.",
         )
 
     severity_counts = {level: 0 for level in ("high", "medium", "low")}
@@ -381,6 +465,16 @@ def build_security_preflight(
         "api_keys": {
             "stored_key_count": len(stored_keys),
             "stored_key_names": stored_keys,
+            "encrypted_key_count": len(encrypted_keys),
+            "encrypted_key_names": encrypted_keys,
+            "plaintext_key_count": len(plaintext_keys),
+            "plaintext_key_names": plaintext_keys,
+            "decryptable_encrypted_key_names": decryptable_encrypted_keys,
+            "undecryptable_encrypted_key_names": undecryptable_encrypted_keys,
+            "needs_reencrypt_key_count": len(plaintext_keys),
+            "local_encryption_enabled": encryption.enabled,
+            "local_encryption_source": encryption.source,
+            "local_encryption_invalid_reason": encryption.invalid_reason,
         },
         "issues": issues,
     }

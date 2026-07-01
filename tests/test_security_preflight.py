@@ -151,7 +151,13 @@ class SecurityPreflightTests(unittest.TestCase):
 
         self.assertEqual(report["api_keys"]["stored_key_count"], 1)
         self.assertEqual(report["api_keys"]["stored_key_names"], ["deepseek_api_key"])
-        self.assertIn("API_KEYS_STORED_IN_LOCAL_DB", {issue["code"] for issue in report["issues"]})
+        self.assertEqual(report["api_keys"]["plaintext_key_count"], 1)
+        self.assertEqual(report["api_keys"]["plaintext_key_names"], ["deepseek_api_key"])
+        self.assertEqual(report["api_keys"]["needs_reencrypt_key_count"], 1)
+        self.assertIn(
+            "API_KEYS_STORED_PLAINTEXT_IN_LOCAL_DB",
+            {issue["code"] for issue in report["issues"]},
+        )
         self.assertNotIn("sk-test-placeholder", rendered)
 
     def test_admin_settings_snapshot_does_not_return_secret_values(self) -> None:

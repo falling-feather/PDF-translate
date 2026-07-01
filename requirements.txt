@@ -8,3 +8,4 @@ uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9
 bcrypt>=4.0.0
 PyJWT>=2.8.0
+cryptography>=42.0.0

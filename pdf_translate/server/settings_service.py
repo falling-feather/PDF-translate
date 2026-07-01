@@ -3,6 +3,7 @@ from __future__ import annotations
 from pdf_translate.config import AppConfig
 from pdf_translate.server import database
 from pdf_translate.server.security_preflight import SECRET_SETTING_KEYS
+from pdf_translate.server.secrets_store import reveal_secret_value, protect_secret_value
 from pdf_translate.translators.registry import (
     backend_catalog,
     backend_ids,
@@ -31,6 +32,14 @@ def _coalesce_bool(kv_val: str | None, base: bool) -> bool:
     return str(kv_val).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _secret_get(key: str) -> str | None:
+    return reveal_secret_value(database.kv_get(key))
+
+
+def _secret_set(key: str, value: str) -> None:
+    database.kv_set(key, protect_secret_value(value))
+
+
 def _parse_survey_max_chars(base: AppConfig) -> int:
     raw = _coalesce_str(database.kv_get("survey_max_text_chars"), str(base.survey_max_text_chars))
     try:
@@ -43,20 +52,20 @@ def _parse_survey_max_chars(base: AppConfig) -> int:
 def effective_app_config() -> AppConfig:
     base = AppConfig.from_env()
     return AppConfig(
-        openai_api_key=_coalesce(database.kv_get("openai_api_key"), base.openai_api_key),
+        openai_api_key=_coalesce(_secret_get("openai_api_key"), base.openai_api_key),
         openai_base_url=_coalesce_str(database.kv_get("openai_base_url"), base.openai_base_url),
         openai_model=_coalesce_str(database.kv_get("openai_model"), base.openai_model),
         ollama_base_url=_coalesce_str(database.kv_get("ollama_base_url"), base.ollama_base_url),
         ollama_model=_coalesce_str(database.kv_get("ollama_model"), base.ollama_model),
-        deepl_api_key=_coalesce(database.kv_get("deepl_api_key"), base.deepl_api_key),
+        deepl_api_key=_coalesce(_secret_get("deepl_api_key"), base.deepl_api_key),
         deepl_api_url=_coalesce_str(database.kv_get("deepl_api_url"), base.deepl_api_url),
-        deepseek_api_key=_coalesce(database.kv_get("deepseek_api_key"), base.deepseek_api_key),
+        deepseek_api_key=_coalesce(_secret_get("deepseek_api_key"), base.deepseek_api_key),
         deepseek_base_url=_coalesce_str(database.kv_get("deepseek_base_url"), base.deepseek_base_url),
         deepseek_model=_coalesce_str(database.kv_get("deepseek_model"), base.deepseek_model),
         default_translator=_coalesce_str(database.kv_get("default_backend"), base.default_translator),
         http_timeout_s=_parse_timeout(base),
         survey_enabled=_coalesce_bool(database.kv_get("survey_enabled"), base.survey_enabled),
-        siliconflow_api_key=_coalesce(database.kv_get("siliconflow_api_key"), base.siliconflow_api_key),
+        siliconflow_api_key=_coalesce(_secret_get("siliconflow_api_key"), base.siliconflow_api_key),
         siliconflow_base_url=_coalesce_str(database.kv_get("siliconflow_base_url"), base.siliconflow_base_url),
         siliconflow_survey_model=_coalesce_str(
             database.kv_get("siliconflow_survey_model"), base.siliconflow_survey_model
@@ -66,7 +75,7 @@ def effective_app_config() -> AppConfig:
         ),
         survey_max_text_chars=_parse_survey_max_chars(base),
         planner_enabled=_coalesce_bool(database.kv_get("planner_enabled"), base.planner_enabled),
-        planner_api_key=_coalesce(database.kv_get("planner_api_key"), base.planner_api_key),
+        planner_api_key=_coalesce(_secret_get("planner_api_key"), base.planner_api_key),
         planner_base_url=_coalesce_str(database.kv_get("planner_base_url"), base.planner_base_url),
         planner_model=_coalesce_str(database.kv_get("planner_model"), base.planner_model),
         cost_profile_json=_coalesce_str(database.kv_get("cost_profile_json"), base.cost_profile_json),
@@ -218,4 +227,7 @@ def apply_admin_settings(patch: dict) -> None:
         s = str(val).strip()
         if s == "":
             continue
-        database.kv_set(k, s)
+        if k in SECRET_SETTING_KEYS:
+            _secret_set(k, s)
+        else:
+            database.kv_set(k, s)
