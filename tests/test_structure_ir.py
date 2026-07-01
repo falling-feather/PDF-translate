@@ -45,7 +45,7 @@ from pdf_translate.qa.table_reconstruction import (
     build_table_reconstruction_report,
     build_table_translation_hints,
 )
-from pdf_translate.qa.translation import build_translation_qa
+from pdf_translate.qa.translation import build_translation_qa, translation_qa_to_markdown
 from pdf_translate.pipeline import init_workdir, run_split, run_translate
 from pdf_translate.run_metrics import build_run_metrics
 from pdf_translate.translators.base import TranslationRequest
@@ -2570,6 +2570,10 @@ class StructureIRTests(unittest.TestCase):
                     "chunk_count": 2,
                     "entity_candidate_count": 4,
                     "missing_entity_token_count": 1,
+                    "source_formula_token_count": 5,
+                    "missing_formula_token_count": 2,
+                    "source_equation_label_count": 1,
+                    "missing_equation_label_count": 1,
                     "source_table_count": 2,
                     "table_shape_error_count": 1,
                     "source_table_locked_token_count": 6,
@@ -3055,6 +3059,12 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["table_shape_error_count"], 1)
         self.assertEqual(metrics["quality"]["table_cell_token_error_count"], 2)
         self.assertEqual(metrics["quality"]["missing_table_locked_token_count"], 3)
+        self.assertEqual(metrics["quality"]["source_formula_token_count"], 5)
+        self.assertEqual(metrics["quality"]["missing_formula_token_count"], 2)
+        self.assertEqual(metrics["quality"]["source_equation_label_count"], 1)
+        self.assertEqual(metrics["quality"]["missing_equation_label_count"], 1)
+        self.assertEqual(metrics["rates"]["formula_token_missing_rate"], 0.4)
+        self.assertEqual(metrics["rates"]["equation_label_missing_rate"], 1.0)
         self.assertEqual(metrics["quality"]["split_boundary_count"], 1)
         self.assertEqual(metrics["quality"]["protected_boundary_count"], 1)
         self.assertEqual(metrics["quality"]["page_boundary_stitch_candidate_count"], 2)
@@ -3582,6 +3592,69 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("missing_numbers", html)
             self.assertIn("missing_glossary_terms", html)
             self.assertIn("repair_table_shape", html)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
+    def test_translation_qa_reports_formula_invariant_mismatch(self) -> None:
+        root = Path.cwd() / "test-output" / "translation-qa-formula"
+        if root.exists():
+            shutil.rmtree(root)
+        chunk_dir = root / "chunks"
+        chunk_dir.mkdir(parents=True)
+        try:
+            chunks = [
+                TextChunk(
+                    chunk_id="c0000",
+                    pages_0based=[0],
+                    text=(
+                        "The objective is L_i = \\sum_j x_{ij} + beta (1). "
+                        "The result keeps F1-score with p < 0.05."
+                    ),
+                    link_count=0,
+                    image_count=0,
+                )
+            ]
+            (chunk_dir / "c0000.md").write_text(
+                "---\n{}\n---\n\n目标函数只保留结论，统计显著。\n",
+                encoding="utf-8",
+            )
+
+            report = build_translation_qa(chunks, chunk_dir)
+            chunk_report = report["chunks"][0]
+            issue = next(issue for issue in chunk_report["issues"] if issue["type"] == "formula_mismatch")
+            formula_tokens = {item["token"] for item in issue["formulas"]}
+            formula_kinds = {item["kind"] for item in issue["formulas"]}
+
+            self.assertEqual(issue["severity"], "high")
+            self.assertIn("L_i", formula_tokens)
+            self.assertIn("(1)", formula_tokens)
+            self.assertIn("F1-score", formula_tokens)
+            self.assertIn("variable", formula_kinds)
+            self.assertIn("equation_label", formula_kinds)
+            self.assertEqual(report["summary"]["source_equation_label_count"], 1)
+            self.assertEqual(report["summary"]["missing_equation_label_count"], 1)
+            self.assertGreater(report["summary"]["source_formula_token_count"], 0)
+            self.assertGreater(report["summary"]["missing_formula_token_count"], 0)
+
+            plan = build_repair_plan(report)
+            item = next(item for item in plan["items"] if item["issue_type"] == "formula_mismatch")
+            self.assertEqual(item["priority"], "P0")
+            self.assertEqual(item["action"], "rewrite_formula_context")
+            self.assertEqual(item["scope"], "paragraph")
+            self.assertIn("formulas", item["evidence"])
+            requests = build_repair_requests(plan, chunks, chunk_dir)
+            request = next(request for request in requests["requests"] if request["issue_type"] == "formula_mismatch")
+            locked_tokens = set(request["locked_tokens"])
+            self.assertIn("L_i", locked_tokens)
+            self.assertIn("(1)", locked_tokens)
+
+            markdown = translation_qa_to_markdown(report)
+            self.assertIn("formula_mismatch", markdown)
+            self.assertIn("equation_label:(1)", markdown)
         finally:
             if root.exists():
                 shutil.rmtree(root)

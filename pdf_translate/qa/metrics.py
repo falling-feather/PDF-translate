@@ -285,6 +285,10 @@ def build_experiment_metrics(
     entity_unique_count = _as_int(structure_summary.get("entity_unique_count"))
     translation_entity_candidate_count = _as_int(translation_summary.get("entity_candidate_count"))
     missing_entity_token_count = _as_int(translation_summary.get("missing_entity_token_count"))
+    source_formula_token_count = _as_int(translation_summary.get("source_formula_token_count"))
+    missing_formula_token_count = _as_int(translation_summary.get("missing_formula_token_count"))
+    source_equation_label_count = _as_int(translation_summary.get("source_equation_label_count"))
+    missing_equation_label_count = _as_int(translation_summary.get("missing_equation_label_count"))
     source_table_count = _as_int(translation_summary.get("source_table_count")) or table_count
     table_shape_error_count = _as_int(translation_summary.get("table_shape_error_count"))
     source_table_locked_token_count = _as_int(translation_summary.get("source_table_locked_token_count"))
@@ -630,6 +634,10 @@ def build_experiment_metrics(
             "entity_unique_count": entity_unique_count,
             "translation_entity_candidate_count": translation_entity_candidate_count,
             "missing_entity_token_count": missing_entity_token_count,
+            "source_formula_token_count": source_formula_token_count,
+            "missing_formula_token_count": missing_formula_token_count,
+            "source_equation_label_count": source_equation_label_count,
+            "missing_equation_label_count": missing_equation_label_count,
             "source_table_count": source_table_count,
             "table_shape_error_count": table_shape_error_count,
             "source_table_locked_token_count": source_table_locked_token_count,
@@ -881,6 +889,8 @@ def build_experiment_metrics(
                 active_table_continuation_split_reduction_rate_vs_baseline
             ),
             "entity_missing_rate": _rate(missing_entity_token_count, effective_entity_candidate_count),
+            "formula_token_missing_rate": _rate(missing_formula_token_count, source_formula_token_count),
+            "equation_label_missing_rate": _rate(missing_equation_label_count, source_equation_label_count),
             "repair_item_per_chunk": _rate(repair_item_count, chunk_count),
             "repair_request_ready_rate": _rate(repair_backend_request_count, repair_request_count),
             "repair_execution_success_rate": _rate(repair_succeeded_count, repair_executed_request_count),

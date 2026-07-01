@@ -19,7 +19,20 @@ _TABLE_FIGURE_RE = re.compile(
     r"\b(?P<label>Table|Fig(?:ure)?\.?)\s*(?P<num>\d+[A-Za-z]?)\b",
     re.I,
 )
-_MATH_SYMBOL_RE = re.compile(r"(≤|≥|±|≈|=|∑|∫|√|α|β|γ|λ|μ|σ)")
+_MATH_SYMBOL_RE = re.compile(
+    "(\u2264|\u2265|\u2260|\u00b1|\u2248|=|\u2211|\u222b|\u221a|"
+    "\u2192|\u03b1|\u03b2|\u03b3|\u03b4|\u03bb|\u03bc|\u03c3)"
+)
+_EQUATION_LABEL_RE = re.compile(r"(?<![\w])\(\s*\d{1,3}[A-Za-z]?\s*\)")
+_VARIABLE_TOKEN_RE = re.compile(
+    r"\b[A-Za-z](?:_\{?[A-Za-z0-9,+\-]+\}?|\^\{?[A-Za-z0-9,+\-]+\}?)"
+    r"(?:_\{?[A-Za-z0-9,+\-]+\}?|\^\{?[A-Za-z0-9,+\-]+\}?)*\b"
+)
+_METRIC_FORMULA_TOKEN_RE = re.compile(
+    r"\b(?:F1(?:-score)?|p-value|ROC-AUC|AUC|BLEU|ROUGE(?:-[L12])?)\b",
+    re.I,
+)
+_STAT_FORMULA_RE = re.compile(r"\bp\s*(?:<|<=|=|>|>=|\u2264|\u2265)\s*0?\.\d+\b", re.I)
 _ENTITY_MEDIUM_SEVERITY_TYPES = {"model_or_dataset", "acronym"}
 
 
@@ -49,6 +62,64 @@ def _references(text: str) -> list[str]:
 
 def _math_symbols(text: str) -> list[str]:
     return _unique_in_order(_MATH_SYMBOL_RE.findall(text))
+
+
+def _formula_invariants(text: str) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(kind: str, token: str) -> None:
+        value = re.sub(r"\s+", " ", token.strip())
+        if kind == "equation_label":
+            value = re.sub(r"\s+", "", value)
+        if not value:
+            return
+        key = (kind, value.casefold() if kind in {"metric", "statistic"} else value)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append({"kind": kind, "token": value})
+
+    for token in _math_symbols(text):
+        add("symbol", token)
+    for match in _EQUATION_LABEL_RE.finditer(text):
+        add("equation_label", match.group(0))
+    for match in _VARIABLE_TOKEN_RE.finditer(text):
+        add("variable", match.group(0))
+    for match in _METRIC_FORMULA_TOKEN_RE.finditer(text):
+        add("metric", match.group(0))
+    for match in _STAT_FORMULA_RE.finditer(text):
+        add("statistic", match.group(0))
+    return out
+
+
+def _target_contains_formula_invariant(target: str, invariant: dict[str, str]) -> bool:
+    token = str(invariant.get("token") or "")
+    if not token:
+        return True
+    if token in target:
+        return True
+    compact_target = re.sub(r"\s+", "", target)
+    compact_token = re.sub(r"\s+", "", token)
+    if compact_token and compact_token in compact_target:
+        return True
+    kind = str(invariant.get("kind") or "")
+    if kind == "equation_label":
+        fullwidth = compact_token.replace("(", "（").replace(")", "）")
+        return fullwidth in compact_target
+    if kind == "symbol":
+        fullwidth_symbols = {
+            "=": "＝",
+            "\u2264": "≤",
+            "\u2265": "≥",
+            "\u2260": "≠",
+            "\u00b1": "±",
+            "\u2248": "≈",
+        }
+        return fullwidth_symbols.get(token, token) in target
+    if kind in {"metric", "statistic"}:
+        return compact_token.casefold() in compact_target.casefold()
+    return False
 
 
 def _table_figure_tokens(text: str) -> list[dict[str, str]]:
@@ -495,6 +566,18 @@ def _chunk_report(
     ]
     source_symbols = _math_symbols(source)
     missing_symbols = [token for token in source_symbols if token not in target_text]
+    source_formula_invariants = _formula_invariants(source)
+    missing_formula_invariants = [
+        item
+        for item in source_formula_invariants
+        if not _target_contains_formula_invariant(target_text, item)
+    ]
+    source_equation_label_count = sum(
+        1 for item in source_formula_invariants if item.get("kind") == "equation_label"
+    )
+    missing_equation_label_count = sum(
+        1 for item in missing_formula_invariants if item.get("kind") == "equation_label"
+    )
     source_tables = _markdown_table_shapes(source)
     target_markdown_tables = _markdown_tables(target_text)
     target_tables = [
@@ -548,6 +631,20 @@ def _chunk_report(
         )
     if missing_symbols:
         issues.append({"type": "missing_math_symbols", "severity": "medium", "tokens": missing_symbols[:80]})
+    if missing_formula_invariants:
+        high_risk_kinds = {"equation_label", "variable", "statistic"}
+        severity = (
+            "high"
+            if any(item.get("kind") in high_risk_kinds for item in missing_formula_invariants)
+            else "medium"
+        )
+        issues.append(
+            {
+                "type": "formula_mismatch",
+                "severity": severity,
+                "formulas": missing_formula_invariants[:80],
+            }
+        )
     if table_shape_errors:
         issues.append({"type": "table_shape_mismatch", "severity": "high", "tables": table_shape_errors})
     if table_cell_token_errors:
@@ -602,6 +699,10 @@ def _chunk_report(
             "missing_number_count": len(missing_numbers),
             "source_reference_count": len(source_refs),
             "missing_reference_count": len(missing_refs),
+            "source_formula_token_count": len(source_formula_invariants),
+            "missing_formula_token_count": len(missing_formula_invariants),
+            "source_equation_label_count": source_equation_label_count,
+            "missing_equation_label_count": missing_equation_label_count,
             "source_table_count": len(source_tables) or len(table_invariants or []),
             "source_table_ids": [
                 str(table.get("block_id"))
@@ -660,12 +761,20 @@ def build_translation_qa(
     source_table_locked_token_count = 0
     table_cell_token_error_count = 0
     missing_table_locked_token_count = 0
+    source_formula_token_count = 0
+    missing_formula_token_count = 0
+    source_equation_label_count = 0
+    missing_equation_label_count = 0
     for report in reports:
         if report["status"] != "missing_translation":
             translated_count += 1
         metrics = report.get("metrics") or {}
         entity_candidate_count += int(metrics.get("source_entity_candidate_count") or 0)
         missing_entity_count += int(metrics.get("missing_entity_token_count") or 0)
+        source_formula_token_count += int(metrics.get("source_formula_token_count") or 0)
+        missing_formula_token_count += int(metrics.get("missing_formula_token_count") or 0)
+        source_equation_label_count += int(metrics.get("source_equation_label_count") or 0)
+        missing_equation_label_count += int(metrics.get("missing_equation_label_count") or 0)
         table_ids = [str(item) for item in metrics.get("source_table_ids") or [] if str(item)]
         if table_ids:
             source_table_ids.update(table_ids)
@@ -692,6 +801,10 @@ def build_translation_qa(
             "glossary_conflict_count": len(conflicts),
             "entity_candidate_count": entity_candidate_count,
             "missing_entity_token_count": missing_entity_count,
+            "source_formula_token_count": source_formula_token_count,
+            "missing_formula_token_count": missing_formula_token_count,
+            "source_equation_label_count": source_equation_label_count,
+            "missing_equation_label_count": missing_equation_label_count,
             "source_table_count": len(source_table_ids) + source_table_count_without_ids,
             "table_shape_error_count": table_shape_error_count,
             "source_table_locked_token_count": source_table_locked_token_count,
@@ -720,11 +833,15 @@ def translation_qa_to_markdown(report: dict[str, Any]) -> str:
         f"| 术语冲突 | {summary.get('glossary_conflict_count', 0)} |",
         f"| 实体候选 | {summary.get('entity_candidate_count', 0)} |",
         f"| 缺失实体 | {summary.get('missing_entity_token_count', 0)} |",
-            f"| 源表格 | {summary.get('source_table_count', 0)} |",
-            f"| 表格形状异常 | {summary.get('table_shape_error_count', 0)} |",
-            f"| 表格单元格 token 异常 | {summary.get('table_cell_token_error_count', 0)} |",
-            f"| 缺失表格锁定 token | {summary.get('missing_table_locked_token_count', 0)} |",
-            f"| 问题总数 | {summary.get('issue_count', 0)} |",
+        f"| 公式不变量 | {summary.get('source_formula_token_count', 0)} |",
+        f"| 缺失公式不变量 | {summary.get('missing_formula_token_count', 0)} |",
+        f"| 公式编号 | {summary.get('source_equation_label_count', 0)} |",
+        f"| 缺失公式编号 | {summary.get('missing_equation_label_count', 0)} |",
+        f"| 源表格 | {summary.get('source_table_count', 0)} |",
+        f"| 表格形状异常 | {summary.get('table_shape_error_count', 0)} |",
+        f"| 表格单元格 token 异常 | {summary.get('table_cell_token_error_count', 0)} |",
+        f"| 缺失表格锁定 token | {summary.get('missing_table_locked_token_count', 0)} |",
+        f"| 问题总数 | {summary.get('issue_count', 0)} |",
         f"| 最高英文残留比例 | {summary.get('max_english_residual_ratio', 0)} |",
         "",
         "## 问题分布",
@@ -768,6 +885,13 @@ def translation_qa_to_markdown(report: dict[str, Any]) -> str:
                     if isinstance(entity, dict)
                 )
                 lines.append(f"- `{severity}` `{issue_type}`：{entities}")
+            elif "formulas" in issue:
+                formulas = ", ".join(
+                    f"{item.get('kind')}:{item.get('token')}"
+                    for item in issue.get("formulas", [])[:20]
+                    if isinstance(item, dict)
+                )
+                lines.append(f"- `{severity}` `{issue_type}`：{formulas}")
             elif "conflicts" in issue:
                 conflicts = ", ".join(
                     f"{conflict.get('en')} -> {' / '.join(str(v) for v in conflict.get('translations', []))}"

@@ -47,6 +47,12 @@ _ISSUE_RULES = {
         "executor": "translation_backend",
         "reason": "公式或变量符号缺失，优先修复公式邻近段落。",
     },
+    "formula_mismatch": {
+        "action": "rewrite_formula_context",
+        "scope": "paragraph",
+        "executor": "translation_backend",
+        "reason": "公式编号、变量或统计表达缺失，优先修复公式邻近段落。",
+    },
     "missing_glossary_terms": {
         "action": "rewrite_with_glossary_terms",
         "scope": "chunk",
@@ -104,7 +110,18 @@ def _priority(severity: str, issue_type: str) -> str:
 
 def _issue_evidence(issue: dict[str, Any]) -> dict[str, Any]:
     evidence: dict[str, Any] = {}
-    for key in ("tokens", "terms", "entities", "conflicts", "tables", "cells", "samples", "ratio", "detail"):
+    for key in (
+        "tokens",
+        "terms",
+        "entities",
+        "formulas",
+        "conflicts",
+        "tables",
+        "cells",
+        "samples",
+        "ratio",
+        "detail",
+    ):
         if key in issue:
             evidence[key] = issue[key]
     return evidence
@@ -136,6 +153,9 @@ def _locked_tokens_from_evidence(evidence: dict[str, Any]) -> list[str]:
     for entity in evidence.get("entities") or []:
         if isinstance(entity, dict) and str(entity.get("text") or ""):
             tokens.append(str(entity["text"]))
+    for formula in evidence.get("formulas") or []:
+        if isinstance(formula, dict) and str(formula.get("token") or ""):
+            tokens.append(str(formula["token"]))
     for table in evidence.get("tables") or []:
         if isinstance(table, dict):
             tokens.extend(str(token) for token in table.get("numeric_tokens") or [] if str(token))
