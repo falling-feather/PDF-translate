@@ -45,6 +45,11 @@ def _head_snippet(text: str, limit: int = 160) -> str:
     return _compact(text)[:limit]
 
 
+def _merged_preview(previous: str, following: str, limit: int = 260) -> str:
+    merged = _compact(previous).rstrip() + " " + _compact(following).lstrip()
+    return merged[:limit]
+
+
 def _ends_without_terminal_punctuation(text: str) -> bool:
     compact = _compact(text).rstrip(_TRAILING_WRAPPERS)
     if not compact:
@@ -66,6 +71,14 @@ def _starts_like_continuation(text: str) -> bool:
         return True
     first = compact[0]
     return ("a" <= first <= "z") or bool(_CONTINUATION_START_RE.match(compact))
+
+
+def _continuation_kind(prev_block: BlockIR, next_block: BlockIR, possible_table_continuation: bool) -> str:
+    if possible_table_continuation:
+        return "table_continuation"
+    if prev_block.type == next_block.type and prev_block.type in _CONTINUABLE_BLOCK_TYPES:
+        return f"{prev_block.type}_continuation"
+    return "text_continuation"
 
 
 def _page_boundary_fragment(prev_page: PageIR, next_page: PageIR) -> dict[str, Any] | None:
@@ -103,13 +116,22 @@ def _page_boundary_fragment(prev_page: PageIR, next_page: PageIR) -> dict[str, A
     severity = "high" if possible_table_continuation or (prev_unfinished and next_continues) else "medium"
     if possible_table_continuation:
         suggestion = "keep_pages_in_same_structure_chunk_and_reconstruct_continued_table"
+        stitch_action = "preserve_table_segments_together"
+        joiner = "preserve_table_rows"
     else:
         suggestion = "keep_pages_in_same_structure_chunk_or_apply_deferred_tail"
+        stitch_action = "translate_as_continuous_cross_page_text"
+        joiner = "space"
+    continuation_kind = _continuation_kind(prev_block, next_block, possible_table_continuation)
 
     return {
         "boundary_id": f"p{prev_page.page_no}-p{next_page.page_no}",
         "pages_1based": [prev_page.page_no, next_page.page_no],
         "severity": severity,
+        "continuation_kind": continuation_kind,
+        "stitch_action": stitch_action,
+        "stitch_confidence": severity,
+        "joiner": joiner,
         "reasons": reasons,
         "previous_block_id": prev_block.block_id,
         "next_block_id": next_block.block_id,
@@ -117,6 +139,7 @@ def _page_boundary_fragment(prev_page: PageIR, next_page: PageIR) -> dict[str, A
         "next_block_type": next_block.type,
         "previous_tail": _tail_snippet(prev_block.text),
         "next_head": _head_snippet(next_block.text),
+        "merged_preview": _merged_preview(prev_block.text, next_block.text),
         "suggested_handling": suggestion,
     }
 

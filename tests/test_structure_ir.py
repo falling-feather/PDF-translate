@@ -1295,12 +1295,15 @@ class StructureIRTests(unittest.TestCase):
         fragment = qa["page_boundary_fragments"][0]
         self.assertEqual(fragment["pages_1based"], [1, 2])
         self.assertEqual(fragment["severity"], "high")
+        self.assertEqual(fragment["continuation_kind"], "paragraph_continuation")
+        self.assertEqual(fragment["stitch_action"], "translate_as_continuous_cross_page_text")
         self.assertEqual(fragment["previous_block_id"], "p1-b0000")
         self.assertEqual(fragment["next_block_id"], "p2-b0000")
         self.assertIn("previous_page_ends_without_terminal_punctuation", fragment["reasons"])
         self.assertIn("next_page_starts_like_continuation", fragment["reasons"])
         self.assertIn("The proposed method improves", fragment["previous_tail"])
         self.assertIn("accuracy under domain shift", fragment["next_head"])
+        self.assertIn("The proposed method improves accuracy under domain shift", fragment["merged_preview"])
 
     def test_structure_chunks_protect_page_boundary_fragments(self) -> None:
         long_unfinished = "The proposed method improves " + ("robustness " * 105)
@@ -1352,7 +1355,84 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(chunks[0].pages_0based, [0, 1])
         self.assertEqual(chunks[0].boundary_fragment_ids, ["p1-p2"])
         self.assertIn("protected_page_boundary:p1-p2", chunks[0].warnings)
+        self.assertTrue(chunks[0].boundary_stitch_notes)
+        self.assertIn("[结构续接提示]", chunks[0].text)
         self.assertIn("accuracy under domain shift", chunks[0].text)
+
+    def test_structure_chunks_prioritize_table_continuation_boundary(self) -> None:
+        table_page_1 = ("Metric Acc F1\n" + ("BERT 91 88\n" * 90)).strip()
+        table_page_2 = "RoBERTa 92 89\nXLNet 90 87"
+        doc_ir = DocumentIR(
+            doc_id="table-continuation-boundary",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text=table_page_1,
+                    blocks=[
+                        BlockIR("p1-b0000", 1, "table", table_page_1, (40, 100, 520, 760), 0),
+                    ],
+                ),
+                PageIR(
+                    page_no=2,
+                    width=600,
+                    height=800,
+                    text=table_page_2,
+                    blocks=[
+                        BlockIR("p2-b0000", 2, "table", table_page_2, (40, 80, 520, 180), 0),
+                    ],
+                ),
+            ],
+        )
+
+        structure_qa = build_structure_qa(doc_ir)
+        fragment = structure_qa["page_boundary_fragments"][0]
+        self.assertEqual(fragment["continuation_kind"], "table_continuation")
+        self.assertEqual(fragment["stitch_action"], "preserve_table_segments_together")
+        self.assertEqual(structure_qa["summary"]["table_continuation_boundary_count"], 1)
+        self.assertEqual(structure_qa["summary"]["continuation_kind_counts"]["table_continuation"], 1)
+
+        page_chunks = [
+            TextChunk("c0000", [0], table_page_1, 0, 0),
+            TextChunk("c0001", [1], table_page_2, 0, 0),
+        ]
+        page_report = build_chunk_boundary_qa(page_chunks, structure_qa, pipeline_variant="page")
+        self.assertEqual(page_report["summary"]["table_continuation_boundary_count"], 1)
+        self.assertEqual(page_report["summary"]["table_continuation_split_count"], 1)
+        self.assertEqual(page_report["summary"]["table_continuation_split_rate"], 1.0)
+        self.assertTrue(page_report["boundaries"][0]["is_table_continuation"])
+
+        structure_chunks = build_structure_chunks(
+            doc_ir,
+            target_chars=1000,
+            max_chars=2000,
+            max_pages_per_chunk=1,
+        )
+        self.assertEqual(len(structure_chunks), 1)
+        self.assertEqual(structure_chunks[0].boundary_fragment_ids, ["p1-p2"])
+        self.assertIn("protected_page_boundary:p1-p2", structure_chunks[0].warnings)
+        self.assertIn("protected_table_continuation:p1-p2", structure_chunks[0].warnings)
+        self.assertIn("preserve_table_segments_together", structure_chunks[0].boundary_stitch_notes[0])
+        self.assertIn("[结构续接提示]", structure_chunks[0].text)
+
+        structure_report = build_chunk_boundary_qa(
+            structure_chunks,
+            structure_qa,
+            pipeline_variant="structure",
+        )
+        self.assertEqual(structure_report["summary"]["table_continuation_protected_count"], 1)
+        self.assertEqual(structure_report["summary"]["table_continuation_split_count"], 0)
+        self.assertEqual(structure_report["summary"]["table_continuation_protected_rate"], 1.0)
+        comparison = build_chunk_strategy_comparison(
+            {"page": page_chunks, "structure": structure_chunks},
+            structure_qa,
+            active_strategy="structure",
+        )
+        self.assertEqual(comparison["summary"]["baseline_table_continuation_split_count"], 1)
+        self.assertEqual(comparison["summary"]["active_table_continuation_split_count"], 0)
+        self.assertEqual(comparison["summary"]["active_table_continuation_split_reduction_vs_baseline"], 1)
 
     def test_chunk_boundary_qa_reports_split_and_protected_fragments(self) -> None:
         doc_ir = DocumentIR(
@@ -2210,6 +2290,13 @@ class StructureIRTests(unittest.TestCase):
                     "entity_unique_count": 5,
                     "entity_type_counts": {"model_or_dataset": 2, "person": 1},
                     "page_boundary_fragment_count": 2,
+                    "page_boundary_stitch_candidate_count": 2,
+                    "table_continuation_boundary_count": 1,
+                    "continuation_kind_counts": {"table_continuation": 1, "paragraph_continuation": 1},
+                    "stitch_action_counts": {
+                        "preserve_table_segments_together": 1,
+                        "translate_as_continuous_cross_page_text": 1,
+                    },
                     "page_boundary_fragment_rate": 0.6667,
                 },
             },
@@ -2266,6 +2353,10 @@ class StructureIRTests(unittest.TestCase):
                     "protected_boundary_count": 1,
                     "co_located_boundary_count": 1,
                     "high_risk_split_count": 1,
+                    "table_continuation_boundary_count": 1,
+                    "table_continuation_protected_count": 1,
+                    "table_continuation_split_count": 0,
+                    "table_continuation_co_located_count": 1,
                     "budget_overflow_chunk_count": 1,
                     "budget_overflow_char_total": 160,
                     "structural_relation_protected_count": 2,
@@ -2280,6 +2371,10 @@ class StructureIRTests(unittest.TestCase):
                     "active_split_boundary_count": 1,
                     "active_split_reduction_vs_baseline": 1,
                     "active_split_reduction_rate_vs_baseline": 0.5,
+                    "baseline_table_continuation_split_count": 1,
+                    "active_table_continuation_split_count": 0,
+                    "active_table_continuation_split_reduction_vs_baseline": 1,
+                    "active_table_continuation_split_reduction_rate_vs_baseline": 1.0,
                 },
             },
             structure_hints_manifest={
@@ -2619,6 +2714,11 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["missing_table_locked_token_count"], 3)
         self.assertEqual(metrics["quality"]["split_boundary_count"], 1)
         self.assertEqual(metrics["quality"]["protected_boundary_count"], 1)
+        self.assertEqual(metrics["quality"]["page_boundary_stitch_candidate_count"], 2)
+        self.assertEqual(metrics["quality"]["table_continuation_boundary_count"], 1)
+        self.assertEqual(metrics["quality"]["table_continuation_protected_count"], 1)
+        self.assertEqual(metrics["quality"]["table_continuation_split_count"], 0)
+        self.assertEqual(metrics["quality"]["table_continuation_co_located_count"], 1)
         self.assertEqual(metrics["quality"]["budget_overflow_chunk_count"], 1)
         self.assertEqual(metrics["quality"]["budget_overflow_char_total"], 160)
         self.assertEqual(metrics["quality"]["structural_relation_protected_count"], 2)
@@ -2627,6 +2727,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["cross_page_parent_gap_max"], 1)
         self.assertEqual(metrics["quality"]["baseline_split_boundary_count"], 2)
         self.assertEqual(metrics["quality"]["active_split_reduction_vs_baseline"], 1)
+        self.assertEqual(metrics["quality"]["baseline_table_continuation_split_count"], 1)
+        self.assertEqual(metrics["quality"]["active_table_continuation_split_count"], 0)
+        self.assertEqual(metrics["quality"]["active_table_continuation_split_reduction_vs_baseline"], 1)
         self.assertEqual(metrics["quality"]["reconstructable_table_count"], 1)
         self.assertEqual(metrics["quality"]["table_cell_count"], 8)
         self.assertEqual(metrics["quality"]["table_empty_cell_count"], 2)
@@ -2670,14 +2773,19 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["table_footnote_unbound_rate"], 0.5)
         self.assertEqual(metrics["rates"]["split_boundary_rate"], 0.5)
         self.assertEqual(metrics["rates"]["protected_boundary_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["table_continuation_boundary_split_rate"], 0.0)
+        self.assertEqual(metrics["rates"]["table_continuation_boundary_protected_rate"], 1.0)
         self.assertEqual(metrics["rates"]["budget_overflow_chunk_rate"], 0.5)
         self.assertEqual(metrics["rates"]["active_split_reduction_rate_vs_baseline"], 0.5)
+        self.assertEqual(metrics["rates"]["active_table_continuation_split_reduction_rate_vs_baseline"], 1.0)
         self.assertEqual(metrics["rates"]["cross_page_relationship_rate"], 0.3333)
         self.assertEqual(metrics["rates"]["cross_page_parent_success_rate"], 1.0)
         self.assertEqual(metrics["rates"]["caption_cross_page_link_rate"], 0.5)
         self.assertEqual(metrics["rates"]["footnote_cross_page_link_rate"], 0.0)
         self.assertEqual(metrics["breakdowns"]["budget_split_reason_counts"]["target_chars"], 1)
         self.assertEqual(metrics["breakdowns"]["budget_pressure_counts"]["over_max"], 1)
+        self.assertEqual(metrics["breakdowns"]["continuation_kind_counts"]["table_continuation"], 1)
+        self.assertEqual(metrics["breakdowns"]["stitch_action_counts"]["preserve_table_segments_together"], 1)
         self.assertEqual(metrics["breakdowns"]["table_merged_cell_candidate_type_counts"]["colspan"], 2)
         self.assertEqual(
             metrics["breakdowns"]["table_merged_cell_candidate_reason_counts"]["single_cell_ragged_row"],

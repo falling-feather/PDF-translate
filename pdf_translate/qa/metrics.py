@@ -139,6 +139,8 @@ def build_experiment_metrics(
 
     block_counts = _counter_dict(structure_summary.get("block_counts"))
     entity_type_counts = _counter_dict(structure_summary.get("entity_type_counts"))
+    continuation_kind_counts = _counter_dict(structure_summary.get("continuation_kind_counts"))
+    stitch_action_counts = _counter_dict(structure_summary.get("stitch_action_counts"))
     vision_action_counts = _counter_dict(vision_summary.get("action_counts"))
     vision_risk_counts = _counter_dict(vision_summary.get("risk_counts"))
     ocr_task_scope_counts = _counter_dict(ocr_task_summary.get("scope_counts"))
@@ -272,11 +274,22 @@ def build_experiment_metrics(
     table_cell_token_error_count = _as_int(translation_summary.get("table_cell_token_error_count"))
     missing_table_locked_token_count = _as_int(translation_summary.get("missing_table_locked_token_count"))
     page_boundary_fragment_count = _as_int(structure_summary.get("page_boundary_fragment_count"))
+    page_boundary_stitch_candidate_count = _as_int(
+        structure_summary.get("page_boundary_stitch_candidate_count")
+    )
+    table_continuation_boundary_count = _as_int(structure_summary.get("table_continuation_boundary_count"))
     page_boundary_fragment_rate = _as_float(structure_summary.get("page_boundary_fragment_rate"))
     split_boundary_count = _as_int(chunk_boundary_summary.get("split_boundary_count"))
     protected_boundary_count = _as_int(chunk_boundary_summary.get("protected_boundary_count"))
     co_located_boundary_count = _as_int(chunk_boundary_summary.get("co_located_boundary_count"))
     high_risk_split_count = _as_int(chunk_boundary_summary.get("high_risk_split_count"))
+    table_continuation_protected_count = _as_int(
+        chunk_boundary_summary.get("table_continuation_protected_count")
+    )
+    table_continuation_split_count = _as_int(chunk_boundary_summary.get("table_continuation_split_count"))
+    table_continuation_co_located_count = _as_int(
+        chunk_boundary_summary.get("table_continuation_co_located_count")
+    )
     budget_overflow_chunk_count = _as_int(chunk_boundary_summary.get("budget_overflow_chunk_count"))
     budget_overflow_char_total = _as_int(chunk_boundary_summary.get("budget_overflow_char_total"))
     structural_relation_protected_count = _as_int(
@@ -289,6 +302,18 @@ def build_experiment_metrics(
     active_split_reduction_vs_baseline = _as_int(chunk_strategy_summary.get("active_split_reduction_vs_baseline"))
     active_split_reduction_rate_vs_baseline = _as_float(
         chunk_strategy_summary.get("active_split_reduction_rate_vs_baseline")
+    )
+    baseline_table_continuation_split_count = _as_int(
+        chunk_strategy_summary.get("baseline_table_continuation_split_count")
+    )
+    active_table_continuation_split_count = _as_int(
+        chunk_strategy_summary.get("active_table_continuation_split_count")
+    )
+    active_table_continuation_split_reduction_vs_baseline = _as_int(
+        chunk_strategy_summary.get("active_table_continuation_split_reduction_vs_baseline")
+    )
+    active_table_continuation_split_reduction_rate_vs_baseline = _as_float(
+        chunk_strategy_summary.get("active_table_continuation_split_reduction_rate_vs_baseline")
     )
     routed_page_count = _as_int(vision_summary.get("routed_page_count"))
     vision_preview_page_count = _as_int(vision_summary.get("preview_page_count"))
@@ -514,17 +539,27 @@ def build_experiment_metrics(
             "table_cell_token_error_count": table_cell_token_error_count,
             "missing_table_locked_token_count": missing_table_locked_token_count,
             "page_boundary_fragment_count": page_boundary_fragment_count,
+            "page_boundary_stitch_candidate_count": page_boundary_stitch_candidate_count,
             "page_boundary_fragment_rate": page_boundary_fragment_rate,
+            "table_continuation_boundary_count": table_continuation_boundary_count,
             "split_boundary_count": split_boundary_count,
             "protected_boundary_count": protected_boundary_count,
             "co_located_boundary_count": co_located_boundary_count,
             "high_risk_split_count": high_risk_split_count,
+            "table_continuation_protected_count": table_continuation_protected_count,
+            "table_continuation_split_count": table_continuation_split_count,
+            "table_continuation_co_located_count": table_continuation_co_located_count,
             "budget_overflow_chunk_count": budget_overflow_chunk_count,
             "budget_overflow_char_total": budget_overflow_char_total,
             "structural_relation_protected_count": structural_relation_protected_count,
             "baseline_split_boundary_count": baseline_split_boundary_count,
             "active_split_boundary_count": active_split_boundary_count,
             "active_split_reduction_vs_baseline": active_split_reduction_vs_baseline,
+            "baseline_table_continuation_split_count": baseline_table_continuation_split_count,
+            "active_table_continuation_split_count": active_table_continuation_split_count,
+            "active_table_continuation_split_reduction_vs_baseline": (
+                active_table_continuation_split_reduction_vs_baseline
+            ),
             "routed_page_count": routed_page_count,
             "vision_preview_page_count": vision_preview_page_count,
             "vision_region_crop_count": vision_region_crop_count,
@@ -693,8 +728,19 @@ def build_experiment_metrics(
             "split_boundary_rate": _rate(split_boundary_count, page_boundary_fragment_count),
             "protected_boundary_rate": _rate(protected_boundary_count, page_boundary_fragment_count),
             "co_located_boundary_rate": _rate(co_located_boundary_count, page_boundary_fragment_count),
+            "table_continuation_boundary_split_rate": _rate(
+                table_continuation_split_count,
+                table_continuation_boundary_count,
+            ),
+            "table_continuation_boundary_protected_rate": _rate(
+                table_continuation_protected_count,
+                table_continuation_boundary_count,
+            ),
             "budget_overflow_chunk_rate": _rate(budget_overflow_chunk_count, chunk_count),
             "active_split_reduction_rate_vs_baseline": active_split_reduction_rate_vs_baseline,
+            "active_table_continuation_split_reduction_rate_vs_baseline": (
+                active_table_continuation_split_reduction_rate_vs_baseline
+            ),
             "entity_missing_rate": _rate(missing_entity_token_count, effective_entity_candidate_count),
             "repair_item_per_chunk": _rate(repair_item_count, chunk_count),
             "repair_request_ready_rate": _rate(repair_backend_request_count, repair_request_count),
@@ -768,6 +814,8 @@ def build_experiment_metrics(
         "breakdowns": {
             "block_counts": block_counts,
             "entity_type_counts": entity_type_counts,
+            "continuation_kind_counts": continuation_kind_counts,
+            "stitch_action_counts": stitch_action_counts,
             "vision_action_counts": vision_action_counts,
             "vision_risk_counts": vision_risk_counts,
             "ocr_task_scope_counts": ocr_task_scope_counts,

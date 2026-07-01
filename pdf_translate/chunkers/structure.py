@@ -19,6 +19,7 @@ class StructureChunk(TextChunk):
     block_types: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     boundary_fragment_ids: list[str] = field(default_factory=list)
+    boundary_stitch_notes: list[str] = field(default_factory=list)
     structural_relation_ids: list[str] = field(default_factory=list)
     approx_tokens: int = 0
     budget_target_chars: int = 0
@@ -39,6 +40,7 @@ class StructureChunk(TextChunk):
             "approx_tokens": self.approx_tokens,
             "warnings": self.warnings,
             "boundary_fragment_ids": self.boundary_fragment_ids,
+            "boundary_stitch_notes": self.boundary_stitch_notes,
             "structural_relation_ids": self.structural_relation_ids,
             "budget": {
                 "target_chars": self.budget_target_chars,
@@ -97,6 +99,29 @@ def _format_block(block: BlockIR) -> str:
     return f"[第 {block.page_no} 页｜{label}｜{block.block_id}]\n{block.text.strip()}"
 
 
+def _boundary_stitch_note(fragment: dict) -> str:
+    boundary_id = str(fragment.get("boundary_id") or "")
+    previous_block_id = str(fragment.get("previous_block_id") or "")
+    next_block_id = str(fragment.get("next_block_id") or "")
+    kind = str(fragment.get("continuation_kind") or "cross_page_continuation")
+    action = str(fragment.get("stitch_action") or "translate_as_continuous_cross_page_text")
+    preview = str(fragment.get("merged_preview") or "").strip()
+    clipped_preview = preview[:160] + ("..." if len(preview) > 160 else "")
+    parts = [f"{boundary_id}: {previous_block_id} -> {next_block_id}", f"类型={kind}", f"处理={action}"]
+    if clipped_preview:
+        parts.append(f"续接预览={clipped_preview}")
+    return "；".join(parts)
+
+
+def _is_table_continuation_fragment(fragment: dict | None) -> bool:
+    if not isinstance(fragment, dict):
+        return False
+    if str(fragment.get("continuation_kind") or "") == "table_continuation":
+        return True
+    reasons = fragment.get("reasons")
+    return isinstance(reasons, list) and "possible_table_continuation" in reasons
+
+
 def _make_chunk(
     chunk_index: int,
     blocks: list[BlockIR],
@@ -104,6 +129,7 @@ def _make_chunk(
     image_count: int,
     warnings: list[str],
     boundary_fragment_ids: list[str],
+    boundary_stitch_notes: list[str],
     structural_relation_ids: list[str],
     target_chars: int,
     max_chars: int,
@@ -111,7 +137,12 @@ def _make_chunk(
 ) -> StructureChunk:
     pages = sorted({b.page_no - 1 for b in blocks})
     type_counts = Counter(b.type for b in blocks)
-    text = "\n\n".join(_format_block(b) for b in blocks)
+    body = "\n\n".join(_format_block(b) for b in blocks)
+    if boundary_stitch_notes:
+        note_text = "\n".join(f"- {note}" for note in sorted(set(boundary_stitch_notes)))
+        text = "[结构续接提示]\n以下页边界疑似由 PDF 分页造成，请翻译时保持语义连续，不要把页码边界当作自然段落边界。\n" + note_text + "\n\n" + body
+    else:
+        text = body
     approx_chars = len(text)
     return StructureChunk(
         chunk_id=f"c{chunk_index:04d}",
@@ -123,6 +154,7 @@ def _make_chunk(
         block_types=dict(type_counts),
         warnings=warnings,
         boundary_fragment_ids=boundary_fragment_ids,
+        boundary_stitch_notes=boundary_stitch_notes,
         structural_relation_ids=structural_relation_ids,
         approx_tokens=estimate_token_count(approx_chars),
         budget_target_chars=target_chars,
@@ -211,6 +243,7 @@ def build_structure_chunks(
     current_warnings: list[str] = []
     current_page_nos: set[int] = set()
     current_boundary_fragment_ids: list[str] = []
+    current_boundary_stitch_notes: list[str] = []
     current_structural_relation_ids: list[str] = []
     boundary_fragments = _boundary_fragment_map(doc_ir)
     protected_page_limit = max_pages_per_chunk + 1
@@ -229,7 +262,7 @@ def build_structure_chunks(
 
     def flush(split_reason: str = "end_of_document") -> None:
         nonlocal current, current_links, current_images, current_warnings, current_page_nos
-        nonlocal current_boundary_fragment_ids, current_structural_relation_ids
+        nonlocal current_boundary_fragment_ids, current_boundary_stitch_notes, current_structural_relation_ids
         if not current:
             return
         chunks.append(
@@ -240,6 +273,7 @@ def build_structure_chunks(
                 current_images,
                 sorted(set(current_warnings)),
                 sorted(set(current_boundary_fragment_ids)),
+                sorted(set(current_boundary_stitch_notes)),
                 sorted(set(current_structural_relation_ids)),
                 target_chars,
                 max_chars,
@@ -252,6 +286,7 @@ def build_structure_chunks(
         current_warnings = []
         current_page_nos = set()
         current_boundary_fragment_ids = []
+        current_boundary_stitch_notes = []
         current_structural_relation_ids = []
 
     for page in doc_ir.pages:
@@ -290,7 +325,10 @@ def build_structure_chunks(
                 boundary_id = str(protected_fragment.get("boundary_id") or "")
                 if boundary_id:
                     current_boundary_fragment_ids.append(boundary_id)
+                    current_boundary_stitch_notes.append(_boundary_stitch_note(protected_fragment))
                     current_warnings.append(f"protected_page_boundary:{boundary_id}")
+                    if _is_table_continuation_fragment(protected_fragment):
+                        current_warnings.append(f"protected_table_continuation:{boundary_id}")
             if structural_relation_id:
                 current_structural_relation_ids.append(structural_relation_id)
                 current_warnings.append(f"protected_structural_relation:{structural_relation_id}")
