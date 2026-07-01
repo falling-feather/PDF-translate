@@ -9,7 +9,12 @@ from pathlib import Path
 import fitz
 
 from pdf_translate.config import AppConfig
-from pdf_translate.experiments import load_sample_metadata, parse_variant_specs, run_batch_experiment
+from pdf_translate.experiments import (
+    load_sample_metadata,
+    parse_variant_specs,
+    run_batch_experiment,
+    write_batch_experiment_evidence,
+)
 
 
 class BatchExperimentTests(unittest.TestCase):
@@ -153,6 +158,43 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertEqual(review_rows[0]["include_in_patent_evidence"], "")
             self.assertEqual(review_rows[0]["human_score_pdf"], "")
             self.assertIn("ocr_structured_table_gate_pass_rate", review_rows[0])
+            review_rows[0].update(
+                {
+                    "human_score": "4.5",
+                    "human_score_table_readability": "4",
+                    "human_score_structure_coherence": "5",
+                    "include_in_patent_evidence": "是",
+                    "patent_evidence_notes": "结构化表格 OCR 门禁可作为证据",
+                    "reviewer": "导师",
+                    "ocr_structured_table_candidate_count": "2",
+                    "ocr_structured_table_gate_review_count": "1",
+                    "ocr_structured_table_gate_pass_rate": "0.75",
+                    "ocr_table_cell_bbox_coverage_rate": "0.5",
+                    "ocr_structured_table_gate_issues": "structured_table_missing_cell_bboxes:1",
+                }
+            )
+            with review_csv.open("w", encoding="utf-8-sig", newline="") as review_file:
+                writer = csv.DictWriter(review_file, fieldnames=list(review_rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(review_rows)
+
+            evidence = write_batch_experiment_evidence(summary_json, review_csv, output_dir)
+            evidence_json = output_dir / "batch_experiment_evidence.json"
+            evidence_md = output_dir / "batch_experiment_evidence.md"
+            self.assertTrue(evidence_json.is_file())
+            self.assertTrue(evidence_md.is_file())
+            self.assertEqual(evidence["schema_version"], "batch-experiment-evidence-v1")
+            self.assertEqual(evidence["included_count"], 1)
+            self.assertEqual(evidence["score_averages"]["human_score"]["average"], 4.5)
+            self.assertEqual(
+                evidence["ocr_structured_table_gate_summary"]["gate_issue_counts"][
+                    "structured_table_missing_cell_bboxes"
+                ],
+                1,
+            )
+            self.assertEqual(evidence["evidence_candidates"][0]["reviewer"], "导师")
+            self.assertIn("translated_pdf", evidence["evidence_candidates"][0]["files"])
+            self.assertIn("结构化表格 OCR 门禁可作为证据", evidence_md.read_text(encoding="utf-8"))
         finally:
             if root.exists():
                 shutil.rmtree(root)

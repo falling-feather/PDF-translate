@@ -8,7 +8,12 @@ import typer
 
 from pdf_translate.config import AppConfig
 from pdf_translate import pipeline
-from pdf_translate.experiments import load_sample_metadata, parse_variant_specs, run_batch_experiment
+from pdf_translate.experiments import (
+    load_sample_metadata,
+    parse_variant_specs,
+    run_batch_experiment,
+    write_batch_experiment_evidence,
+)
 from pdf_translate.server.jobs import JobRegistry
 from pdf_translate.server.security_preflight import build_security_preflight
 from pdf_translate.translators.registry import backend_choice_text
@@ -304,6 +309,46 @@ def cmd_experiment(
     typer.echo(f"Markdown 报告: {(output_dir / 'batch_experiment_summary.md').resolve()}")
     typer.echo(f"人工评分表: {(output_dir / 'batch_experiment_review.csv').resolve()}")
     typer.echo(f"成功/总数: {report['succeeded_count']}/{report['run_count']}")
+
+
+@app.command("experiment-evidence")
+def cmd_experiment_evidence(
+    summary_json: Path = typer.Option(
+        ...,
+        "--summary-json",
+        exists=True,
+        dir_okay=False,
+        help="批量实验生成的 batch_experiment_summary.json",
+    ),
+    review_csv: Path | None = typer.Option(
+        None,
+        "--review-csv",
+        exists=True,
+        dir_okay=False,
+        help="填写后的 batch_experiment_review.csv；缺省使用 summary_json 同目录文件",
+    ),
+    output_dir: Path | None = typer.Option(
+        None,
+        "--output-dir",
+        "-o",
+        help="证据摘要输出目录；缺省写回 summary_json 同目录",
+    ),
+    require_selected: bool = typer.Option(
+        False,
+        "--require-selected",
+        help="没有任何 include_in_patent_evidence 入选行时返回错误",
+    ),
+) -> None:
+    review_path = review_csv or summary_json.parent / "batch_experiment_review.csv"
+    if not review_path.is_file():
+        raise typer.BadParameter(f"review csv not found: {review_path}")
+    target_dir = output_dir or summary_json.parent
+    evidence = write_batch_experiment_evidence(summary_json, review_path, target_dir)
+    if require_selected and not evidence.get("included_count"):
+        raise typer.BadParameter("no rows were selected for patent evidence")
+    typer.echo(f"专利证据 JSON: {(target_dir / 'batch_experiment_evidence.json').resolve()}")
+    typer.echo(f"专利证据 Markdown: {(target_dir / 'batch_experiment_evidence.md').resolve()}")
+    typer.echo(f"纳入证据: {evidence.get('included_count', 0)}/{evidence.get('review_row_count', 0)}")
 
 
 def main() -> None:

@@ -13,6 +13,7 @@ from pdf_translate import pipeline
 from pdf_translate.config import AppConfig
 
 SCHEMA_VERSION = "batch-experiment-v1"
+EVIDENCE_SCHEMA_VERSION = "batch-experiment-evidence-v1"
 
 REVIEW_SCORE_FIELDS = [
     "human_score_markdown",
@@ -28,6 +29,8 @@ REVIEW_DECISION_FIELDS = [
     "include_in_patent_evidence",
     "patent_evidence_notes",
 ]
+
+EVIDENCE_SCORE_FIELDS = ["human_score", *REVIEW_SCORE_FIELDS]
 
 SUMMARY_FIELDS: dict[str, list[str]] = {
     "quality": [
@@ -799,6 +802,396 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
                 }
             )
     return path
+
+
+def read_batch_experiment_review_csv(path: Path) -> list[dict[str, str]]:
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        return [dict(row) for row in csv.DictReader(f)]
+
+
+def _review_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _review_truthy(value: Any) -> bool:
+    text = _review_text(value).lower()
+    return text in {"1", "true", "yes", "y", "include", "included", "pass", "ok", "是", "纳入", "采纳", "通过"}
+
+
+def _review_number(value: Any) -> float | None:
+    text = _review_text(value)
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _review_has_content(row: dict[str, Any]) -> bool:
+    review_fields = [
+        *EVIDENCE_SCORE_FIELDS,
+        *REVIEW_DECISION_FIELDS,
+        "reviewer",
+        "review_notes",
+    ]
+    return any(_review_text(row.get(field)) for field in review_fields)
+
+
+def _score_average(rows: list[dict[str, Any]], field: str) -> dict[str, float | int]:
+    values = [number for row in rows if (number := _review_number(row.get(field))) is not None]
+    return {"average": _mean(values), "count": len(values)}
+
+
+def _parse_counter_text(value: Any) -> dict[str, int]:
+    text = _review_text(value)
+    if not text:
+        return {}
+    result: dict[str, int] = {}
+    for part in text.split(";"):
+        item = part.strip()
+        if not item or ":" not in item:
+            continue
+        key, raw_count = item.rsplit(":", 1)
+        number = _review_number(raw_count)
+        if number is None:
+            continue
+        result[key.strip()] = result.get(key.strip(), 0) + int(number)
+    return dict(sorted(result.items()))
+
+
+def _merge_counter_texts(rows: list[dict[str, Any]], field: str) -> dict[str, int]:
+    return _merge_counter_dicts([_parse_counter_text(row.get(field)) for row in rows])
+
+
+def _review_group_summary(rows: list[dict[str, Any]], field: str) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        key = _review_text(row.get(field)) or "unknown"
+        groups.setdefault(key, []).append(row)
+
+    result: list[dict[str, Any]] = []
+    for key, group_rows in sorted(groups.items()):
+        result.append(
+            {
+                field: key,
+                "run_count": len(group_rows),
+                "reviewed_count": sum(1 for row in group_rows if _review_has_content(row)),
+                "included_count": sum(1 for row in group_rows if _review_truthy(row.get("include_in_patent_evidence"))),
+                "human_score": _score_average(group_rows, "human_score"),
+                "table_readability_score": _score_average(group_rows, "human_score_table_readability"),
+                "structure_coherence_score": _score_average(group_rows, "human_score_structure_coherence"),
+                "ocr_structured_table_gate_pass_rate": _score_average(
+                    group_rows,
+                    "ocr_structured_table_gate_pass_rate",
+                ),
+                "ocr_table_cell_bbox_coverage_rate": _score_average(
+                    group_rows,
+                    "ocr_table_cell_bbox_coverage_rate",
+                ),
+            }
+        )
+    return result
+
+
+def _review_sum(rows: list[dict[str, Any]], field: str) -> int:
+    total = 0
+    for row in rows:
+        number = _review_number(row.get(field))
+        if number is not None:
+            total += int(number)
+    return total
+
+
+def _review_record_key(row: dict[str, Any]) -> tuple[str, str]:
+    return (_review_text(row.get("sample_id")), _review_text(row.get("variant")))
+
+
+def _review_record_key_with_source(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        _review_text(row.get("sample_id")),
+        _review_text(row.get("variant")),
+        _metadata_key(_review_text(row.get("source_pdf"))),
+    )
+
+
+def _selected_record_metrics(record: dict[str, Any]) -> dict[str, Any]:
+    metrics = record.get("metrics", {}) if isinstance(record, dict) else {}
+    quality = metrics.get("quality", {}) if isinstance(metrics, dict) else {}
+    rates = metrics.get("rates", {}) if isinstance(metrics, dict) else {}
+    performance = metrics.get("performance", {}) if isinstance(metrics, dict) else {}
+    return {
+        "translation_issue_count": quality.get("translation_issue_count"),
+        "table_shape_error_count": quality.get("table_shape_error_count"),
+        "table_cell_token_error_count": quality.get("table_cell_token_error_count"),
+        "ocr_structured_table_gate_pass_rate": rates.get("ocr_structured_table_gate_pass_rate"),
+        "ocr_table_cell_bbox_coverage_rate": rates.get("ocr_table_cell_bbox_coverage_rate"),
+        "split_boundary_rate": rates.get("split_boundary_rate"),
+        "protected_boundary_rate": rates.get("protected_boundary_rate"),
+        "total_elapsed_ms": performance.get("total_elapsed_ms"),
+        "estimated_total_cost": performance.get("estimated_total_cost"),
+    }
+
+
+def build_batch_experiment_evidence(
+    report: dict[str, Any],
+    review_rows: list[dict[str, Any]],
+    *,
+    summary_file: str = "",
+    review_file: str = "",
+) -> dict[str, Any]:
+    records = report.get("records", [])
+    records_by_source_key = {
+        (
+            str(record.get("sample_id", "")),
+            str(record.get("variant", "")),
+            _metadata_key(str(record.get("source_pdf", ""))),
+        ): record
+        for record in records
+        if isinstance(record, dict)
+    }
+    records_by_pair_key = {
+        (str(record.get("sample_id", "")), str(record.get("variant", ""))): record
+        for record in records
+        if isinstance(record, dict)
+    }
+    run_failures = [
+        {
+            "sample_id": record.get("sample_id", ""),
+            "variant": record.get("variant", ""),
+            "source_pdf": record.get("source_pdf", ""),
+            "status": record.get("status", ""),
+            "error": record.get("error", ""),
+            "work_dir": record.get("work_dir", ""),
+        }
+        for record in records
+        if isinstance(record, dict) and record.get("status") != "succeeded"
+    ]
+
+    evidence_candidates: list[dict[str, Any]] = []
+    for index, row in enumerate(review_rows, start=1):
+        if not _review_truthy(row.get("include_in_patent_evidence")):
+            continue
+        record = records_by_source_key.get(_review_record_key_with_source(row))
+        if record is None:
+            record = records_by_pair_key.get(_review_record_key(row), {})
+        status = _review_text(row.get("status")) or str(record.get("status", ""))
+        if status and status != "succeeded":
+            continue
+        files = record.get("files", {}) if isinstance(record, dict) else {}
+        scores = {
+            field: number
+            for field in EVIDENCE_SCORE_FIELDS
+            if (number := _review_number(row.get(field))) is not None
+        }
+        evidence_candidates.append(
+            {
+                "evidence_id": f"{_safe_id(_review_text(row.get('sample_id')))}-{_safe_id(_review_text(row.get('variant')))}-{index:03d}",
+                "sample_id": _review_text(row.get("sample_id")),
+                "variant": _review_text(row.get("variant")),
+                "source_pdf": _review_text(row.get("source_pdf")),
+                "pdf_type": _review_text(row.get("pdf_type")),
+                "tags": _split_tags(row.get("tags")),
+                "status": status,
+                "work_dir": record.get("work_dir", "") if isinstance(record, dict) else "",
+                "scores": scores,
+                "include_in_patent_evidence": _review_text(row.get("include_in_patent_evidence")),
+                "patent_evidence_notes": _review_text(row.get("patent_evidence_notes")),
+                "reviewer": _review_text(row.get("reviewer")),
+                "review_notes": _review_text(row.get("review_notes")),
+                "ocr": {
+                    "structured_table_candidate_count": _review_number(
+                        row.get("ocr_structured_table_candidate_count")
+                    ),
+                    "structured_table_gate_pass_rate": _review_number(
+                        row.get("ocr_structured_table_gate_pass_rate")
+                    ),
+                    "table_cell_bbox_coverage_rate": _review_number(
+                        row.get("ocr_table_cell_bbox_coverage_rate")
+                    ),
+                    "structured_table_gate_issues": _parse_counter_text(
+                        row.get("ocr_structured_table_gate_issues")
+                    ),
+                },
+                "metrics": _selected_record_metrics(record) if isinstance(record, dict) else {},
+                "files": files if isinstance(files, dict) else {},
+            }
+        )
+
+    reviewed_count = sum(1 for row in review_rows if _review_has_content(row))
+    included_count = len(evidence_candidates)
+    score_averages = {field: _score_average(review_rows, field) for field in EVIDENCE_SCORE_FIELDS}
+    ocr_rows = [
+        row
+        for row in review_rows
+        if _review_number(row.get("ocr_structured_table_candidate_count"))
+        or _review_number(row.get("ocr_structured_table_gate_pass_rate")) is not None
+        or _review_number(row.get("ocr_table_cell_bbox_coverage_rate")) is not None
+        or _review_text(row.get("ocr_structured_table_gate_issues"))
+    ]
+
+    return {
+        "schema_version": EVIDENCE_SCHEMA_VERSION,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "source_summary_file": summary_file,
+        "source_review_file": review_file,
+        "batch_schema_version": report.get("schema_version"),
+        "sample_count": report.get("sample_count", 0),
+        "run_count": report.get("run_count", len(review_rows)),
+        "succeeded_count": report.get("succeeded_count", 0),
+        "failed_count": report.get("failed_count", len(run_failures)),
+        "variant_count": len(report.get("aggregates", []) if isinstance(report.get("aggregates"), list) else []),
+        "review_row_count": len(review_rows),
+        "reviewed_count": reviewed_count,
+        "included_count": included_count,
+        "score_averages": score_averages,
+        "variant_summary": _review_group_summary(review_rows, "variant"),
+        "pdf_type_summary": _review_group_summary(review_rows, "pdf_type"),
+        "ocr_structured_table_gate_summary": {
+            "row_count": len(ocr_rows),
+            "structured_table_candidate_count_total": _review_sum(
+                review_rows,
+                "ocr_structured_table_candidate_count",
+            ),
+            "structured_table_gate_review_count_total": _review_sum(
+                review_rows,
+                "ocr_structured_table_gate_review_count",
+            ),
+            "gate_pass_rate": _score_average(ocr_rows, "ocr_structured_table_gate_pass_rate"),
+            "bbox_coverage_rate": _score_average(ocr_rows, "ocr_table_cell_bbox_coverage_rate"),
+            "gate_issue_counts": _merge_counter_texts(review_rows, "ocr_structured_table_gate_issues"),
+        },
+        "run_failures": run_failures,
+        "evidence_candidates": evidence_candidates,
+    }
+
+
+def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Path) -> Path:
+    lines = [
+        "# 批量实验专利证据摘要",
+        "",
+        f"- 生成时间：{evidence.get('created_at', '')}",
+        f"- 评分行数：{evidence.get('review_row_count', 0)}",
+        f"- 已填写评分/结论：{evidence.get('reviewed_count', 0)}",
+        f"- 纳入专利证据：{evidence.get('included_count', 0)}",
+        f"- 来源摘要：{evidence.get('source_summary_file', '')}",
+        f"- 来源评分表：{evidence.get('source_review_file', '')}",
+        "",
+        "## 评分均值",
+        "",
+        "| 字段 | 均值 | 样本数 |",
+        "| --- | --- | --- |",
+    ]
+    for field, item in evidence.get("score_averages", {}).items():
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(field),
+                    _format_number(item.get("average", 0)),
+                    _format_number(item.get("count", 0)),
+                ]
+            )
+            + " |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## 策略汇总",
+            "",
+            "| 策略 | 运行数 | 已评审 | 纳入证据 | 总分均值 | 表格可读性 | 结构连贯性 | OCR 门禁通过率 |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for item in evidence.get("variant_summary", []):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(item.get("variant", "")),
+                    _format_number(item.get("run_count", 0)),
+                    _format_number(item.get("reviewed_count", 0)),
+                    _format_number(item.get("included_count", 0)),
+                    _format_number((item.get("human_score") or {}).get("average", 0)),
+                    _format_number((item.get("table_readability_score") or {}).get("average", 0)),
+                    _format_number((item.get("structure_coherence_score") or {}).get("average", 0)),
+                    _format_number((item.get("ocr_structured_table_gate_pass_rate") or {}).get("average", 0)),
+                ]
+            )
+            + " |"
+        )
+
+    ocr_summary = evidence.get("ocr_structured_table_gate_summary", {})
+    lines.extend(
+        [
+            "",
+            "## OCR 结构门禁",
+            "",
+            f"- 结构化表格候选总数：{ocr_summary.get('structured_table_candidate_count_total', 0)}",
+            f"- 结构门禁复核总数：{ocr_summary.get('structured_table_gate_review_count_total', 0)}",
+            f"- 门禁通过率均值：{_format_number((ocr_summary.get('gate_pass_rate') or {}).get('average', 0))}",
+            f"- bbox 覆盖率均值：{_format_number((ocr_summary.get('bbox_coverage_rate') or {}).get('average', 0))}",
+            f"- 门禁问题分布：{_format_counter(ocr_summary.get('gate_issue_counts'))}",
+            "",
+            "## 纳入证据候选",
+            "",
+            "| 样本 | 策略 | 类型 | 总分 | 证据说明 | 译文 PDF |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for item in evidence.get("evidence_candidates", []):
+        if not isinstance(item, dict):
+            continue
+        files = item.get("files", {}) if isinstance(item.get("files"), dict) else {}
+        scores = item.get("scores", {}) if isinstance(item.get("scores"), dict) else {}
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(item.get("sample_id", "")),
+                    str(item.get("variant", "")),
+                    str(item.get("pdf_type", "")),
+                    _format_number(scores.get("human_score", "")),
+                    str(item.get("patent_evidence_notes", "")),
+                    str(files.get("translated_pdf", "")),
+                ]
+            )
+            + " |"
+        )
+    if not evidence.get("evidence_candidates"):
+        lines.append("|  |  |  |  | 暂无显式纳入专利证据的评分行 |  |")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def write_batch_experiment_evidence(
+    summary_path: Path,
+    review_csv_path: Path,
+    output_dir: Path | None = None,
+) -> dict[str, Any]:
+    report = _read_json(summary_path)
+    review_rows = read_batch_experiment_review_csv(review_csv_path)
+    target_dir = (output_dir or summary_path.parent).resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    evidence = build_batch_experiment_evidence(
+        report,
+        review_rows,
+        summary_file=str(summary_path),
+        review_file=str(review_csv_path),
+    )
+    (target_dir / "batch_experiment_evidence.json").write_text(
+        json.dumps(evidence, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    write_batch_experiment_evidence_markdown(evidence, target_dir / "batch_experiment_evidence.md")
+    return evidence
 
 
 def run_batch_experiment(
