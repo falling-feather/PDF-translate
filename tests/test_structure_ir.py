@@ -17,6 +17,7 @@ from pdf_translate.config import AppConfig
 from pdf_translate.costing import estimate_cost, normalize_cost_profile
 from pdf_translate.error_codes import PdfTranslateError, error_info_from_exception
 from pdf_translate.exporters.bilingual_html import write_bilingual_html
+from pdf_translate.exporters.translated_pdf import write_translated_pdf
 from pdf_translate.extractors.document_ir import (
     BlockIR,
     DocumentIR,
@@ -2578,6 +2579,18 @@ class StructureIRTests(unittest.TestCase):
                     "missing_table_locked_token_count": 1,
                 },
             },
+            translated_pdf_report={
+                "schema_version": "translated-pdf-report-v1",
+                "summary": {
+                    "generated": True,
+                    "chunk_count": 2,
+                    "page_count": 3,
+                    "table_count": 1,
+                    "qa_issue_count": 4,
+                    "repair_item_count": 2,
+                    "warning_count": 0,
+                },
+            },
             run_metrics={
                 "schema_version": "run-metrics-v1",
                 "summary": {
@@ -2709,6 +2722,12 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["post_repair_issue_count"], 3)
         self.assertEqual(metrics["quality"]["post_repair_issue_delta"], 1)
         self.assertEqual(metrics["quality"]["post_repair_table_cell_token_error_count"], 1)
+        self.assertTrue(metrics["quality"]["translated_pdf_generated"])
+        self.assertEqual(metrics["quality"]["translated_pdf_page_count"], 3)
+        self.assertEqual(metrics["quality"]["translated_pdf_chunk_count"], 2)
+        self.assertEqual(metrics["quality"]["translated_pdf_table_count"], 1)
+        self.assertEqual(metrics["quality"]["translated_pdf_qa_issue_count"], 4)
+        self.assertEqual(metrics["quality"]["translated_pdf_repair_item_count"], 2)
         self.assertEqual(metrics["quality"]["table_shape_error_count"], 1)
         self.assertEqual(metrics["quality"]["table_cell_token_error_count"], 2)
         self.assertEqual(metrics["quality"]["missing_table_locked_token_count"], 3)
@@ -2892,6 +2911,8 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["evidence_files"]["run_metrics"], "output/run_metrics.json")
         self.assertEqual(metrics["evidence_files"]["run_log"], "output/run_log.jsonl")
         self.assertEqual(metrics["evidence_files"]["cost_estimate"], "output/cost_estimate.json")
+        self.assertEqual(metrics["evidence_files"]["translated_pdf"], "output/translated_full.pdf")
+        self.assertEqual(metrics["evidence_files"]["translated_pdf_report"], "output/translated_pdf_report.json")
 
     def test_memory_store_records_glossary_conflicts_for_review(self) -> None:
         root = Path.cwd() / "test-output" / "glossary-conflict-memory"
@@ -3198,6 +3219,89 @@ class StructureIRTests(unittest.TestCase):
             if parent.is_dir() and not any(parent.iterdir()):
                 shutil.rmtree(parent)
 
+    def test_translated_pdf_exporter_writes_readable_pdf_and_report(self) -> None:
+        root = Path.cwd() / "test-output" / "translated-pdf-exporter"
+        if root.exists():
+            shutil.rmtree(root)
+        chunk_dir = root / "chunks"
+        chunk_dir.mkdir(parents=True)
+        try:
+            chunks = [
+                TextChunk(
+                    chunk_id="c0000",
+                    pages_0based=[0],
+                    text="Table 1 reports model accuracy.",
+                    link_count=0,
+                    image_count=0,
+                )
+            ]
+            (chunk_dir / "c0000.md").write_text(
+                "---\n{}\n---\n\n"
+                "# Results\n\n"
+                "结构化 PDF 译文保留表格与 QA 提示。\n\n"
+                "| Model | Acc |\n"
+                "| --- | --- |\n"
+                "| A | 91.2% |\n",
+                encoding="utf-8",
+            )
+            qa_report = {
+                "chunks": [
+                    {
+                        "chunk_id": "c0000",
+                        "issues": [{"type": "missing_numbers", "severity": "high", "tokens": ["120"]}],
+                    }
+                ]
+            }
+            repair_plan = {
+                "items": [
+                    {
+                        "chunk_id": "c0000",
+                        "repair_id": "r0001",
+                        "priority": "P0",
+                        "action": "rewrite_with_locked_tokens",
+                        "reason": "missing number",
+                    }
+                ]
+            }
+            pdf_path = root / "translated_full.pdf"
+            report_path = root / "translated_pdf_report.json"
+
+            report = write_translated_pdf(
+                chunks,
+                chunk_dir,
+                pdf_path,
+                qa_report=qa_report,
+                repair_plan=repair_plan,
+                title="Unit Structured PDF",
+                source_pdf="sample.pdf",
+                report_path=report_path,
+            )
+
+            self.assertTrue(pdf_path.is_file())
+            self.assertTrue(report_path.is_file())
+            doc = fitz.open(pdf_path)
+            try:
+                text = "\n".join(page.get_text("text") for page in doc)
+                self.assertGreaterEqual(len(doc), 1)
+            finally:
+                doc.close()
+            self.assertIn("Unit Structured PDF", text)
+            self.assertIn("91.2", text)
+            self.assertIn("missing_numbers", text)
+            self.assertTrue(report["summary"]["generated"])
+            self.assertEqual(report["summary"]["chunk_count"], 1)
+            self.assertEqual(report["summary"]["table_count"], 1)
+            saved = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["schema_version"], "translated-pdf-report-v1")
+            self.assertEqual(saved["summary"]["qa_issue_count"], 1)
+            self.assertEqual(saved["summary"]["repair_item_count"], 1)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
     def test_pipeline_writes_document_ir_and_structure_manifest(self) -> None:
         root = Path.cwd() / "test-output" / "structure-ir"
         if root.exists():
@@ -3290,6 +3394,8 @@ class StructureIRTests(unittest.TestCase):
             run_log_path = work_dir / "output" / "run_log.jsonl"
             cost_estimate_path = work_dir / "output" / "cost_estimate.json"
             bilingual_path = work_dir / "output" / "bilingual.html"
+            translated_pdf_path = work_dir / "output" / "translated_full.pdf"
+            translated_pdf_report_path = work_dir / "output" / "translated_pdf_report.json"
             self.assertTrue(ir_path.is_file())
             self.assertTrue(manifest_path.is_file())
             self.assertTrue(active_manifest_path.is_file())
@@ -3328,6 +3434,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(run_log_path.is_file())
             self.assertTrue(cost_estimate_path.is_file())
             self.assertTrue(bilingual_path.is_file())
+            self.assertTrue(translated_pdf_path.is_file())
+            self.assertTrue(translated_pdf_report_path.is_file())
             ir = json.loads(ir_path.read_text(encoding="utf-8"))
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             active_manifest = json.loads(active_manifest_path.read_text(encoding="utf-8"))
@@ -3354,6 +3462,7 @@ class StructureIRTests(unittest.TestCase):
             metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
             run_metrics = json.loads(run_metrics_path.read_text(encoding="utf-8"))
             cost_estimate = json.loads(cost_estimate_path.read_text(encoding="utf-8"))
+            translated_pdf_report = json.loads(translated_pdf_report_path.read_text(encoding="utf-8"))
             run_log_lines = [
                 json.loads(line)
                 for line in run_log_path.read_text(encoding="utf-8").splitlines()
@@ -3467,6 +3576,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertGreater(run_metrics["summary"]["request_char_count"], 0)
             self.assertIn("document_ir", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("ocr_candidate_promotion", run_metrics["summary"]["stage_elapsed_ms"])
+            self.assertIn("translated_pdf", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertTrue(any(event["event_type"] == "chunk_translation" for event in run_log_lines))
             self.assertEqual(cost_estimate["schema_version"], "cost-estimate-v1")
             self.assertTrue(cost_estimate["configured"])
@@ -3543,6 +3653,19 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(metrics["evidence_files"]["run_metrics"], "output/run_metrics.json")
             self.assertEqual(metrics["evidence_files"]["run_log"], "output/run_log.jsonl")
             self.assertEqual(metrics["evidence_files"]["cost_estimate"], "output/cost_estimate.json")
+            self.assertTrue(metrics["quality"]["translated_pdf_generated"])
+            self.assertGreaterEqual(metrics["quality"]["translated_pdf_page_count"], 1)
+            self.assertEqual(metrics["evidence_files"]["translated_pdf"], "output/translated_full.pdf")
+            self.assertEqual(metrics["evidence_files"]["translated_pdf_report"], "output/translated_pdf_report.json")
+            self.assertEqual(translated_pdf_report["schema_version"], "translated-pdf-report-v1")
+            self.assertTrue(translated_pdf_report["summary"]["generated"])
+            pdf_doc = fitz.open(translated_pdf_path)
+            try:
+                pdf_text = "\n".join(page.get_text("text") for page in pdf_doc)
+                self.assertGreaterEqual(len(pdf_doc), 1)
+            finally:
+                pdf_doc.close()
+            self.assertIn("ECHO", pdf_text)
             self.assertIn("双语对照译文", bilingual_path.read_text(encoding="utf-8"))
         finally:
             if root.exists():
@@ -3568,6 +3691,8 @@ class StructureIRTests(unittest.TestCase):
         try:
             for name in [
                 "translated_full.md",
+                "translated_full.pdf",
+                "translated_pdf_report.json",
                 "repaired_full.md",
                 "bilingual.html",
                 "document_ir.json",
@@ -3634,6 +3759,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/ocr_candidate_promotion.md", rels)
             self.assertIn("output/document_ir_promoted.json", rels)
             self.assertIn("output/repaired_full.md", rels)
+            self.assertIn("output/translated_full.pdf", rels)
+            self.assertIn("output/translated_pdf_report.json", rels)
             self.assertIn("output/bilingual.html", rels)
             self.assertIn("output/qa_report.md", rels)
             self.assertIn("output/document_ir.json", rels)
@@ -3645,6 +3772,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/run_metrics.json", rels)
             self.assertIn("output/cost_estimate.json", rels)
             self.assertEqual(map_bundle_arcname("output/bilingual.html"), "译文/双语对照.html")
+            self.assertEqual(map_bundle_arcname("output/translated_full.pdf"), "译文/结构化译文.pdf")
+            self.assertEqual(map_bundle_arcname("output/translated_pdf_report.json"), "质量/PDF译文生成报告.json")
             self.assertEqual(map_bundle_arcname("output/repaired_full.md"), "译文/局部修复合并译文.md")
             self.assertEqual(map_bundle_arcname("output/repair_plan.md"), "质量/局部修复计划.md")
             self.assertEqual(map_bundle_arcname("output/repair_requests.md"), "质量/局部修复请求.md")

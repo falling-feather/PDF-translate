@@ -450,6 +450,7 @@ def _record_paths(work_dir: Path, output_dir: Path) -> dict[str, str]:
         "run_metrics": work_dir / "output" / "run_metrics.json",
         "cost_estimate": work_dir / "output" / "cost_estimate.json",
         "translated_full": work_dir / "output" / "translated_full.md",
+        "translated_pdf": work_dir / "output" / "translated_full.pdf",
         "bilingual_html": work_dir / "output" / "bilingual.html",
     }
     result: dict[str, str] = {}
@@ -617,6 +618,7 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
         "total_elapsed_ms",
         "estimated_total_cost",
         "translated_full",
+        "translated_pdf",
         "bilingual_html",
         "human_score",
         "reviewer",
@@ -662,6 +664,7 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
                     "total_elapsed_ms": performance.get("total_elapsed_ms", ""),
                     "estimated_total_cost": performance.get("estimated_total_cost", ""),
                     "translated_full": files.get("translated_full", ""),
+                    "translated_pdf": files.get("translated_pdf", ""),
                     "bilingual_html": files.get("bilingual_html", ""),
                     "human_score": "",
                     "reviewer": "",

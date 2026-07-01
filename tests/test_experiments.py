@@ -110,6 +110,8 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("table_chain_reject_reason_category_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("total_elapsed_ms", loaded["records"][0]["metrics"]["performance"])
             self.assertIn("runs/sample-table/page/output/experiment_metrics.json", summary_json.read_text(encoding="utf-8"))
+            self.assertIn("translated_pdf", loaded["records"][0]["files"])
+            self.assertIn("runs/sample-table/page/output/translated_full.pdf", summary_json.read_text(encoding="utf-8"))
             summary_text = summary_md.read_text(encoding="utf-8")
             self.assertIn("批量实验汇总", summary_text)
             self.assertIn("续表拒绝类别", summary_text)
@@ -118,6 +120,7 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("human_score", review_text)
             self.assertIn("table_merged_cell_candidate_types", review_text)
             self.assertIn("table_chain_reject_reason_categories", review_text)
+            self.assertIn("translated_pdf", review_text)
             self.assertIn("table-heavy", review_text)
             self.assertIn("sample-table", review_text)
         finally:

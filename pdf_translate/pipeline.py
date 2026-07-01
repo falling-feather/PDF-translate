@@ -15,6 +15,7 @@ from pdf_translate.chunking import TextChunk, build_text_chunks
 from pdf_translate.config import AppConfig
 from pdf_translate.costing import backend_model_name, load_cost_profile, write_cost_estimate
 from pdf_translate.exporters.bilingual_html import write_bilingual_html
+from pdf_translate.exporters.translated_pdf import write_translated_pdf
 from pdf_translate.extractors.document_ir import document_ir_from_json_dict, extract_document_ir
 from pdf_translate.memory_store import MemoryStore
 from pdf_translate.pdf_structure import SplitManifest, split_main_and_references
@@ -518,6 +519,17 @@ def run_translate(
                 repair_plan=repair_plan,
                 title=f"{main_pdf.stem} 双语对照译文",
             )
+        with run_metrics.stage("translated_pdf"):
+            translated_pdf_report = write_translated_pdf(
+                chunks,
+                chunk_dir,
+                out_dir / "translated_full.pdf",
+                qa_report=qa_report,
+                repair_plan=repair_plan,
+                title=f"{main_pdf.stem} 结构化译文",
+                source_pdf=main_pdf,
+                report_path=out_dir / "translated_pdf_report.json",
+            )
         run_metrics_summary = run_metrics.write_summary(
             out_dir / "run_metrics.json",
             doc_id=doc_ir.doc_id,
@@ -558,6 +570,7 @@ def run_translate(
             repair_validation=repair_validation,
             repair_merge=repair_merge,
             repair_merge_qa=repair_merge_qa,
+            translated_pdf_report=translated_pdf_report,
             run_metrics=run_metrics_summary,
             cost_estimate=cost_estimate,
         )

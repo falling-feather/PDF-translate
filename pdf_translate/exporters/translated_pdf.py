@@ -1,0 +1,461 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import fitz
+
+from pdf_translate.chunking import TextChunk
+from pdf_translate.deferral_markers import (
+    finalize_merged_translation_markdown,
+    strip_yaml_front_matter,
+)
+
+SCHEMA_VERSION = "translated-pdf-report-v1"
+PAGE_WIDTH = 595.0
+PAGE_HEIGHT = 842.0
+MARGIN_X = 48.0
+MARGIN_TOP = 54.0
+MARGIN_BOTTOM = 46.0
+FONT_CJK = "china-s"
+FONT_LATIN = "helv"
+
+
+def _chunk_translation_text(chunk_dir: Path, chunk_id: str) -> str:
+    path = chunk_dir / f"{chunk_id}.md"
+    if not path.is_file():
+        return ""
+    body = strip_yaml_front_matter(path.read_text(encoding="utf-8")).strip()
+    return finalize_merged_translation_markdown(body).strip()
+
+
+def _index_by_chunk(items: list[dict[str, Any]], key: str = "chunk_id") -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        chunk_id = item.get(key)
+        if isinstance(chunk_id, str) and chunk_id:
+            out.setdefault(chunk_id, []).append(item)
+    return out
+
+
+def _qa_issues_by_chunk(qa_report: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
+    if not qa_report:
+        return {}
+    out: dict[str, list[dict[str, Any]]] = {}
+    for chunk in qa_report.get("chunks") or []:
+        chunk_id = chunk.get("chunk_id")
+        issues = chunk.get("issues") or []
+        if isinstance(chunk_id, str) and issues:
+            out[chunk_id] = list(issues)
+    return out
+
+
+def _is_table_line(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2
+
+
+def _is_separator_row(row: list[str]) -> bool:
+    if not row:
+        return False
+    return all(cell.replace("-", "").replace(":", "").strip() == "" for cell in row)
+
+
+def _parse_table(lines: list[str]) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for line in lines:
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if _is_separator_row(cells):
+            continue
+        rows.append(cells)
+    if not rows:
+        return []
+    column_count = max(len(row) for row in rows)
+    return [row + [""] * (column_count - len(row)) for row in rows]
+
+
+def _markdown_blocks(text: str) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    paragraph: list[str] = []
+    table: list[str] = []
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph
+        if paragraph:
+            blocks.append({"type": "paragraph", "text": "\n".join(paragraph).strip()})
+            paragraph = []
+
+    def flush_table() -> None:
+        nonlocal table
+        if table:
+            rows = _parse_table(table)
+            if rows:
+                blocks.append({"type": "table", "rows": rows})
+            table = []
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if _is_table_line(stripped):
+            flush_paragraph()
+            table.append(stripped)
+            continue
+        flush_table()
+        if not stripped:
+            flush_paragraph()
+            continue
+        if stripped.startswith("#"):
+            flush_paragraph()
+            hashes = len(stripped) - len(stripped.lstrip("#"))
+            blocks.append(
+                {
+                    "type": "heading",
+                    "level": max(1, min(hashes, 4)),
+                    "text": stripped[hashes:].strip() or stripped,
+                }
+            )
+            continue
+        paragraph.append(stripped)
+
+    flush_table()
+    flush_paragraph()
+    return blocks
+
+
+def _clean_text(text: str) -> str:
+    return " ".join(str(text or "").replace("\r", "\n").replace("\t", " ").split())
+
+
+def _short_item(item: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = item.get(key)
+        if value:
+            return _clean_text(str(value))[:96]
+    return "unknown"
+
+
+class _PdfFlow:
+    def __init__(self, title: str) -> None:
+        self.doc = fitz.open()
+        self.title = title
+        self.font = fitz.Font(fontname=FONT_CJK)
+        self.page: fitz.Page | None = None
+        self.y = MARGIN_TOP
+        self.new_page()
+
+    @property
+    def content_right(self) -> float:
+        return PAGE_WIDTH - MARGIN_X
+
+    @property
+    def content_bottom(self) -> float:
+        return PAGE_HEIGHT - MARGIN_BOTTOM
+
+    def new_page(self) -> None:
+        self.page = self.doc.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+        self.y = MARGIN_TOP
+
+    def ensure_space(self, height: float) -> None:
+        if self.page is None or self.y + height > self.content_bottom:
+            self.new_page()
+
+    def text_width(self, text: str, fontsize: float) -> float:
+        return self.font.text_length(text, fontsize=fontsize)
+
+    def wrap_text(self, text: str, fontsize: float, width: float) -> list[str]:
+        out: list[str] = []
+        for raw in str(text or "").splitlines() or [""]:
+            line = ""
+            for char in raw:
+                char = " " if char == "\t" else char
+                candidate = line + char
+                if line and self.text_width(candidate, fontsize) > width:
+                    out.append(line.rstrip() or " ")
+                    line = "" if char.isspace() else char
+                else:
+                    line = candidate
+            out.append(line.rstrip() or " ")
+        return out
+
+    def add_text(
+        self,
+        text: str,
+        *,
+        fontsize: float = 10.5,
+        color: tuple[float, float, float] = (0.12, 0.16, 0.22),
+        before: float = 0,
+        after: float = 6,
+        left: float = MARGIN_X,
+        width: float | None = None,
+        leading: float | None = None,
+    ) -> None:
+        if self.page is None:
+            self.new_page()
+        if before:
+            self.y += before
+        width = width if width is not None else self.content_right - left
+        leading = leading if leading is not None else fontsize * 1.45
+        for line in self.wrap_text(text, fontsize, width):
+            self.ensure_space(leading + after)
+            assert self.page is not None
+            self.page.insert_text(
+                (left, self.y),
+                line,
+                fontname=FONT_CJK,
+                fontsize=fontsize,
+                color=color,
+            )
+            self.y += leading
+        self.y += after
+
+    def add_rule(self) -> None:
+        self.ensure_space(10)
+        assert self.page is not None
+        self.page.draw_line(
+            (MARGIN_X, self.y),
+            (self.content_right, self.y),
+            color=(0.78, 0.82, 0.88),
+            width=0.6,
+        )
+        self.y += 10
+
+    def add_table(self, rows: list[list[str]]) -> None:
+        if not rows:
+            return
+        column_count = max(1, max(len(row) for row in rows))
+        available = self.content_right - MARGIN_X
+        col_width = available / column_count
+        fontsize = 8.5 if column_count > 4 else 9.2
+        leading = fontsize * 1.28
+        pad_x = 4.0
+        pad_y = 5.0
+        max_row_lines = max(2, int((self.content_bottom - MARGIN_TOP - 12) / leading))
+        self.y += 2
+        for row_index, row in enumerate(rows):
+            normalized = row + [""] * (column_count - len(row))
+            wrapped_cells: list[list[str]] = []
+            for cell in normalized:
+                lines = self.wrap_text(cell, fontsize, max(20.0, col_width - pad_x * 2))
+                if len(lines) > max_row_lines:
+                    lines = lines[: max_row_lines - 1] + ["..."]
+                wrapped_cells.append(lines)
+            row_height = max(len(lines) for lines in wrapped_cells) * leading + pad_y * 2
+            self.ensure_space(row_height + 8)
+            assert self.page is not None
+            x = MARGIN_X
+            fill = (0.93, 0.96, 0.97) if row_index == 0 else None
+            for lines in wrapped_cells:
+                rect = fitz.Rect(x, self.y, x + col_width, self.y + row_height)
+                self.page.draw_rect(rect, color=(0.70, 0.75, 0.82), fill=fill, width=0.5)
+                ty = self.y + pad_y + fontsize
+                for line in lines:
+                    if ty > self.y + row_height - pad_y:
+                        break
+                    self.page.insert_text(
+                        (x + pad_x, ty),
+                        line,
+                        fontname=FONT_CJK,
+                        fontsize=fontsize,
+                        color=(0.13, 0.18, 0.25),
+                    )
+                    ty += leading
+                x += col_width
+            self.y += row_height
+        self.y += 8
+
+    def add_box(self, title: str, lines: list[str]) -> None:
+        if not lines:
+            return
+        fontsize = 9.2
+        leading = fontsize * 1.35
+        wrapped: list[str] = []
+        for line in lines:
+            wrapped.extend(self.wrap_text(line, fontsize, self.content_right - MARGIN_X - 18))
+        height = (len(wrapped) + 1) * leading + 18
+        self.ensure_space(height)
+        assert self.page is not None
+        rect = fitz.Rect(MARGIN_X, self.y, self.content_right, self.y + height)
+        self.page.draw_rect(rect, color=(0.80, 0.70, 0.45), fill=(1.0, 0.98, 0.90), width=0.6)
+        self.page.insert_text(
+            (MARGIN_X + 9, self.y + 16),
+            title,
+            fontname=FONT_CJK,
+            fontsize=9.8,
+            color=(0.55, 0.30, 0.08),
+        )
+        ty = self.y + 16 + leading
+        for line in wrapped:
+            self.page.insert_text(
+                (MARGIN_X + 9, ty),
+                line,
+                fontname=FONT_CJK,
+                fontsize=fontsize,
+                color=(0.32, 0.24, 0.12),
+            )
+            ty += leading
+        self.y += height + 10
+
+    def finalize(self, path: Path) -> int:
+        for idx, page in enumerate(self.doc, start=1):
+            page.insert_text(
+                (MARGIN_X, PAGE_HEIGHT - 24),
+                f"{self.title} / {idx}",
+                fontname=FONT_LATIN,
+                fontsize=8,
+                color=(0.55, 0.60, 0.66),
+            )
+        self.doc.set_metadata({"title": self.title, "creator": "pdf_translate"})
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.doc.save(path)
+        page_count = len(self.doc)
+        self.doc.close()
+        return page_count
+
+
+def build_translated_pdf_report(
+    chunks: list[TextChunk],
+    chunk_dir: Path,
+    *,
+    qa_report: dict[str, Any] | None = None,
+    repair_plan: dict[str, Any] | None = None,
+    title: str = "结构化译文",
+    source_pdf: Path | str | None = None,
+) -> dict[str, Any]:
+    issues_by_chunk = _qa_issues_by_chunk(qa_report)
+    repairs_by_chunk = _index_by_chunk((repair_plan or {}).get("items") or [])
+    chunk_reports: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    total_tables = 0
+    total_chars = 0
+
+    for chunk in chunks:
+        translation = _chunk_translation_text(chunk_dir, chunk.chunk_id)
+        blocks = _markdown_blocks(translation)
+        table_count = sum(1 for block in blocks if block.get("type") == "table")
+        total_tables += table_count
+        total_chars += len(translation)
+        if not translation:
+            warnings.append(f"missing_translation:{chunk.chunk_id}")
+        chunk_reports.append(
+            {
+                "chunk_id": chunk.chunk_id,
+                "pages_1based": [p + 1 for p in chunk.pages_0based],
+                "translated_char_count": len(translation),
+                "table_count": table_count,
+                "qa_issue_count": len(issues_by_chunk.get(chunk.chunk_id, [])),
+                "repair_item_count": len(repairs_by_chunk.get(chunk.chunk_id, [])),
+            }
+        )
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "title": title,
+        "source_pdf": str(source_pdf) if source_pdf is not None else "",
+        "summary": {
+            "generated": False,
+            "chunk_count": len(chunks),
+            "translated_chunk_count": sum(1 for item in chunk_reports if item["translated_char_count"] > 0),
+            "translated_char_count": total_chars,
+            "table_count": total_tables,
+            "qa_issue_count": sum(len(v) for v in issues_by_chunk.values()),
+            "repair_item_count": sum(len(v) for v in repairs_by_chunk.values()),
+            "page_count": 0,
+            "font": FONT_CJK,
+            "warning_count": len(warnings),
+        },
+        "warnings": warnings,
+        "chunks": chunk_reports,
+    }
+
+
+def write_translated_pdf(
+    chunks: list[TextChunk],
+    chunk_dir: Path,
+    path: Path,
+    *,
+    qa_report: dict[str, Any] | None = None,
+    repair_plan: dict[str, Any] | None = None,
+    title: str = "结构化译文",
+    source_pdf: Path | str | None = None,
+    report_path: Path | None = None,
+) -> dict[str, Any]:
+    report = build_translated_pdf_report(
+        chunks,
+        chunk_dir,
+        qa_report=qa_report,
+        repair_plan=repair_plan,
+        title=title,
+        source_pdf=source_pdf,
+    )
+    issues_by_chunk = _qa_issues_by_chunk(qa_report)
+    repairs_by_chunk = _index_by_chunk((repair_plan or {}).get("items") or [])
+
+    flow = _PdfFlow(title)
+    flow.add_text(title, fontsize=20, color=(0.06, 0.32, 0.30), after=10)
+    source_text = f"源文件: {source_pdf}" if source_pdf else "源文件: -"
+    summary = report["summary"]
+    flow.add_text(
+        (
+            f"{source_text}\n"
+            f"翻译块: {summary['chunk_count']} | 已有译文块: {summary['translated_chunk_count']} | "
+            f"PDF 表格: {summary['table_count']} | QA 标注: {summary['qa_issue_count']} | "
+            f"修复建议: {summary['repair_item_count']}"
+        ),
+        fontsize=10.5,
+        color=(0.30, 0.35, 0.42),
+        after=12,
+    )
+    flow.add_rule()
+
+    for chunk in chunks:
+        pages = [p + 1 for p in chunk.pages_0based]
+        page_text = f"{pages[0]}-{pages[-1]}" if pages else "-"
+        translation = _chunk_translation_text(chunk_dir, chunk.chunk_id)
+        issues = issues_by_chunk.get(chunk.chunk_id, [])
+        repairs = repairs_by_chunk.get(chunk.chunk_id, [])
+
+        flow.add_text(
+            f"{chunk.chunk_id} | 页码 {page_text}",
+            fontsize=14.5,
+            color=(0.08, 0.38, 0.35),
+            before=6,
+            after=6,
+        )
+        note_lines = []
+        if issues:
+            note_lines.append("QA: " + "; ".join(_short_item(issue, "type") for issue in issues[:6]))
+        if repairs:
+            note_lines.append("修复: " + "; ".join(_short_item(item, "action", "reason") for item in repairs[:6]))
+        flow.add_box("质量提示", note_lines)
+
+        blocks = _markdown_blocks(translation)
+        if not blocks:
+            flow.add_text("未生成译文内容。", fontsize=10.5, color=(0.60, 0.22, 0.18), after=12)
+            continue
+        for block in blocks:
+            btype = block.get("type")
+            if btype == "heading":
+                level = int(block.get("level") or 2)
+                size = max(11.5, 15.0 - level)
+                flow.add_text(
+                    str(block.get("text") or ""),
+                    fontsize=size,
+                    color=(0.10, 0.28, 0.45),
+                    before=4,
+                    after=5,
+                )
+            elif btype == "table":
+                flow.add_table(block.get("rows") or [])
+            else:
+                flow.add_text(str(block.get("text") or ""), fontsize=10.5, after=7)
+
+    page_count = flow.finalize(path)
+    report["summary"]["generated"] = True
+    report["summary"]["page_count"] = page_count
+    report["pdf_path"] = str(path)
+    if report_path is None:
+        report_path = path.with_name("translated_pdf_report.json")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return report

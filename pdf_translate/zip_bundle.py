@@ -11,6 +11,8 @@ def map_bundle_arcname(rel_posix: str) -> str:
 
     output_map = {
         "output/translated_full.md": "译文/完整译文.md",
+        "output/translated_full.pdf": "译文/结构化译文.pdf",
+        "output/translated_pdf_report.json": "质量/PDF译文生成报告.json",
         "output/repaired_full.md": "译文/局部修复合并译文.md",
         "output/bilingual.html": "译文/双语对照.html",
         "output/chunks_manifest.json": "设置/分段清单.json",
@@ -140,6 +142,8 @@ def iter_bundle_files(root: Path) -> list[Path]:
 
     candidates = [
         root / "output" / "translated_full.md",
+        root / "output" / "translated_full.pdf",
+        root / "output" / "translated_pdf_report.json",
         root / "output" / "repaired_full.md",
         root / "output" / "bilingual.html",
         root / "output" / "chunks_manifest.json",

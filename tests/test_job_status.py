@@ -149,6 +149,7 @@ class JobStatusSnapshotTests(unittest.TestCase):
         out = rec.work_dir / "output"
         out.mkdir()
         (out / "translated_full.md").write_text("translated", encoding="utf-8")
+        (out / "translated_full.pdf").write_bytes(b"%PDF-1.4 translated")
         registry.update(rec.job_id, status="done", phase="done", duration_seconds=12.5)
 
         rows = [
@@ -173,6 +174,8 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(merged[0]["artifact_consistency_status"], "ready")
         self.assertTrue(merged[0]["input_pdf_ready"])
         self.assertTrue(merged[0]["partial_output_ready"])
+        self.assertTrue(merged[0]["translated_pdf_ready"])
+        self.assertGreater(merged[0]["translated_pdf_bytes"], 0)
         self.assertTrue(merged[0]["bundle_zip_ready"])
 
     def test_artifact_summary_marks_done_without_translation_inconsistent(self) -> None:
@@ -189,6 +192,8 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertIn("translated_md_missing_for_done", merged[0]["artifact_warnings"])
         self.assertTrue(merged[0]["input_pdf_ready"])
         self.assertFalse(merged[0]["partial_output_ready"])
+        self.assertFalse(merged[0]["translated_pdf_ready"])
+        self.assertEqual(merged[0]["translated_pdf_bytes"], 0)
         self.assertFalse(merged[0]["bundle_zip_ready"])
 
     def test_storage_drift_reports_missing_and_unindexed_work_dirs(self) -> None:
@@ -229,6 +234,8 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertFalse(merged[0]["status_available"])
         self.assertEqual(merged[0]["artifact_consistency_status"], "missing_status")
         self.assertIn("status_snapshot_missing", merged[0]["artifact_warnings"])
+        self.assertFalse(merged[0]["translated_pdf_ready"])
+        self.assertEqual(merged[0]["translated_pdf_bytes"], 0)
         self.assertNotIn("status", merged[0])
 
     def test_cli_web_status_reads_same_diagnostic_summary(self) -> None:

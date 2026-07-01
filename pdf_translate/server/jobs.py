@@ -359,9 +359,11 @@ class JobRegistry:
         input_pdf = rec.work_dir / "input.pdf"
         output_dir = rec.work_dir / "output"
         translated_md = output_dir / "translated_full.md"
+        translated_pdf = output_dir / "translated_full.pdf"
         bilingual_html = output_dir / "bilingual.html"
         input_bytes = self._file_size(input_pdf)
         translated_bytes = self._file_size(translated_md)
+        pdf_bytes = self._file_size(translated_pdf)
         html_bytes = self._file_size(bilingual_html)
 
         warnings: list[str] = []
@@ -371,6 +373,8 @@ class JobRegistry:
             warnings.append("input_pdf_missing")
         if rec.status == "done" and translated_bytes <= 0:
             warnings.append("translated_md_missing_for_done")
+        if rec.status == "done" and translated_bytes > 0 and pdf_bytes <= 0:
+            warnings.append("translated_pdf_missing_for_done")
         if rec.status == "cancelled" and translated_bytes <= 0:
             warnings.append("translated_md_missing_for_cancelled")
 
@@ -401,6 +405,8 @@ class JobRegistry:
             "output_dir_ready": output_dir.is_dir(),
             "partial_output_ready": translated_bytes > 0,
             "partial_output_bytes": translated_bytes,
+            "translated_pdf_ready": pdf_bytes > 0,
+            "translated_pdf_bytes": pdf_bytes,
             "bilingual_html_ready": html_bytes > 0,
             "bilingual_html_bytes": html_bytes,
             "bundle_zip_ready": rec.status in ("done", "cancelled") and translated_bytes > 0,
@@ -542,6 +548,8 @@ class JobRegistry:
                 "output_dir_ready": False,
                 "partial_output_ready": False,
                 "partial_output_bytes": 0,
+                "translated_pdf_ready": False,
+                "translated_pdf_bytes": 0,
                 "bilingual_html_ready": False,
                 "bilingual_html_bytes": 0,
                 "bundle_zip_ready": False,

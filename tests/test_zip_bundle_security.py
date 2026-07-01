@@ -38,6 +38,8 @@ class ZipBundleSecurityTests(unittest.TestCase):
         translated = root / "output" / "translated_full.md"
         translated.parent.mkdir(parents=True, exist_ok=True)
         translated.write_text("normal output", encoding="utf-8")
+        translated_pdf = root / "output" / "translated_full.pdf"
+        translated_pdf.write_bytes(b"%PDF-1.4 normal output")
         (memory / "safe.md").write_text("normal memory", encoding="utf-8")
         (repairs / "safe.md").write_text("normal repair", encoding="utf-8")
 
@@ -47,6 +49,7 @@ class ZipBundleSecurityTests(unittest.TestCase):
         }
 
         self.assertIn("output/translated_full.md", included)
+        self.assertIn("output/translated_full.pdf", included)
         self.assertIn("memory/safe.md", included)
         self.assertIn("output/repairs/safe.md", included)
 
@@ -68,6 +71,8 @@ class ZipBundleSecurityTests(unittest.TestCase):
 
             normal_output = output / "translated_full.md"
             normal_output.write_text("normal output", encoding="utf-8")
+            normal_pdf = output / "translated_full.pdf"
+            normal_pdf.write_bytes(b"%PDF-1.4 normal output")
             normal_memory = memory / "safe.md"
             normal_memory.write_text("normal memory", encoding="utf-8")
             normal_repair = repairs / "safe.md"
@@ -91,6 +96,7 @@ class ZipBundleSecurityTests(unittest.TestCase):
             }
 
             self.assertIn("output/translated_full.md", included)
+            self.assertIn("output/translated_full.pdf", included)
             self.assertIn("memory/safe.md", included)
             self.assertIn("output/repairs/safe.md", included)
             self.assertNotIn("memory/linked.md", included)

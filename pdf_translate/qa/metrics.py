@@ -28,6 +28,8 @@ DEFAULT_EVIDENCE_FILES = {
     "repair_validation": "output/repair_validation.json",
     "repair_merge": "output/repair_merge.json",
     "repair_merge_qa": "output/repair_merge_qa.json",
+    "translated_pdf": "output/translated_full.pdf",
+    "translated_pdf_report": "output/translated_pdf_report.json",
     "run_metrics": "output/run_metrics.json",
     "run_log": "output/run_log.jsonl",
     "cost_estimate": "output/cost_estimate.json",
@@ -109,6 +111,7 @@ def build_experiment_metrics(
     repair_validation: dict[str, Any] | None = None,
     repair_merge: dict[str, Any] | None = None,
     repair_merge_qa: dict[str, Any] | None = None,
+    translated_pdf_report: dict[str, Any] | None = None,
     run_metrics: dict[str, Any] | None = None,
     cost_estimate: dict[str, Any] | None = None,
     evidence_files: dict[str, str] | None = None,
@@ -134,6 +137,7 @@ def build_experiment_metrics(
     repair_validation_summary = _summary(repair_validation)
     repair_merge_summary = _summary(repair_merge)
     repair_merge_qa_summary = _summary(repair_merge_qa)
+    translated_pdf_summary = _summary(translated_pdf_report)
     run_summary = _summary(run_metrics)
     cost_summary = _summary(cost_estimate)
 
@@ -422,6 +426,13 @@ def build_experiment_metrics(
     post_repair_missing_table_locked_token_count = _as_int(
         repair_merge_qa_summary.get("missing_table_locked_token_count")
     )
+    translated_pdf_generated = _as_bool(translated_pdf_summary.get("generated"))
+    translated_pdf_page_count = _as_int(translated_pdf_summary.get("page_count"))
+    translated_pdf_chunk_count = _as_int(translated_pdf_summary.get("chunk_count"))
+    translated_pdf_table_count = _as_int(translated_pdf_summary.get("table_count"))
+    translated_pdf_qa_issue_count = _as_int(translated_pdf_summary.get("qa_issue_count"))
+    translated_pdf_repair_item_count = _as_int(translated_pdf_summary.get("repair_item_count"))
+    translated_pdf_warning_count = _as_int(translated_pdf_summary.get("warning_count"))
     max_english_residual_ratio = _as_float(translation_summary.get("max_english_residual_ratio"))
     total_elapsed_ms = _as_int(run_summary.get("total_elapsed_ms"))
     translation_elapsed_ms = _as_int(run_summary.get("translation_elapsed_ms"))
@@ -626,6 +637,13 @@ def build_experiment_metrics(
             "post_repair_table_shape_error_count": post_repair_table_shape_error_count,
             "post_repair_table_cell_token_error_count": post_repair_table_cell_token_error_count,
             "post_repair_missing_table_locked_token_count": post_repair_missing_table_locked_token_count,
+            "translated_pdf_generated": translated_pdf_generated,
+            "translated_pdf_page_count": translated_pdf_page_count,
+            "translated_pdf_chunk_count": translated_pdf_chunk_count,
+            "translated_pdf_table_count": translated_pdf_table_count,
+            "translated_pdf_qa_issue_count": translated_pdf_qa_issue_count,
+            "translated_pdf_repair_item_count": translated_pdf_repair_item_count,
+            "translated_pdf_warning_count": translated_pdf_warning_count,
             "max_english_residual_ratio": max_english_residual_ratio,
         },
         "performance": {
@@ -884,6 +902,7 @@ def write_experiment_metrics(
     repair_validation: dict[str, Any] | None = None,
     repair_merge: dict[str, Any] | None = None,
     repair_merge_qa: dict[str, Any] | None = None,
+    translated_pdf_report: dict[str, Any] | None = None,
     run_metrics: dict[str, Any] | None = None,
     cost_estimate: dict[str, Any] | None = None,
     evidence_files: dict[str, str] | None = None,
@@ -909,6 +928,7 @@ def write_experiment_metrics(
         repair_validation=repair_validation,
         repair_merge=repair_merge,
         repair_merge_qa=repair_merge_qa,
+        translated_pdf_report=translated_pdf_report,
         run_metrics=run_metrics,
         cost_estimate=cost_estimate,
         evidence_files=evidence_files,
