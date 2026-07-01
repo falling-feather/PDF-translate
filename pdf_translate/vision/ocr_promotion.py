@@ -101,7 +101,7 @@ def _find_source_candidate(
 
 def _promotion_meta(qa_item: dict[str, Any], source_candidate: dict[str, Any]) -> dict[str, Any]:
     text = _text(source_candidate.get("text") or qa_item.get("preview"))
-    return {
+    meta: dict[str, Any] = {
         "source": "ocr_candidate_promotion",
         "qa_schema_version": "ocr-candidate-qa-v1",
         "task_id": str(qa_item.get("task_id") or ""),
@@ -113,6 +113,28 @@ def _promotion_meta(qa_item: dict[str, Any], source_candidate: dict[str, Any]) -
         "input_path": str(source_candidate.get("input_path") or qa_item.get("input_path") or ""),
         "text_char_count": len(text),
     }
+    target_structure_type = str(
+        source_candidate.get("target_structure_type") or qa_item.get("target_structure_type") or ""
+    )
+    if target_structure_type:
+        meta["target_structure_type"] = target_structure_type
+    for key in ("table_context", "subtarget", "structure_contract"):
+        value = source_candidate.get(key)
+        if not isinstance(value, dict):
+            value = qa_item.get(key)
+        if isinstance(value, dict):
+            meta[key] = _json_copy(value)
+    return meta
+
+
+def _attach_structure_trace(record: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    for key in ("target_structure_type", "table_context", "subtarget"):
+        value = meta.get(key)
+        if isinstance(value, dict):
+            record[key] = _json_copy(value)
+        elif isinstance(value, str) and value:
+            record[key] = value
+    return record
 
 
 def _append_text(existing: Any, text: str) -> str:
@@ -206,18 +228,21 @@ def _promote_to_block(
     block["text"] = _append_text(block.get("text"), text)
     _add_page_text(page, text)
     _record_promotion(block, meta)
-    return {
-        "task_id": meta["task_id"],
-        "page_no": _as_int(qa_item.get("page_no")),
-        "block_id": str(block.get("block_id") or ""),
-        "source_target": str(qa_item.get("target") or ""),
-        "promotion_target": "document_ir.block.text",
-        "action": "set_or_append_block_text",
-        "block_type": str(block.get("type") or ""),
-        "text_char_count": meta["text_char_count"],
-        "confidence": meta["confidence"],
-        "engine": meta["engine"],
-    }
+    return _attach_structure_trace(
+        {
+            "task_id": meta["task_id"],
+            "page_no": _as_int(qa_item.get("page_no")),
+            "block_id": str(block.get("block_id") or ""),
+            "source_target": str(qa_item.get("target") or ""),
+            "promotion_target": "document_ir.block.text",
+            "action": "set_or_append_block_text",
+            "block_type": str(block.get("type") or ""),
+            "text_char_count": meta["text_char_count"],
+            "confidence": meta["confidence"],
+            "engine": meta["engine"],
+        },
+        meta,
+    )
 
 
 def _promote_to_page_block(
@@ -249,18 +274,21 @@ def _promote_to_page_block(
     blocks.append(block)
     _add_page_text(page, text)
     _increment_block_type_count(page, "paragraph")
-    return {
-        "task_id": meta["task_id"],
-        "page_no": _as_int(page.get("page_no")),
-        "block_id": block_id,
-        "source_target": str(qa_item.get("target") or ""),
-        "promotion_target": "document_ir.page.blocks.synthetic",
-        "action": "create_synthetic_ocr_block",
-        "block_type": "paragraph",
-        "text_char_count": meta["text_char_count"],
-        "confidence": meta["confidence"],
-        "engine": meta["engine"],
-    }
+    return _attach_structure_trace(
+        {
+            "task_id": meta["task_id"],
+            "page_no": _as_int(page.get("page_no")),
+            "block_id": block_id,
+            "source_target": str(qa_item.get("target") or ""),
+            "promotion_target": "document_ir.page.blocks.synthetic",
+            "action": "create_synthetic_ocr_block",
+            "block_type": "paragraph",
+            "text_char_count": meta["text_char_count"],
+            "confidence": meta["confidence"],
+            "engine": meta["engine"],
+        },
+        meta,
+    )
 
 
 def build_ocr_candidate_promotion(

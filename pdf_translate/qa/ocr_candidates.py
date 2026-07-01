@@ -13,6 +13,10 @@ MIN_TEXT_CHARS = 3
 STRUCTURE_REVIEW_BLOCK_TYPES = {"table", "formula"}
 
 
+def _json_copy(value: Any) -> Any:
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
 def _as_float(value: Any) -> float:
     if isinstance(value, bool):
         return 0.0
@@ -111,6 +115,7 @@ def _iter_candidates(document_ir_ocr: dict[str, Any] | None) -> list[dict[str, A
                     "target": f"document_ir.{item['target_kind']}.meta.ocr_candidates",
                     "target_index": int(item["target_index"]),
                     "block_type": item["block_type"],
+                    "target_structure_type": str(candidate.get("target_structure_type") or item["block_type"]),
                     "text": str(candidate.get("text") or ""),
                     "confidence": _as_float(candidate.get("confidence")),
                     "engine": str(candidate.get("engine") or ""),
@@ -118,6 +123,15 @@ def _iter_candidates(document_ir_ocr: dict[str, Any] | None) -> list[dict[str, A
                     "input_path": str(candidate.get("input_path") or ""),
                     "warnings": [str(value) for value in candidate.get("warnings") or [] if str(value)],
                     "target_text": item["target_text"],
+                    "table_context": _json_copy(candidate.get("table_context"))
+                    if isinstance(candidate.get("table_context"), dict)
+                    else {},
+                    "subtarget": _json_copy(candidate.get("subtarget"))
+                    if isinstance(candidate.get("subtarget"), dict)
+                    else {},
+                    "structure_contract": _json_copy(candidate.get("structure_contract"))
+                    if isinstance(candidate.get("structure_contract"), dict)
+                    else {},
                 }
             )
     return out
@@ -128,6 +142,11 @@ def _assessment(item: dict[str, Any], *, review_confidence: float) -> dict[str, 
     confidence = _as_float(item.get("confidence"))
     useful_ratio = _useful_char_ratio(text)
     block_type = str(item.get("block_type") or "")
+    table_context = item.get("table_context") if isinstance(item.get("table_context"), dict) else {}
+    subtarget = item.get("subtarget") if isinstance(item.get("subtarget"), dict) else {}
+    structure_contract = (
+        item.get("structure_contract") if isinstance(item.get("structure_contract"), dict) else {}
+    )
     reasons: list[str] = []
     blockers: list[str] = []
 
@@ -151,7 +170,7 @@ def _assessment(item: dict[str, Any], *, review_confidence: float) -> dict[str, 
     else:
         status = "candidate"
 
-    return {
+    assessment: dict[str, Any] = {
         "task_id": item["task_id"],
         "page_no": item["page_no"],
         "block_id": item["block_id"],
@@ -159,6 +178,7 @@ def _assessment(item: dict[str, Any], *, review_confidence: float) -> dict[str, 
         "target": item["target"],
         "target_index": item["target_index"],
         "block_type": block_type,
+        "target_structure_type": str(item.get("target_structure_type") or block_type),
         "status": status,
         "reasons": reasons,
         "blockers": blockers,
@@ -171,6 +191,13 @@ def _assessment(item: dict[str, Any], *, review_confidence: float) -> dict[str, 
         "warnings": item["warnings"],
         "preview": text[:160],
     }
+    if table_context:
+        assessment["table_context"] = _json_copy(table_context)
+    if subtarget:
+        assessment["subtarget"] = _json_copy(subtarget)
+    if structure_contract:
+        assessment["structure_contract"] = _json_copy(structure_contract)
+    return assessment
 
 
 def build_ocr_candidate_qa(
@@ -187,6 +214,11 @@ def build_ocr_candidate_qa(
     block_type_counts = Counter(str(item.get("block_type") or "unknown") for item in assessments)
     scope_counts = Counter(str(item.get("scope") or "unknown") for item in assessments)
     text_char_count = sum(int(item.get("text_char_count") or 0) for item in assessments)
+    table_context_candidate_count = sum(1 for item in assessments if isinstance(item.get("table_context"), dict))
+    structured_contract_candidate_count = sum(
+        1 for item in assessments if isinstance(item.get("structure_contract"), dict)
+    )
+    subtarget_candidate_count = sum(1 for item in assessments if isinstance(item.get("subtarget"), dict))
     for item in assessments:
         for reason in item.get("reasons") or []:
             issue_counts[str(reason)] += 1
@@ -208,6 +240,9 @@ def build_ocr_candidate_qa(
             "needs_review_candidate_count": status_counts.get("needs_review", 0),
             "blocked_candidate_count": status_counts.get("blocked", 0),
             "candidate_text_char_count": text_char_count,
+            "table_context_candidate_count": table_context_candidate_count,
+            "structured_contract_candidate_count": structured_contract_candidate_count,
+            "subtarget_candidate_count": subtarget_candidate_count,
             "writeback_accepted_result_count": int(writeback_summary.get("accepted_result_count") or 0),
             "status_counts": dict(status_counts),
             "issue_counts": dict(issue_counts),

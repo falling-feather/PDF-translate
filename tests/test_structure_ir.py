@@ -1651,7 +1651,17 @@ class StructureIRTests(unittest.TestCase):
                             "Metric Acc\nA 91.2",
                             (60, 540, 500, 620),
                             1,
-                            meta={"table": {"row_count": 2, "column_count": 2}},
+                            locked_tokens=["91.2"],
+                            meta={
+                                "table": {
+                                    "row_count": 2,
+                                    "column_count": 2,
+                                    "header": ["Metric", "Acc"],
+                                    "numeric_tokens": ["91.2"],
+                                    "warnings": ["numeric_dense_table"],
+                                    "confidence": "medium",
+                                }
+                            },
                         ),
                     ],
                 )
@@ -1698,20 +1708,144 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(manifest["summary"]["ready_task_count"], 2)
             self.assertEqual(manifest["summary"]["blocked_by_missing_evidence_count"], 0)
             self.assertEqual(manifest["summary"]["recommended_engine_counts"]["local_table_ocr"], 1)
+            self.assertEqual(manifest["summary"]["structured_contract_task_count"], 1)
+            self.assertEqual(manifest["summary"]["table_context_task_count"], 1)
+            self.assertEqual(manifest["summary"]["table_context_ready_task_count"], 1)
+            self.assertEqual(manifest["summary"]["structure_target_counts"]["table"], 1)
             self.assertEqual(manifest["tasks"][0]["input_path"], "vision_crops/page-0001/p1-b0000-image.png")
             self.assertEqual(manifest["tasks"][0]["writeback"]["target"], "document_ir.block.meta.ocr_candidates")
             self.assertTrue(manifest["tasks"][0]["block_known_in_document_ir"])
             table_task = manifest["tasks"][1]
             self.assertEqual(table_task["block_type"], "table")
+            self.assertEqual(table_task["layout_scope"], "table_region")
+            self.assertEqual(table_task["target_structure_type"], "table")
             self.assertEqual(table_task["recommended_engine"], "local_table_ocr")
             self.assertEqual(table_task["writeback"]["block_id"], "p1-b0001")
+            self.assertEqual(table_task["writeback"]["subtarget"]["type"], "table_block")
+            self.assertEqual(table_task["table_context"]["table_id"], "p1-b0001")
+            self.assertEqual(table_task["table_context"]["row_count"], 2)
+            self.assertEqual(table_task["table_context"]["column_count"], 2)
+            self.assertEqual(table_task["table_context"]["header"], ["Metric", "Acc"])
+            self.assertEqual(table_task["table_context"]["numeric_tokens"], ["91.2"])
+            self.assertEqual(table_task["table_context"]["locked_tokens"], ["91.2"])
+            self.assertEqual(table_task["structure_contract"]["schema_version"], "ocr-structure-contract-v1")
+            self.assertIn("structured_cells", table_task["structure_contract"]["optional_result_fields"])
             self.assertEqual(manifest["result_writeback_contract"]["schema_version"], "ocr-result-v1")
+            self.assertIn(
+                "table_context",
+                manifest["result_writeback_contract"]["optional_structured_fields"],
+            )
         finally:
             if root.exists():
                 shutil.rmtree(root)
             parent = root.parent
             if parent.is_dir() and not any(parent.iterdir()):
                 shutil.rmtree(parent)
+
+    def test_table_ocr_writeback_preserves_structure_context(self) -> None:
+        doc_ir = DocumentIR(
+            doc_id="table-ocr-context",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text="Metric Acc\nA 91.2",
+                    image_count=1,
+                    warnings=["low_text_image_heavy_page", "table_like_content"],
+                    meta={
+                        "text_char_count": 18,
+                        "text_area_ratio": 0.02,
+                        "image_area_ratio": 0.5,
+                    },
+                    blocks=[
+                        BlockIR(
+                            "p1-b0000",
+                            1,
+                            "table",
+                            "Metric Acc\nA 91.2",
+                            (60, 540, 500, 620),
+                            0,
+                            locked_tokens=["91.2"],
+                            meta={
+                                "table": {
+                                    "row_count": 2,
+                                    "column_count": 2,
+                                    "header": ["Metric", "Acc"],
+                                    "numeric_tokens": ["91.2"],
+                                    "confidence": "medium",
+                                }
+                            },
+                        ),
+                    ],
+                )
+            ],
+        )
+        route = {
+            "schema_version": "vision-route-v1",
+            "doc_id": doc_ir.doc_id,
+            "summary": {},
+            "pages": [
+                {
+                    "page_no": 1,
+                    "action": "local_ocr",
+                    "risk_level": "high",
+                    "risk_score": 0.8,
+                    "reasons": ["possible_image_table"],
+                    "evidence": {
+                        "page_preview_path": "vision_pages/page-0001.png",
+                        "region_crops": [
+                            {
+                                "block_id": "p1-b0000",
+                                "block_type": "table",
+                                "crop_path": "vision_crops/page-0001/p1-b0000-table.png",
+                                "bbox": [60, 540, 500, 620],
+                                "crop_width": 720,
+                                "crop_height": 140,
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+        manifest = build_ocr_task_manifest(doc_ir, route)
+        table_task = manifest["tasks"][0]
+        results = build_ocr_results_payload(
+            manifest,
+            {
+                "schema_version": "ocr-results-v1",
+                "results": [
+                    {
+                        "task_id": table_task["task_id"],
+                        "status": "succeeded",
+                        "text": "Metric Acc\nA 91.2",
+                        "confidence": 0.91,
+                        "engine": "unit_table_ocr",
+                        "language": "en",
+                        "bbox": [60, 540, 500, 620],
+                        "warnings": [],
+                    }
+                ],
+            },
+        )
+
+        built = build_ocr_writeback(doc_ir, manifest, results)
+        self.assertEqual(built["summary"]["accepted_result_count"], 1)
+        self.assertEqual(built["summary"]["table_context_writeback_count"], 1)
+        candidate = built["augmented_document_ir"]["pages"][0]["blocks"][0]["meta"]["ocr_candidates"][0]
+        self.assertEqual(candidate["target_structure_type"], "table")
+        self.assertEqual(candidate["table_context"]["table_id"], "p1-b0000")
+        self.assertEqual(candidate["table_context"]["row_count"], 2)
+        self.assertEqual(candidate["subtarget"]["type"], "table_block")
+
+        candidate_qa = build_ocr_candidate_qa(built["augmented_document_ir"], built)
+        self.assertEqual(candidate_qa["summary"]["candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["table_context_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["structured_contract_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["subtarget_candidate_count"], 1)
+        self.assertEqual(candidate_qa["candidates"][0]["table_context"]["table_id"], "p1-b0000")
+        self.assertEqual(candidate_qa["candidates"][0]["subtarget"]["expected_granularity"], "rows_and_cells")
 
     def test_local_ocr_executor_runs_ready_tasks_into_results_payload(self) -> None:
         root = Path.cwd() / "test-output" / "ocr-executor"
@@ -2451,6 +2585,9 @@ class StructureIRTests(unittest.TestCase):
                     "ready_task_count": 3,
                     "blocked_by_missing_evidence_count": 1,
                     "vlm_fallback_task_count": 1,
+                    "structured_contract_task_count": 1,
+                    "table_context_task_count": 1,
+                    "table_context_ready_task_count": 1,
                     "scope_counts": {"region": 3, "page": 1},
                     "status_counts": {"pending_engine": 3, "blocked_missing_visual_evidence": 1},
                     "priority_counts": {"P0": 2, "P1": 2},
@@ -2460,6 +2597,7 @@ class StructureIRTests(unittest.TestCase):
                         "local_formula_ocr": 1,
                     },
                     "block_type_counts": {"image": 2, "table": 1, "formula": 1},
+                    "structure_target_counts": {"image": 2, "table": 1, "formula": 1},
                 },
             },
             ocr_results={
@@ -2494,6 +2632,7 @@ class StructureIRTests(unittest.TestCase):
                     "unknown_task_result_count": 0,
                     "block_writeback_count": 2,
                     "page_writeback_count": 0,
+                    "table_context_writeback_count": 1,
                     "result_status_counts": {"succeeded": 3},
                     "accepted_engine_counts": {"local_ocr": 1, "local_table_ocr": 1},
                     "rejection_reason_counts": {"low_confidence": 1},
@@ -2507,6 +2646,9 @@ class StructureIRTests(unittest.TestCase):
                     "needs_review_candidate_count": 1,
                     "blocked_candidate_count": 1,
                     "candidate_text_char_count": 180,
+                    "table_context_candidate_count": 1,
+                    "structured_contract_candidate_count": 1,
+                    "subtarget_candidate_count": 1,
                     "status_counts": {"candidate": 1, "needs_review": 1, "blocked": 1},
                     "issue_counts": {"needs_table_structure_review": 1, "too_short": 1},
                 },
@@ -2859,6 +3001,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_ready_task_count"], 3)
         self.assertEqual(metrics["quality"]["ocr_blocked_task_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_vlm_fallback_task_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_contract_task_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_table_context_task_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_table_context_ready_task_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_result_payload_count"], 3)
         self.assertEqual(metrics["quality"]["ocr_invalid_result_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_executor_attempted_task_count"], 3)
@@ -2873,11 +3018,15 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_missing_result_task_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_block_writeback_count"], 2)
         self.assertEqual(metrics["quality"]["ocr_page_writeback_count"], 0)
+        self.assertEqual(metrics["quality"]["ocr_table_context_writeback_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_qa_count"], 3)
         self.assertEqual(metrics["quality"]["ocr_candidate_promotable_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_needs_review_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_blocked_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_text_char_count"], 180)
+        self.assertEqual(metrics["quality"]["ocr_table_context_candidate_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_contract_candidate_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_subtarget_candidate_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_promotion_eligible_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_promoted_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_promotion_skipped_count"], 2)
@@ -2889,6 +3038,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["ocr_task_per_routed_page"], 2.0)
         self.assertEqual(metrics["rates"]["ocr_region_task_rate"], 0.75)
         self.assertEqual(metrics["rates"]["ocr_ready_task_rate"], 0.75)
+        self.assertEqual(metrics["rates"]["ocr_structured_contract_task_rate"], 0.25)
+        self.assertEqual(metrics["rates"]["ocr_table_context_task_rate"], 0.25)
+        self.assertEqual(metrics["rates"]["ocr_table_context_ready_rate"], 1.0)
         self.assertEqual(metrics["rates"]["ocr_result_payload_valid_rate"], 0.75)
         self.assertEqual(metrics["rates"]["ocr_executor_success_rate"], 0.6667)
         self.assertEqual(metrics["rates"]["ocr_task_result_coverage_rate"], 0.75)
@@ -2900,6 +3052,7 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["ocr_candidate_eligible_promotion_rate"], 1.0)
         self.assertEqual(metrics["breakdowns"]["vision_action_counts"]["local_ocr"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_task_engine_counts"]["local_table_ocr"], 1)
+        self.assertEqual(metrics["breakdowns"]["ocr_task_structure_target_counts"]["table"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_result_payload_engine_counts"]["vlm_fallback"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_execution_status_counts"]["failed"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_writeback_engine_counts"]["local_table_ocr"], 1)

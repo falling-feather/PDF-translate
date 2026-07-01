@@ -138,12 +138,14 @@ def _candidate(
     text: str,
 ) -> dict[str, Any]:
     bbox = _normalized_bbox(result.get("bbox")) or _normalized_bbox(task.get("bbox"))
-    return {
+    candidate: dict[str, Any] = {
         "source": "ocr_result",
         "task_id": str(task.get("task_id") or ""),
         "page_no": int(task.get("page_no") or 0),
         "block_id": str(task.get("block_id") or ""),
         "scope": str(task.get("scope") or ""),
+        "block_type": str(task.get("block_type") or ""),
+        "target_structure_type": str(task.get("target_structure_type") or ""),
         "text": text,
         "confidence": round(confidence, 4),
         "engine": str(result.get("engine") or task.get("recommended_engine") or ""),
@@ -153,6 +155,15 @@ def _candidate(
         "input_path": str(task.get("input_path") or ""),
         "result_status": str(result.get("status") or "succeeded"),
     }
+    for key in ("table_context", "structure_contract"):
+        value = task.get(key)
+        if isinstance(value, dict):
+            candidate[key] = _json_copy(value)
+    writeback = task.get("writeback") if isinstance(task.get("writeback"), dict) else {}
+    subtarget = writeback.get("subtarget") if isinstance(writeback.get("subtarget"), dict) else {}
+    if subtarget:
+        candidate["subtarget"] = _json_copy(subtarget)
+    return candidate
 
 
 def build_empty_ocr_results(ocr_tasks: dict[str, Any] | None) -> dict[str, Any]:
@@ -251,6 +262,7 @@ def build_ocr_writeback(
     rejection_reason_counts: Counter[str] = Counter()
     block_writeback_count = 0
     page_writeback_count = 0
+    table_context_writeback_count = 0
 
     for result in result_list:
         task_id = str(result.get("task_id") or "")
@@ -311,18 +323,23 @@ def build_ocr_writeback(
             block_writeback_count += 1
         else:
             page_writeback_count += 1
-        writebacks.append(
-            {
-                "task_id": task_id,
-                "page_no": page_no,
-                "block_id": block_id,
-                "target": f"document_ir.{target_kind}.meta.ocr_candidates",
-                "candidate_index": candidate_index,
-                "text_char_count": len(text),
-                "confidence": candidate["confidence"],
-                "engine": candidate["engine"],
-            }
-        )
+        if isinstance(candidate.get("table_context"), dict):
+            table_context_writeback_count += 1
+        writeback_record = {
+            "task_id": task_id,
+            "page_no": page_no,
+            "block_id": block_id,
+            "target": f"document_ir.{target_kind}.meta.ocr_candidates",
+            "candidate_index": candidate_index,
+            "text_char_count": len(text),
+            "confidence": candidate["confidence"],
+            "engine": candidate["engine"],
+        }
+        for key in ("table_context", "subtarget"):
+            value = candidate.get(key)
+            if isinstance(value, dict):
+                writeback_record[key] = _json_copy(value)
+        writebacks.append(writeback_record)
 
     pending = [_pending_task(task) for task in task_list if str(task.get("task_id") or "") not in tasks_with_results]
     unknown_task_result_count = rejection_reason_counts.get("unknown_task", 0)
@@ -342,6 +359,7 @@ def build_ocr_writeback(
             "unknown_task_result_count": unknown_task_result_count,
             "block_writeback_count": block_writeback_count,
             "page_writeback_count": page_writeback_count,
+            "table_context_writeback_count": table_context_writeback_count,
             "result_status_counts": dict(result_status_counts),
             "accepted_engine_counts": dict(accepted_engine_counts),
             "rejection_reason_counts": dict(rejection_reason_counts),

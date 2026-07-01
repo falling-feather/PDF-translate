@@ -5,9 +5,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from pdf_translate.extractors.document_ir import DocumentIR
+from pdf_translate.extractors.document_ir import BlockIR, DocumentIR
 
 SCHEMA_VERSION = "ocr-task-manifest-v1"
+STRUCTURE_CONTRACT_SCHEMA_VERSION = "ocr-structure-contract-v1"
 OCR_ROUTE_ACTIONS = {"local_ocr", "vlm_review"}
 
 
@@ -28,8 +29,128 @@ def _route_page_index(vision_route: dict[str, Any]) -> dict[int, dict[str, Any]]
     return out
 
 
-def _known_blocks(doc_ir: DocumentIR) -> set[str]:
-    return {block.block_id for page in doc_ir.pages for block in page.blocks}
+def _block_index(doc_ir: DocumentIR) -> dict[str, BlockIR]:
+    return {block.block_id: block for page in doc_ir.pages for block in page.blocks}
+
+
+def _as_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return 0
+    return 0
+
+
+def _string_list(value: Any, *, limit: int = 80) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text:
+            out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _target_structure_type(block_type: str) -> str:
+    if block_type in {"table", "formula", "image", "caption"}:
+        return block_type
+    return "text"
+
+
+def _layout_scope(scope: str, block_type: str) -> str:
+    if scope == "page":
+        return "page"
+    if block_type in {"table", "formula", "image", "caption"}:
+        return f"{block_type}_region"
+    return "text_region"
+
+
+def _table_context(block: BlockIR | None) -> dict[str, Any]:
+    if block is None or block.type != "table":
+        return {}
+    meta = block.meta if isinstance(block.meta, dict) else {}
+    table = meta.get("table") if isinstance(meta.get("table"), dict) else {}
+    rows = table.get("rows") if isinstance(table.get("rows"), list) else []
+    row_count = _as_int(table.get("row_count")) or len(rows)
+    column_count = _as_int(table.get("column_count"))
+    row_lengths = [len(row) for row in rows if isinstance(row, list)]
+    if not column_count and row_lengths:
+        column_count = max(row_lengths)
+    table_scope = (
+        "continued"
+        if meta.get("table_continuation") or meta.get("continued_table_group_id")
+        else "primary"
+    )
+    return {
+        "table_id": block.block_id,
+        "table_scope": table_scope,
+        "table_block_type": block.type,
+        "source_page_no": block.page_no,
+        "source_block_bbox": [round(float(value), 2) for value in block.bbox],
+        "row_count": row_count,
+        "column_count": column_count,
+        "cell_count": row_count * column_count if row_count and column_count else 0,
+        "header": _string_list(table.get("header"), limit=40),
+        "numeric_tokens": _string_list(table.get("numeric_tokens"), limit=120),
+        "locked_tokens": _string_list(block.locked_tokens, limit=120),
+        "source_confidence": str(table.get("confidence") or ""),
+        "warnings": _string_list(table.get("warnings"), limit=80),
+    }
+
+
+def _table_subtarget(table_context: dict[str, Any]) -> dict[str, Any]:
+    if not table_context:
+        return {}
+    return {
+        "type": "table_block",
+        "table_id": str(table_context.get("table_id") or ""),
+        "table_scope": str(table_context.get("table_scope") or "primary"),
+        "expected_granularity": "rows_and_cells",
+    }
+
+
+def _structure_contract(block_type: str, table_context: dict[str, Any]) -> dict[str, Any]:
+    if block_type != "table" or not table_context:
+        return {}
+    return {
+        "schema_version": STRUCTURE_CONTRACT_SCHEMA_VERSION,
+        "target_structure_type": "table",
+        "expected_output": "plain_text_with_structured_table_cells",
+        "required_result_fields": [
+            "task_id",
+            "text",
+            "confidence",
+            "engine",
+            "language",
+            "bbox",
+            "warnings",
+        ],
+        "optional_result_fields": [
+            "structured_cells",
+            "row_count",
+            "column_count",
+            "cell_bboxes",
+            "merged_cell_candidates",
+            "table_footnotes",
+        ],
+        "qa_gates": [
+            "preserve_row_column_grid",
+            "preserve_locked_tokens",
+            "preserve_numeric_tokens",
+            "flag_merged_or_ragged_cells",
+            "keep_table_footnotes_attached",
+        ],
+    }
 
 
 def _priority(action: str, risk_level: str, block_type: str) -> str:
@@ -52,14 +173,50 @@ def _fallback_engine(action: str) -> str:
     return "vlm_review" if action == "vlm_review" else ""
 
 
-def _writeback_target(page_no: int, block_id: str) -> dict[str, Any]:
+def _writeback_target(page_no: int, block_id: str, subtarget: dict[str, Any] | None = None) -> dict[str, Any]:
     if block_id:
-        return {
+        target = {
             "target": "document_ir.block.meta.ocr_candidates",
             "page_no": page_no,
             "block_id": block_id,
             "merge_policy": "append_only_until_qa",
         }
+    else:
+        target = {
+            "target": "document_ir.page.meta.ocr_candidates",
+            "page_no": page_no,
+            "block_id": "",
+            "merge_policy": "append_only_until_qa",
+        }
+    if subtarget:
+        target["subtarget"] = subtarget
+    return target
+
+
+def _base_task_payload(
+    *,
+    scope: str,
+    page_no: int,
+    block_id: str,
+    block_type: str,
+    block: BlockIR | None,
+) -> dict[str, Any]:
+    table_context = _table_context(block)
+    subtarget = _table_subtarget(table_context)
+    contract = _structure_contract(block_type, table_context)
+    payload: dict[str, Any] = {
+        "layout_scope": _layout_scope(scope, block_type),
+        "target_structure_type": _target_structure_type(block_type),
+        "writeback": _writeback_target(page_no, block_id, subtarget),
+    }
+    if table_context:
+        payload["table_context"] = table_context
+    if contract:
+        payload["structure_contract"] = contract
+    return payload
+
+
+def _page_writeback_target(page_no: int) -> dict[str, Any]:
     return {
         "target": "document_ir.page.meta.ocr_candidates",
         "page_no": page_no,
@@ -78,16 +235,17 @@ def _region_task(
     page: dict[str, Any],
     crop: dict[str, Any],
     task_index: int,
-    known_block_ids: set[str],
+    blocks_by_id: dict[str, BlockIR],
 ) -> dict[str, Any]:
     page_no = int(page.get("page_no") or 0)
     evidence = page.get("evidence") if isinstance(page.get("evidence"), dict) else {}
     block_id = str(crop.get("block_id") or "")
     block_type = str(crop.get("block_type") or "region")
+    block = blocks_by_id.get(block_id)
     action = str(page.get("action") or "")
     risk_level = str(page.get("risk_level") or "low")
     input_path = str(crop.get("crop_path") or "")
-    return {
+    task = {
         "task_id": f"ocr-p{page_no:04d}-r{task_index:03d}",
         "doc_id": doc_id,
         "page_no": page_no,
@@ -104,12 +262,21 @@ def _region_task(
         "page_preview_path": str(evidence.get("page_preview_path") or ""),
         "block_id": block_id,
         "block_type": block_type,
-        "block_known_in_document_ir": block_id in known_block_ids,
+        "block_known_in_document_ir": block_id in blocks_by_id,
         "bbox": list(crop.get("bbox") or []),
         "crop_width": int(crop.get("crop_width") or 0),
         "crop_height": int(crop.get("crop_height") or 0),
-        "writeback": _writeback_target(page_no, block_id),
     }
+    task.update(
+        _base_task_payload(
+            scope="region",
+            page_no=page_no,
+            block_id=block_id,
+            block_type=block_type,
+            block=block,
+        )
+    )
+    return task
 
 
 def _page_task(
@@ -128,6 +295,7 @@ def _page_task(
         "doc_id": doc_id,
         "page_no": page_no,
         "scope": "page",
+        "layout_scope": "page",
         "status": _task_status(input_path),
         "priority": _priority(action, risk_level, "page"),
         "route_action": action,
@@ -140,11 +308,12 @@ def _page_task(
         "page_preview_path": input_path,
         "block_id": "",
         "block_type": "page",
+        "target_structure_type": "page",
         "block_known_in_document_ir": False,
         "bbox": [],
         "crop_width": 0,
         "crop_height": 0,
-        "writeback": _writeback_target(page_no, ""),
+        "writeback": _page_writeback_target(page_no),
     }
 
 
@@ -154,7 +323,7 @@ def build_ocr_task_manifest(
 ) -> dict[str, Any]:
     """Turn OCR/VLM route evidence into engine-agnostic pending OCR tasks."""
     route_pages = _route_page_index(vision_route)
-    known_block_ids = _known_blocks(doc_ir)
+    blocks_by_id = _block_index(doc_ir)
     tasks: list[dict[str, Any]] = []
     skipped_pages: list[dict[str, Any]] = []
 
@@ -180,7 +349,7 @@ def build_ocr_task_manifest(
                         page=page,
                         crop=crop,
                         task_index=len(tasks),
-                        known_block_ids=known_block_ids,
+                        blocks_by_id=blocks_by_id,
                     )
                 )
         else:
@@ -198,7 +367,15 @@ def build_ocr_task_manifest(
     engine_counts = Counter(str(task.get("recommended_engine") or "unknown") for task in tasks)
     block_type_counts = Counter(str(task.get("block_type") or "unknown") for task in tasks)
     route_action_counts = Counter(str(task.get("route_action") or "unknown") for task in tasks)
+    structure_target_counts = Counter(str(task.get("target_structure_type") or "unknown") for task in tasks)
     fallback_count = sum(1 for task in tasks if str(task.get("fallback_engine") or ""))
+    structured_contract_count = sum(1 for task in tasks if isinstance(task.get("structure_contract"), dict))
+    table_context_count = sum(1 for task in tasks if isinstance(task.get("table_context"), dict))
+    table_context_ready_count = sum(
+        1
+        for task in tasks
+        if isinstance(task.get("table_context"), dict) and str(task.get("status") or "") == "pending_engine"
+    )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -211,12 +388,16 @@ def build_ocr_task_manifest(
             "ready_task_count": status_counts.get("pending_engine", 0),
             "blocked_by_missing_evidence_count": status_counts.get("blocked_missing_visual_evidence", 0),
             "vlm_fallback_task_count": fallback_count,
+            "structured_contract_task_count": structured_contract_count,
+            "table_context_task_count": table_context_count,
+            "table_context_ready_task_count": table_context_ready_count,
             "scope_counts": dict(scope_counts),
             "status_counts": dict(status_counts),
             "priority_counts": dict(priority_counts),
             "recommended_engine_counts": dict(engine_counts),
             "block_type_counts": dict(block_type_counts),
             "route_action_counts": dict(route_action_counts),
+            "structure_target_counts": dict(structure_target_counts),
             "skipped_page_count": len(skipped_pages),
         },
         "result_writeback_contract": {
@@ -229,6 +410,16 @@ def build_ocr_task_manifest(
                 "language",
                 "bbox",
                 "warnings",
+            ],
+            "optional_structured_fields": [
+                "table_context",
+                "subtarget",
+                "structured_cells",
+                "row_count",
+                "column_count",
+                "cell_bboxes",
+                "merged_cell_candidates",
+                "table_footnotes",
             ],
             "writeback_policy": "append OCR candidates to DocumentIR meta; do not replace source text before QA",
             "qa_gate": "OCR text must pass structure and token checks before entering translation chunks",

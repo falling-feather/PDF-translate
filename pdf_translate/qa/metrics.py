@@ -152,6 +152,7 @@ def build_experiment_metrics(
     ocr_task_priority_counts = _counter_dict(ocr_task_summary.get("priority_counts"))
     ocr_task_engine_counts = _counter_dict(ocr_task_summary.get("recommended_engine_counts"))
     ocr_task_block_type_counts = _counter_dict(ocr_task_summary.get("block_type_counts"))
+    ocr_task_structure_target_counts = _counter_dict(ocr_task_summary.get("structure_target_counts"))
     ocr_result_payload_status_counts = _counter_dict(ocr_result_summary.get("status_counts"))
     ocr_result_payload_engine_counts = _counter_dict(ocr_result_summary.get("engine_counts"))
     ocr_execution_status_counts = _counter_dict(ocr_execution_summary.get("status_counts"))
@@ -328,6 +329,9 @@ def build_experiment_metrics(
     ocr_ready_task_count = _as_int(ocr_task_summary.get("ready_task_count"))
     ocr_blocked_task_count = _as_int(ocr_task_summary.get("blocked_by_missing_evidence_count"))
     ocr_vlm_fallback_task_count = _as_int(ocr_task_summary.get("vlm_fallback_task_count"))
+    ocr_structured_contract_task_count = _as_int(ocr_task_summary.get("structured_contract_task_count"))
+    ocr_table_context_task_count = _as_int(ocr_task_summary.get("table_context_task_count"))
+    ocr_table_context_ready_task_count = _as_int(ocr_task_summary.get("table_context_ready_task_count"))
     ocr_result_payload_count = _as_int(ocr_result_summary.get("result_count"))
     ocr_invalid_result_count = _as_int(ocr_result_summary.get("invalid_result_count"))
     ocr_executor_attempted_task_count = _as_int(ocr_execution_summary.get("attempted_task_count"))
@@ -343,11 +347,17 @@ def build_experiment_metrics(
     ocr_unknown_task_result_count = _as_int(ocr_writeback_summary.get("unknown_task_result_count"))
     ocr_block_writeback_count = _as_int(ocr_writeback_summary.get("block_writeback_count"))
     ocr_page_writeback_count = _as_int(ocr_writeback_summary.get("page_writeback_count"))
+    ocr_table_context_writeback_count = _as_int(ocr_writeback_summary.get("table_context_writeback_count"))
     ocr_candidate_qa_count = _as_int(ocr_candidate_summary.get("candidate_count"))
     ocr_candidate_promotable_count = _as_int(ocr_candidate_summary.get("promotable_candidate_count"))
     ocr_candidate_needs_review_count = _as_int(ocr_candidate_summary.get("needs_review_candidate_count"))
     ocr_candidate_blocked_count = _as_int(ocr_candidate_summary.get("blocked_candidate_count"))
     ocr_candidate_text_char_count = _as_int(ocr_candidate_summary.get("candidate_text_char_count"))
+    ocr_table_context_candidate_count = _as_int(ocr_candidate_summary.get("table_context_candidate_count"))
+    ocr_structured_contract_candidate_count = _as_int(
+        ocr_candidate_summary.get("structured_contract_candidate_count")
+    )
+    ocr_subtarget_candidate_count = _as_int(ocr_candidate_summary.get("subtarget_candidate_count"))
     ocr_candidate_promotion_eligible_count = _as_int(ocr_candidate_promotion_summary.get("eligible_candidate_count"))
     ocr_candidate_promoted_count = _as_int(ocr_candidate_promotion_summary.get("promoted_candidate_count"))
     ocr_candidate_promotion_skipped_count = _as_int(ocr_candidate_promotion_summary.get("skipped_candidate_count"))
@@ -601,6 +611,9 @@ def build_experiment_metrics(
             "ocr_ready_task_count": ocr_ready_task_count,
             "ocr_blocked_task_count": ocr_blocked_task_count,
             "ocr_vlm_fallback_task_count": ocr_vlm_fallback_task_count,
+            "ocr_structured_contract_task_count": ocr_structured_contract_task_count,
+            "ocr_table_context_task_count": ocr_table_context_task_count,
+            "ocr_table_context_ready_task_count": ocr_table_context_ready_task_count,
             "ocr_result_payload_count": ocr_result_payload_count,
             "ocr_invalid_result_count": ocr_invalid_result_count,
             "ocr_executor_attempted_task_count": ocr_executor_attempted_task_count,
@@ -616,11 +629,15 @@ def build_experiment_metrics(
             "ocr_unknown_task_result_count": ocr_unknown_task_result_count,
             "ocr_block_writeback_count": ocr_block_writeback_count,
             "ocr_page_writeback_count": ocr_page_writeback_count,
+            "ocr_table_context_writeback_count": ocr_table_context_writeback_count,
             "ocr_candidate_qa_count": ocr_candidate_qa_count,
             "ocr_candidate_promotable_count": ocr_candidate_promotable_count,
             "ocr_candidate_needs_review_count": ocr_candidate_needs_review_count,
             "ocr_candidate_blocked_count": ocr_candidate_blocked_count,
             "ocr_candidate_text_char_count": ocr_candidate_text_char_count,
+            "ocr_table_context_candidate_count": ocr_table_context_candidate_count,
+            "ocr_structured_contract_candidate_count": ocr_structured_contract_candidate_count,
+            "ocr_subtarget_candidate_count": ocr_subtarget_candidate_count,
             "ocr_candidate_promotion_eligible_count": ocr_candidate_promotion_eligible_count,
             "ocr_candidate_promoted_count": ocr_candidate_promoted_count,
             "ocr_candidate_promotion_skipped_count": ocr_candidate_promotion_skipped_count,
@@ -826,6 +843,12 @@ def build_experiment_metrics(
             "ocr_task_per_routed_page": _rate(ocr_task_count, routed_page_count),
             "ocr_region_task_rate": _rate(ocr_region_task_count, ocr_task_count),
             "ocr_ready_task_rate": _rate(ocr_ready_task_count, ocr_task_count),
+            "ocr_structured_contract_task_rate": _rate(ocr_structured_contract_task_count, ocr_task_count),
+            "ocr_table_context_task_rate": _rate(ocr_table_context_task_count, ocr_task_count),
+            "ocr_table_context_ready_rate": _rate(
+                ocr_table_context_ready_task_count,
+                ocr_table_context_task_count,
+            ),
             "ocr_result_payload_valid_rate": _rate(
                 ocr_result_payload_count,
                 ocr_result_payload_count + ocr_invalid_result_count,
@@ -877,6 +900,7 @@ def build_experiment_metrics(
             "ocr_task_priority_counts": ocr_task_priority_counts,
             "ocr_task_engine_counts": ocr_task_engine_counts,
             "ocr_task_block_type_counts": ocr_task_block_type_counts,
+            "ocr_task_structure_target_counts": ocr_task_structure_target_counts,
             "ocr_result_payload_status_counts": ocr_result_payload_status_counts,
             "ocr_result_payload_engine_counts": ocr_result_payload_engine_counts,
             "ocr_execution_status_counts": ocr_execution_status_counts,
