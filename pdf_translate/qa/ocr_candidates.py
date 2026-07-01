@@ -11,6 +11,12 @@ DEFAULT_REVIEW_CONFIDENCE = 0.75
 MIN_USEFUL_CHAR_RATIO = 0.45
 MIN_TEXT_CHARS = 3
 STRUCTURE_REVIEW_BLOCK_TYPES = {"table", "formula"}
+STRUCTURED_RESULT_FIELDS = (
+    "structured_cells",
+    "cell_bboxes",
+    "merged_cell_candidates",
+    "table_footnotes",
+)
 
 
 def _json_copy(value: Any) -> Any:
@@ -32,6 +38,29 @@ def _as_float(value: Any) -> float:
 
 def _normalized_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _structured_payload(value: Any) -> Any | None:
+    if isinstance(value, (dict, list)):
+        return _json_copy(value)
+    return None
+
+
+def _structured_result_fields(source: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key in STRUCTURED_RESULT_FIELDS:
+        value = _structured_payload(source.get(key))
+        if value is not None:
+            out[key] = value
+    return out
+
+
+def _item_count(value: Any) -> int:
+    if isinstance(value, list):
+        return len(value)
+    if isinstance(value, dict):
+        return len(value)
+    return 0
 
 
 def _useful_char_ratio(text: str) -> float:
@@ -106,34 +135,34 @@ def _iter_candidates(document_ir_ocr: dict[str, Any] | None) -> list[dict[str, A
         page_no = int(page.get("page_no") or 0)
         for item in _iter_page_candidates(page) + _iter_block_candidates(page):
             candidate = item["candidate"]
-            out.append(
-                {
-                    "task_id": str(candidate.get("task_id") or ""),
-                    "page_no": int(candidate.get("page_no") or page_no),
-                    "block_id": str(candidate.get("block_id") or ""),
-                    "scope": str(candidate.get("scope") or item["target_kind"]),
-                    "target": f"document_ir.{item['target_kind']}.meta.ocr_candidates",
-                    "target_index": int(item["target_index"]),
-                    "block_type": item["block_type"],
-                    "target_structure_type": str(candidate.get("target_structure_type") or item["block_type"]),
-                    "text": str(candidate.get("text") or ""),
-                    "confidence": _as_float(candidate.get("confidence")),
-                    "engine": str(candidate.get("engine") or ""),
-                    "language": str(candidate.get("language") or ""),
-                    "input_path": str(candidate.get("input_path") or ""),
-                    "warnings": [str(value) for value in candidate.get("warnings") or [] if str(value)],
-                    "target_text": item["target_text"],
-                    "table_context": _json_copy(candidate.get("table_context"))
-                    if isinstance(candidate.get("table_context"), dict)
-                    else {},
-                    "subtarget": _json_copy(candidate.get("subtarget"))
-                    if isinstance(candidate.get("subtarget"), dict)
-                    else {},
-                    "structure_contract": _json_copy(candidate.get("structure_contract"))
-                    if isinstance(candidate.get("structure_contract"), dict)
-                    else {},
-                }
-            )
+            record = {
+                "task_id": str(candidate.get("task_id") or ""),
+                "page_no": int(candidate.get("page_no") or page_no),
+                "block_id": str(candidate.get("block_id") or ""),
+                "scope": str(candidate.get("scope") or item["target_kind"]),
+                "target": f"document_ir.{item['target_kind']}.meta.ocr_candidates",
+                "target_index": int(item["target_index"]),
+                "block_type": item["block_type"],
+                "target_structure_type": str(candidate.get("target_structure_type") or item["block_type"]),
+                "text": str(candidate.get("text") or ""),
+                "confidence": _as_float(candidate.get("confidence")),
+                "engine": str(candidate.get("engine") or ""),
+                "language": str(candidate.get("language") or ""),
+                "input_path": str(candidate.get("input_path") or ""),
+                "warnings": [str(value) for value in candidate.get("warnings") or [] if str(value)],
+                "target_text": item["target_text"],
+                "table_context": _json_copy(candidate.get("table_context"))
+                if isinstance(candidate.get("table_context"), dict)
+                else {},
+                "subtarget": _json_copy(candidate.get("subtarget"))
+                if isinstance(candidate.get("subtarget"), dict)
+                else {},
+                "structure_contract": _json_copy(candidate.get("structure_contract"))
+                if isinstance(candidate.get("structure_contract"), dict)
+                else {},
+            }
+            record.update(_structured_result_fields(candidate))
+            out.append(record)
     return out
 
 
@@ -147,6 +176,7 @@ def _assessment(item: dict[str, Any], *, review_confidence: float) -> dict[str, 
     structure_contract = (
         item.get("structure_contract") if isinstance(item.get("structure_contract"), dict) else {}
     )
+    structured_result_fields = _structured_result_fields(item)
     reasons: list[str] = []
     blockers: list[str] = []
 
@@ -197,6 +227,8 @@ def _assessment(item: dict[str, Any], *, review_confidence: float) -> dict[str, 
         assessment["subtarget"] = _json_copy(subtarget)
     if structure_contract:
         assessment["structure_contract"] = _json_copy(structure_contract)
+    for key, value in structured_result_fields.items():
+        assessment[key] = _json_copy(value)
     return assessment
 
 
@@ -219,6 +251,19 @@ def build_ocr_candidate_qa(
         1 for item in assessments if isinstance(item.get("structure_contract"), dict)
     )
     subtarget_candidate_count = sum(1 for item in assessments if isinstance(item.get("subtarget"), dict))
+    structured_result_candidate_count = sum(
+        1
+        for item in assessments
+        if any(isinstance(item.get(key), (dict, list)) for key in STRUCTURED_RESULT_FIELDS)
+    )
+    structured_result_field_counts = {
+        key: sum(1 for item in assessments if isinstance(item.get(key), (dict, list)))
+        for key in STRUCTURED_RESULT_FIELDS
+    }
+    structured_result_item_counts = {
+        key: sum(_item_count(item.get(key)) for item in assessments if isinstance(item.get(key), (dict, list)))
+        for key in STRUCTURED_RESULT_FIELDS
+    }
     for item in assessments:
         for reason in item.get("reasons") or []:
             issue_counts[str(reason)] += 1
@@ -243,6 +288,17 @@ def build_ocr_candidate_qa(
             "table_context_candidate_count": table_context_candidate_count,
             "structured_contract_candidate_count": structured_contract_candidate_count,
             "subtarget_candidate_count": subtarget_candidate_count,
+            "structured_result_candidate_count": structured_result_candidate_count,
+            "structured_result_field_counts": structured_result_field_counts,
+            "structured_result_item_counts": structured_result_item_counts,
+            "structured_cells_candidate_count": structured_result_field_counts["structured_cells"],
+            "cell_bboxes_candidate_count": structured_result_field_counts["cell_bboxes"],
+            "merged_cell_candidates_candidate_count": structured_result_field_counts["merged_cell_candidates"],
+            "table_footnotes_candidate_count": structured_result_field_counts["table_footnotes"],
+            "structured_cell_count": structured_result_item_counts["structured_cells"],
+            "cell_bbox_count": structured_result_item_counts["cell_bboxes"],
+            "result_merged_cell_candidate_count": structured_result_item_counts["merged_cell_candidates"],
+            "result_table_footnote_count": structured_result_item_counts["table_footnotes"],
             "writeback_accepted_result_count": int(writeback_summary.get("accepted_result_count") or 0),
             "status_counts": dict(status_counts),
             "issue_counts": dict(issue_counts),

@@ -11,6 +11,12 @@ SCHEMA_VERSION = "ocr-writeback-v1"
 OCR_RESULTS_SCHEMA_VERSION = "ocr-results-v1"
 DEFAULT_MIN_CONFIDENCE = 0.5
 SUCCESS_STATUSES = {"ok", "success", "succeeded", "completed", "done"}
+STRUCTURED_RESULT_FIELDS = (
+    "structured_cells",
+    "cell_bboxes",
+    "merged_cell_candidates",
+    "table_footnotes",
+)
 
 
 def _json_copy(value: Any) -> Any:
@@ -104,6 +110,29 @@ def _normalized_warnings(value: Any) -> list[str]:
     return [str(item) for item in value if str(item)]
 
 
+def _structured_payload(value: Any) -> Any | None:
+    if isinstance(value, (dict, list)):
+        return _json_copy(value)
+    return None
+
+
+def _structured_result_fields(source: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key in STRUCTURED_RESULT_FIELDS:
+        value = _structured_payload(source.get(key))
+        if value is not None:
+            out[key] = value
+    return out
+
+
+def _item_count(value: Any) -> int:
+    if isinstance(value, list):
+        return len(value)
+    if isinstance(value, dict):
+        return len(value)
+    return 0
+
+
 def _reject(result: dict[str, Any], task: dict[str, Any] | None, reason: str) -> dict[str, Any]:
     return {
         "task_id": str(result.get("task_id") or ""),
@@ -163,6 +192,7 @@ def _candidate(
     subtarget = writeback.get("subtarget") if isinstance(writeback.get("subtarget"), dict) else {}
     if subtarget:
         candidate["subtarget"] = _json_copy(subtarget)
+    candidate.update(_structured_result_fields(result))
     return candidate
 
 
@@ -263,6 +293,9 @@ def build_ocr_writeback(
     block_writeback_count = 0
     page_writeback_count = 0
     table_context_writeback_count = 0
+    structured_result_writeback_count = 0
+    structured_result_field_counts: Counter[str] = Counter()
+    structured_result_item_counts: Counter[str] = Counter()
 
     for result in result_list:
         task_id = str(result.get("task_id") or "")
@@ -325,6 +358,16 @@ def build_ocr_writeback(
             page_writeback_count += 1
         if isinstance(candidate.get("table_context"), dict):
             table_context_writeback_count += 1
+        structured_fields = {
+            key: candidate[key]
+            for key in STRUCTURED_RESULT_FIELDS
+            if isinstance(candidate.get(key), (dict, list))
+        }
+        if structured_fields:
+            structured_result_writeback_count += 1
+            for key, value in structured_fields.items():
+                structured_result_field_counts[key] += 1
+                structured_result_item_counts[key] += _item_count(value)
         writeback_record = {
             "task_id": task_id,
             "page_no": page_no,
@@ -339,6 +382,11 @@ def build_ocr_writeback(
             value = candidate.get(key)
             if isinstance(value, dict):
                 writeback_record[key] = _json_copy(value)
+        if structured_fields:
+            writeback_record["structured_result_fields"] = sorted(structured_fields)
+            writeback_record["structured_result_item_counts"] = {
+                key: _item_count(value) for key, value in sorted(structured_fields.items())
+            }
         writebacks.append(writeback_record)
 
     pending = [_pending_task(task) for task in task_list if str(task.get("task_id") or "") not in tasks_with_results]
@@ -360,6 +408,9 @@ def build_ocr_writeback(
             "block_writeback_count": block_writeback_count,
             "page_writeback_count": page_writeback_count,
             "table_context_writeback_count": table_context_writeback_count,
+            "structured_result_writeback_count": structured_result_writeback_count,
+            "structured_result_field_counts": dict(structured_result_field_counts),
+            "structured_result_item_counts": dict(structured_result_item_counts),
             "result_status_counts": dict(result_status_counts),
             "accepted_engine_counts": dict(accepted_engine_counts),
             "rejection_reason_counts": dict(rejection_reason_counts),

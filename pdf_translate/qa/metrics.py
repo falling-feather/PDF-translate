@@ -159,8 +159,14 @@ def build_experiment_metrics(
     ocr_writeback_status_counts = _counter_dict(ocr_writeback_summary.get("result_status_counts"))
     ocr_writeback_engine_counts = _counter_dict(ocr_writeback_summary.get("accepted_engine_counts"))
     ocr_writeback_rejection_counts = _counter_dict(ocr_writeback_summary.get("rejection_reason_counts"))
+    ocr_writeback_structured_result_field_counts = _counter_dict(
+        ocr_writeback_summary.get("structured_result_field_counts")
+    )
     ocr_candidate_status_counts = _counter_dict(ocr_candidate_summary.get("status_counts"))
     ocr_candidate_issue_counts = _counter_dict(ocr_candidate_summary.get("issue_counts"))
+    ocr_candidate_structured_result_field_counts = _counter_dict(
+        ocr_candidate_summary.get("structured_result_field_counts")
+    )
     ocr_candidate_promotion_status_counts = _counter_dict(
         ocr_candidate_promotion_summary.get("candidate_status_counts")
     )
@@ -348,6 +354,9 @@ def build_experiment_metrics(
     ocr_block_writeback_count = _as_int(ocr_writeback_summary.get("block_writeback_count"))
     ocr_page_writeback_count = _as_int(ocr_writeback_summary.get("page_writeback_count"))
     ocr_table_context_writeback_count = _as_int(ocr_writeback_summary.get("table_context_writeback_count"))
+    ocr_structured_result_writeback_count = _as_int(
+        ocr_writeback_summary.get("structured_result_writeback_count")
+    )
     ocr_candidate_qa_count = _as_int(ocr_candidate_summary.get("candidate_count"))
     ocr_candidate_promotable_count = _as_int(ocr_candidate_summary.get("promotable_candidate_count"))
     ocr_candidate_needs_review_count = _as_int(ocr_candidate_summary.get("needs_review_candidate_count"))
@@ -358,6 +367,23 @@ def build_experiment_metrics(
         ocr_candidate_summary.get("structured_contract_candidate_count")
     )
     ocr_subtarget_candidate_count = _as_int(ocr_candidate_summary.get("subtarget_candidate_count"))
+    ocr_structured_result_candidate_count = _as_int(
+        ocr_candidate_summary.get("structured_result_candidate_count")
+    )
+    ocr_structured_cells_candidate_count = _as_int(
+        ocr_candidate_summary.get("structured_cells_candidate_count")
+    )
+    ocr_cell_bboxes_candidate_count = _as_int(ocr_candidate_summary.get("cell_bboxes_candidate_count"))
+    ocr_merged_cell_candidates_candidate_count = _as_int(
+        ocr_candidate_summary.get("merged_cell_candidates_candidate_count")
+    )
+    ocr_table_footnotes_candidate_count = _as_int(ocr_candidate_summary.get("table_footnotes_candidate_count"))
+    ocr_structured_cell_count = _as_int(ocr_candidate_summary.get("structured_cell_count"))
+    ocr_cell_bbox_count = _as_int(ocr_candidate_summary.get("cell_bbox_count"))
+    ocr_result_merged_cell_candidate_count = _as_int(
+        ocr_candidate_summary.get("result_merged_cell_candidate_count")
+    )
+    ocr_result_table_footnote_count = _as_int(ocr_candidate_summary.get("result_table_footnote_count"))
     ocr_candidate_promotion_eligible_count = _as_int(ocr_candidate_promotion_summary.get("eligible_candidate_count"))
     ocr_candidate_promoted_count = _as_int(ocr_candidate_promotion_summary.get("promoted_candidate_count"))
     ocr_candidate_promotion_skipped_count = _as_int(ocr_candidate_promotion_summary.get("skipped_candidate_count"))
@@ -630,6 +656,7 @@ def build_experiment_metrics(
             "ocr_block_writeback_count": ocr_block_writeback_count,
             "ocr_page_writeback_count": ocr_page_writeback_count,
             "ocr_table_context_writeback_count": ocr_table_context_writeback_count,
+            "ocr_structured_result_writeback_count": ocr_structured_result_writeback_count,
             "ocr_candidate_qa_count": ocr_candidate_qa_count,
             "ocr_candidate_promotable_count": ocr_candidate_promotable_count,
             "ocr_candidate_needs_review_count": ocr_candidate_needs_review_count,
@@ -638,6 +665,15 @@ def build_experiment_metrics(
             "ocr_table_context_candidate_count": ocr_table_context_candidate_count,
             "ocr_structured_contract_candidate_count": ocr_structured_contract_candidate_count,
             "ocr_subtarget_candidate_count": ocr_subtarget_candidate_count,
+            "ocr_structured_result_candidate_count": ocr_structured_result_candidate_count,
+            "ocr_structured_cells_candidate_count": ocr_structured_cells_candidate_count,
+            "ocr_cell_bboxes_candidate_count": ocr_cell_bboxes_candidate_count,
+            "ocr_merged_cell_candidates_candidate_count": ocr_merged_cell_candidates_candidate_count,
+            "ocr_table_footnotes_candidate_count": ocr_table_footnotes_candidate_count,
+            "ocr_structured_cell_count": ocr_structured_cell_count,
+            "ocr_cell_bbox_count": ocr_cell_bbox_count,
+            "ocr_result_merged_cell_candidate_count": ocr_result_merged_cell_candidate_count,
+            "ocr_result_table_footnote_count": ocr_result_table_footnote_count,
             "ocr_candidate_promotion_eligible_count": ocr_candidate_promotion_eligible_count,
             "ocr_candidate_promoted_count": ocr_candidate_promoted_count,
             "ocr_candidate_promotion_skipped_count": ocr_candidate_promotion_skipped_count,
@@ -863,6 +899,22 @@ def build_experiment_metrics(
                 ocr_block_writeback_count + ocr_page_writeback_count,
                 ocr_task_count,
             ),
+            "ocr_structured_result_writeback_rate": _rate(
+                ocr_structured_result_writeback_count,
+                ocr_accepted_result_count,
+            ),
+            "ocr_structured_result_candidate_rate": _rate(
+                ocr_structured_result_candidate_count,
+                ocr_candidate_qa_count,
+            ),
+            "ocr_structured_cells_candidate_rate": _rate(
+                ocr_structured_cells_candidate_count,
+                ocr_candidate_qa_count,
+            ),
+            "ocr_cell_bboxes_candidate_rate": _rate(
+                ocr_cell_bboxes_candidate_count,
+                ocr_candidate_qa_count,
+            ),
             "ocr_candidate_promotable_rate": _rate(ocr_candidate_promotable_count, ocr_candidate_qa_count),
             "ocr_candidate_blocked_rate": _rate(ocr_candidate_blocked_count, ocr_candidate_qa_count),
             "ocr_candidate_promotion_rate": _rate(ocr_candidate_promoted_count, ocr_candidate_qa_count),
@@ -907,8 +959,10 @@ def build_experiment_metrics(
             "ocr_writeback_status_counts": ocr_writeback_status_counts,
             "ocr_writeback_engine_counts": ocr_writeback_engine_counts,
             "ocr_writeback_rejection_counts": ocr_writeback_rejection_counts,
+            "ocr_writeback_structured_result_field_counts": ocr_writeback_structured_result_field_counts,
             "ocr_candidate_status_counts": ocr_candidate_status_counts,
             "ocr_candidate_issue_counts": ocr_candidate_issue_counts,
+            "ocr_candidate_structured_result_field_counts": ocr_candidate_structured_result_field_counts,
             "ocr_candidate_promotion_status_counts": ocr_candidate_promotion_status_counts,
             "ocr_candidate_promotion_skip_counts": ocr_candidate_promotion_skip_counts,
             "translation_issue_counts": translation_issue_counts,

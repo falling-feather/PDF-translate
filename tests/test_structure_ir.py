@@ -1825,6 +1825,26 @@ class StructureIRTests(unittest.TestCase):
                         "language": "en",
                         "bbox": [60, 540, 500, 620],
                         "warnings": [],
+                        "structured_cells": [
+                            {"row": 0, "col": 0, "text": "Metric", "role": "header"},
+                            {"row": 0, "col": 1, "text": "Acc", "role": "header"},
+                            {"row": 1, "col": 0, "text": "A"},
+                            {"row": 1, "col": 1, "text": "91.2"},
+                        ],
+                        "cell_bboxes": [
+                            {"row": 0, "col": 0, "bbox": [60, 540, 260, 580]},
+                            {"row": 1, "col": 1, "bbox": [260, 580, 500, 620]},
+                        ],
+                        "merged_cell_candidates": [
+                            {
+                                "type": "colspan",
+                                "row": 0,
+                                "cols": [0, 1],
+                                "confidence": 0.62,
+                                "reason": "visual_header_span",
+                            }
+                        ],
+                        "table_footnotes": [{"marker": "*", "text": "p < 0.05", "row": 1, "col": 1}],
                     }
                 ],
             },
@@ -1833,19 +1853,49 @@ class StructureIRTests(unittest.TestCase):
         built = build_ocr_writeback(doc_ir, manifest, results)
         self.assertEqual(built["summary"]["accepted_result_count"], 1)
         self.assertEqual(built["summary"]["table_context_writeback_count"], 1)
+        self.assertEqual(built["summary"]["structured_result_writeback_count"], 1)
+        self.assertEqual(built["summary"]["structured_result_field_counts"]["structured_cells"], 1)
+        self.assertEqual(built["summary"]["structured_result_item_counts"]["structured_cells"], 4)
+        self.assertEqual(built["writebacks"][0]["structured_result_item_counts"]["cell_bboxes"], 2)
         candidate = built["augmented_document_ir"]["pages"][0]["blocks"][0]["meta"]["ocr_candidates"][0]
         self.assertEqual(candidate["target_structure_type"], "table")
         self.assertEqual(candidate["table_context"]["table_id"], "p1-b0000")
         self.assertEqual(candidate["table_context"]["row_count"], 2)
         self.assertEqual(candidate["subtarget"]["type"], "table_block")
+        self.assertEqual(candidate["structured_cells"][3]["text"], "91.2")
+        self.assertEqual(candidate["cell_bboxes"][1]["row"], 1)
+        self.assertEqual(candidate["merged_cell_candidates"][0]["reason"], "visual_header_span")
+        self.assertEqual(candidate["table_footnotes"][0]["marker"], "*")
 
         candidate_qa = build_ocr_candidate_qa(built["augmented_document_ir"], built)
         self.assertEqual(candidate_qa["summary"]["candidate_count"], 1)
         self.assertEqual(candidate_qa["summary"]["table_context_candidate_count"], 1)
         self.assertEqual(candidate_qa["summary"]["structured_contract_candidate_count"], 1)
         self.assertEqual(candidate_qa["summary"]["subtarget_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["structured_result_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["structured_cells_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["cell_bboxes_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["merged_cell_candidates_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["table_footnotes_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["structured_cell_count"], 4)
+        self.assertEqual(candidate_qa["summary"]["cell_bbox_count"], 2)
+        self.assertEqual(candidate_qa["summary"]["result_merged_cell_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["result_table_footnote_count"], 1)
         self.assertEqual(candidate_qa["candidates"][0]["table_context"]["table_id"], "p1-b0000")
         self.assertEqual(candidate_qa["candidates"][0]["subtarget"]["expected_granularity"], "rows_and_cells")
+        self.assertEqual(candidate_qa["candidates"][0]["structured_cells"][1]["text"], "Acc")
+        self.assertEqual(candidate_qa["candidates"][0]["table_footnotes"][0]["text"], "p < 0.05")
+
+        promotion_input = json.loads(json.dumps(candidate_qa, ensure_ascii=False))
+        promotion_input["candidates"][0]["status"] = "candidate"
+        promotion_input["candidates"][0]["reasons"] = []
+        promotion = build_ocr_candidate_promotion(built["augmented_document_ir"], promotion_input)
+        self.assertEqual(promotion["summary"]["promoted_candidate_count"], 1)
+        self.assertEqual(promotion["promotions"][0]["structured_cells"][3]["text"], "91.2")
+        self.assertEqual(promotion["promotions"][0]["cell_bboxes"][0]["bbox"], [60, 540, 260, 580])
+        self.assertEqual(promotion["promotions"][0]["merged_cell_candidates"][0]["type"], "colspan")
+        promoted_meta = promotion["promoted_document_ir"]["pages"][0]["blocks"][0]["meta"]["ocr_promotions"][0]
+        self.assertEqual(promoted_meta["table_footnotes"][0]["marker"], "*")
 
     def test_local_ocr_executor_runs_ready_tasks_into_results_payload(self) -> None:
         root = Path.cwd() / "test-output" / "ocr-executor"
@@ -2633,6 +2683,19 @@ class StructureIRTests(unittest.TestCase):
                     "block_writeback_count": 2,
                     "page_writeback_count": 0,
                     "table_context_writeback_count": 1,
+                    "structured_result_writeback_count": 1,
+                    "structured_result_field_counts": {
+                        "structured_cells": 1,
+                        "cell_bboxes": 1,
+                        "merged_cell_candidates": 1,
+                        "table_footnotes": 1,
+                    },
+                    "structured_result_item_counts": {
+                        "structured_cells": 4,
+                        "cell_bboxes": 2,
+                        "merged_cell_candidates": 1,
+                        "table_footnotes": 1,
+                    },
                     "result_status_counts": {"succeeded": 3},
                     "accepted_engine_counts": {"local_ocr": 1, "local_table_ocr": 1},
                     "rejection_reason_counts": {"low_confidence": 1},
@@ -2649,6 +2712,27 @@ class StructureIRTests(unittest.TestCase):
                     "table_context_candidate_count": 1,
                     "structured_contract_candidate_count": 1,
                     "subtarget_candidate_count": 1,
+                    "structured_result_candidate_count": 1,
+                    "structured_result_field_counts": {
+                        "structured_cells": 1,
+                        "cell_bboxes": 1,
+                        "merged_cell_candidates": 1,
+                        "table_footnotes": 1,
+                    },
+                    "structured_result_item_counts": {
+                        "structured_cells": 4,
+                        "cell_bboxes": 2,
+                        "merged_cell_candidates": 1,
+                        "table_footnotes": 1,
+                    },
+                    "structured_cells_candidate_count": 1,
+                    "cell_bboxes_candidate_count": 1,
+                    "merged_cell_candidates_candidate_count": 1,
+                    "table_footnotes_candidate_count": 1,
+                    "structured_cell_count": 4,
+                    "cell_bbox_count": 2,
+                    "result_merged_cell_candidate_count": 1,
+                    "result_table_footnote_count": 1,
                     "status_counts": {"candidate": 1, "needs_review": 1, "blocked": 1},
                     "issue_counts": {"needs_table_structure_review": 1, "too_short": 1},
                 },
@@ -3019,6 +3103,7 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_block_writeback_count"], 2)
         self.assertEqual(metrics["quality"]["ocr_page_writeback_count"], 0)
         self.assertEqual(metrics["quality"]["ocr_table_context_writeback_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_result_writeback_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_qa_count"], 3)
         self.assertEqual(metrics["quality"]["ocr_candidate_promotable_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_needs_review_count"], 1)
@@ -3027,6 +3112,15 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_table_context_candidate_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_structured_contract_candidate_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_subtarget_candidate_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_result_candidate_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_cells_candidate_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_cell_bboxes_candidate_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_merged_cell_candidates_candidate_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_table_footnotes_candidate_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_cell_count"], 4)
+        self.assertEqual(metrics["quality"]["ocr_cell_bbox_count"], 2)
+        self.assertEqual(metrics["quality"]["ocr_result_merged_cell_candidate_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_result_table_footnote_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_promotion_eligible_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_promoted_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_promotion_skipped_count"], 2)
@@ -3046,6 +3140,10 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["ocr_task_result_coverage_rate"], 0.75)
         self.assertEqual(metrics["rates"]["ocr_result_acceptance_rate"], 0.6667)
         self.assertEqual(metrics["rates"]["ocr_writeback_apply_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["ocr_structured_result_writeback_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["ocr_structured_result_candidate_rate"], 0.3333)
+        self.assertEqual(metrics["rates"]["ocr_structured_cells_candidate_rate"], 0.3333)
+        self.assertEqual(metrics["rates"]["ocr_cell_bboxes_candidate_rate"], 0.3333)
         self.assertEqual(metrics["rates"]["ocr_candidate_promotable_rate"], 0.3333)
         self.assertEqual(metrics["rates"]["ocr_candidate_blocked_rate"], 0.3333)
         self.assertEqual(metrics["rates"]["ocr_candidate_promotion_rate"], 0.3333)
@@ -3057,8 +3155,10 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["breakdowns"]["ocr_execution_status_counts"]["failed"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_writeback_engine_counts"]["local_table_ocr"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_writeback_rejection_counts"]["low_confidence"], 1)
+        self.assertEqual(metrics["breakdowns"]["ocr_writeback_structured_result_field_counts"]["structured_cells"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_candidate_status_counts"]["needs_review"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_candidate_issue_counts"]["too_short"], 1)
+        self.assertEqual(metrics["breakdowns"]["ocr_candidate_structured_result_field_counts"]["cell_bboxes"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_candidate_promotion_status_counts"]["candidate"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_candidate_promotion_skip_counts"]["status_not_promotable"], 2)
         self.assertEqual(metrics["breakdowns"]["stage_elapsed_ms"]["document_ir"], 50)

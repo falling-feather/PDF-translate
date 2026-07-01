@@ -7,6 +7,12 @@ from typing import Any
 
 SCHEMA_VERSION = "ocr-candidate-promotion-v1"
 PROMOTABLE_STATUS = "candidate"
+STRUCTURED_RESULT_FIELDS = (
+    "structured_cells",
+    "cell_bboxes",
+    "merged_cell_candidates",
+    "table_footnotes",
+)
 
 
 def _json_copy(value: Any) -> Any:
@@ -30,6 +36,12 @@ def _as_int(value: Any) -> int:
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _structured_payload(value: Any) -> Any | None:
+    if isinstance(value, (dict, list)):
+        return _json_copy(value)
+    return None
 
 
 def _pages(document_ir: dict[str, Any]) -> dict[int, dict[str, Any]]:
@@ -124,13 +136,19 @@ def _promotion_meta(qa_item: dict[str, Any], source_candidate: dict[str, Any]) -
             value = qa_item.get(key)
         if isinstance(value, dict):
             meta[key] = _json_copy(value)
+    for key in STRUCTURED_RESULT_FIELDS:
+        value = _structured_payload(source_candidate.get(key))
+        if value is None:
+            value = _structured_payload(qa_item.get(key))
+        if value is not None:
+            meta[key] = value
     return meta
 
 
 def _attach_structure_trace(record: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
-    for key in ("target_structure_type", "table_context", "subtarget"):
+    for key in ("target_structure_type", "table_context", "subtarget", *STRUCTURED_RESULT_FIELDS):
         value = meta.get(key)
-        if isinstance(value, dict):
+        if isinstance(value, (dict, list)):
             record[key] = _json_copy(value)
         elif isinstance(value, str) and value:
             record[key] = value
