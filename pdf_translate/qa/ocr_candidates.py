@@ -17,6 +17,10 @@ STRUCTURED_RESULT_FIELDS = (
     "merged_cell_candidates",
     "table_footnotes",
 )
+STRUCTURED_TABLE_PASS = "passed"
+STRUCTURED_TABLE_REVIEW = "needs_review"
+STRUCTURED_TABLE_BLOCKED = "blocked"
+STRUCTURED_TABLE_NOT_APPLICABLE = "not_applicable"
 
 
 def _json_copy(value: Any) -> Any:
@@ -63,6 +67,21 @@ def _item_count(value: Any) -> int:
     return 0
 
 
+def _as_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return 0
+    return 0
+
+
 def _useful_char_ratio(text: str) -> float:
     visible = [ch for ch in text if not ch.isspace()]
     if not visible:
@@ -77,6 +96,133 @@ def _text_overlap(candidate: str, source: str) -> bool:
     if len(candidate_norm) < 8 or len(source_norm) < 8:
         return False
     return candidate_norm in source_norm or source_norm in candidate_norm
+
+
+def _tokens_missing(tokens: Any, haystack: str) -> list[str]:
+    if not isinstance(tokens, list):
+        return []
+    normalized = _normalized_text(haystack).casefold()
+    missing: list[str] = []
+    for token in tokens:
+        item = _normalized_text(token)
+        if item and item.casefold() not in normalized:
+            missing.append(item)
+    return missing
+
+
+def _cell_text(cell: Any) -> str:
+    if isinstance(cell, dict):
+        return _normalized_text(cell.get("text") or cell.get("value") or "")
+    return _normalized_text(cell)
+
+
+def _cell_position(cell: Any) -> tuple[int, int] | None:
+    if not isinstance(cell, dict):
+        return None
+    row_value = cell.get("row", cell.get("row_index"))
+    col_value = cell.get("col", cell.get("column", cell.get("column_index")))
+    if row_value is None or col_value is None:
+        return None
+    row = _as_int(row_value)
+    col = _as_int(col_value)
+    if row < 0 or col < 0:
+        return None
+    return row, col
+
+
+def _valid_bbox(value: Any) -> bool:
+    bbox = value.get("bbox") if isinstance(value, dict) else value
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return False
+    for item in bbox:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return False
+    return True
+
+
+def _structured_table_gate(item: dict[str, Any]) -> dict[str, Any]:
+    target_structure_type = str(item.get("target_structure_type") or item.get("block_type") or "")
+    block_type = str(item.get("block_type") or "")
+    structured_cells = item.get("structured_cells")
+    if target_structure_type != "table" and block_type != "table":
+        return {"status": STRUCTURED_TABLE_NOT_APPLICABLE}
+    if not isinstance(structured_cells, list):
+        return {
+            "status": STRUCTURED_TABLE_REVIEW,
+            "issues": ["missing_structured_cells"],
+            "cell_count": 0,
+            "row_count": 0,
+            "column_count": 0,
+        }
+
+    positions: list[tuple[int, int]] = []
+    cell_texts: list[str] = []
+    malformed_cell_count = 0
+    for cell in structured_cells:
+        position = _cell_position(cell)
+        if position is None:
+            malformed_cell_count += 1
+        else:
+            positions.append(position)
+        cell_text = _cell_text(cell)
+        if cell_text:
+            cell_texts.append(cell_text)
+
+    row_count = max((row for row, _col in positions), default=-1) + 1
+    column_count = max((col for _row, col in positions), default=-1) + 1
+    table_context = item.get("table_context") if isinstance(item.get("table_context"), dict) else {}
+    expected_row_count = _as_int(table_context.get("row_count"))
+    expected_column_count = _as_int(table_context.get("column_count"))
+    locked_tokens = table_context.get("locked_tokens") if isinstance(table_context, dict) else []
+    missing_locked_tokens = _tokens_missing(locked_tokens, " ".join(cell_texts) or str(item.get("text") or ""))
+    cell_bboxes = item.get("cell_bboxes")
+    cell_bbox_count = _item_count(cell_bboxes)
+    malformed_cell_bbox_count = (
+        sum(1 for bbox in cell_bboxes if not _valid_bbox(bbox)) if isinstance(cell_bboxes, list) else 0
+    )
+
+    issues: list[str] = []
+    blockers: list[str] = []
+    if not structured_cells:
+        blockers.append("structured_table_empty_cells")
+    if malformed_cell_count:
+        blockers.append("structured_table_malformed_cells")
+    if not positions:
+        blockers.append("structured_table_missing_cell_coordinates")
+    if expected_row_count and row_count and row_count != expected_row_count:
+        issues.append("structured_table_row_count_mismatch")
+    if expected_column_count and column_count and column_count != expected_column_count:
+        issues.append("structured_table_column_count_mismatch")
+    if locked_tokens and missing_locked_tokens:
+        issues.append("structured_table_missing_locked_tokens")
+    if isinstance(cell_bboxes, list) and cell_bbox_count < len(structured_cells):
+        issues.append("structured_table_incomplete_cell_bboxes")
+    elif cell_bboxes is None:
+        issues.append("structured_table_missing_cell_bboxes")
+    if malformed_cell_bbox_count:
+        issues.append("structured_table_malformed_cell_bboxes")
+
+    if blockers:
+        status = STRUCTURED_TABLE_BLOCKED
+    elif issues:
+        status = STRUCTURED_TABLE_REVIEW
+    else:
+        status = STRUCTURED_TABLE_PASS
+
+    return {
+        "status": status,
+        "issues": issues,
+        "blockers": blockers,
+        "cell_count": len(structured_cells),
+        "cell_bbox_count": cell_bbox_count,
+        "row_count": row_count,
+        "column_count": column_count,
+        "expected_row_count": expected_row_count,
+        "expected_column_count": expected_column_count,
+        "missing_locked_tokens": missing_locked_tokens,
+        "malformed_cell_count": malformed_cell_count,
+        "malformed_cell_bbox_count": malformed_cell_bbox_count,
+    }
 
 
 def _iter_page_candidates(page: dict[str, Any]) -> list[dict[str, Any]]:
@@ -177,6 +323,7 @@ def _assessment(item: dict[str, Any], *, review_confidence: float) -> dict[str, 
         item.get("structure_contract") if isinstance(item.get("structure_contract"), dict) else {}
     )
     structured_result_fields = _structured_result_fields(item)
+    structured_table_gate = _structured_table_gate(item)
     reasons: list[str] = []
     blockers: list[str] = []
 
@@ -188,7 +335,16 @@ def _assessment(item: dict[str, Any], *, review_confidence: float) -> dict[str, 
         reasons.append("duplicate_source_text")
     if confidence < review_confidence:
         reasons.append("needs_confidence_review")
-    if block_type in STRUCTURE_REVIEW_BLOCK_TYPES:
+    if structured_table_gate.get("status") == STRUCTURED_TABLE_BLOCKED:
+        blockers.extend([str(value) for value in structured_table_gate.get("blockers") or []])
+        reasons.extend([str(value) for value in structured_table_gate.get("issues") or []])
+    elif structured_table_gate.get("status") == STRUCTURED_TABLE_REVIEW:
+        reasons.extend([str(value) for value in structured_table_gate.get("issues") or []])
+        if "missing_structured_cells" in structured_table_gate.get("issues", []):
+            reasons.append("needs_table_structure_review")
+        else:
+            reasons.append("needs_structured_table_review")
+    elif structured_table_gate.get("status") == STRUCTURED_TABLE_NOT_APPLICABLE and block_type in STRUCTURE_REVIEW_BLOCK_TYPES:
         reasons.append(f"needs_{block_type}_structure_review")
     if item.get("warnings"):
         reasons.append("engine_warnings_present")
@@ -229,6 +385,8 @@ def _assessment(item: dict[str, Any], *, review_confidence: float) -> dict[str, 
         assessment["structure_contract"] = _json_copy(structure_contract)
     for key, value in structured_result_fields.items():
         assessment[key] = _json_copy(value)
+    if structured_table_gate.get("status") != STRUCTURED_TABLE_NOT_APPLICABLE:
+        assessment["structured_table_gate"] = _json_copy(structured_table_gate)
     return assessment
 
 
@@ -264,6 +422,19 @@ def build_ocr_candidate_qa(
         key: sum(_item_count(item.get(key)) for item in assessments if isinstance(item.get(key), (dict, list)))
         for key in STRUCTURED_RESULT_FIELDS
     }
+    structured_table_gate_counts = Counter(
+        str(item.get("structured_table_gate", {}).get("status") or STRUCTURED_TABLE_NOT_APPLICABLE)
+        for item in assessments
+    )
+    structured_table_gate_issue_counts: Counter[str] = Counter()
+    structured_table_missing_locked_token_count = 0
+    for item in assessments:
+        gate = item.get("structured_table_gate") if isinstance(item.get("structured_table_gate"), dict) else {}
+        for issue in gate.get("issues") or []:
+            structured_table_gate_issue_counts[str(issue)] += 1
+        for blocker in gate.get("blockers") or []:
+            structured_table_gate_issue_counts[str(blocker)] += 1
+        structured_table_missing_locked_token_count += len(gate.get("missing_locked_tokens") or [])
     for item in assessments:
         for reason in item.get("reasons") or []:
             issue_counts[str(reason)] += 1
@@ -299,6 +470,17 @@ def build_ocr_candidate_qa(
             "cell_bbox_count": structured_result_item_counts["cell_bboxes"],
             "result_merged_cell_candidate_count": structured_result_item_counts["merged_cell_candidates"],
             "result_table_footnote_count": structured_result_item_counts["table_footnotes"],
+            "structured_table_gate_counts": dict(structured_table_gate_counts),
+            "structured_table_gate_issue_counts": dict(structured_table_gate_issue_counts),
+            "structured_table_candidate_count": (
+                structured_table_gate_counts.get(STRUCTURED_TABLE_PASS, 0)
+                + structured_table_gate_counts.get(STRUCTURED_TABLE_REVIEW, 0)
+                + structured_table_gate_counts.get(STRUCTURED_TABLE_BLOCKED, 0)
+            ),
+            "structured_table_gate_passed_count": structured_table_gate_counts.get(STRUCTURED_TABLE_PASS, 0),
+            "structured_table_gate_review_count": structured_table_gate_counts.get(STRUCTURED_TABLE_REVIEW, 0),
+            "structured_table_gate_blocked_count": structured_table_gate_counts.get(STRUCTURED_TABLE_BLOCKED, 0),
+            "structured_table_missing_locked_token_count": structured_table_missing_locked_token_count,
             "writeback_accepted_result_count": int(writeback_summary.get("accepted_result_count") or 0),
             "status_counts": dict(status_counts),
             "issue_counts": dict(issue_counts),

@@ -167,6 +167,12 @@ def build_experiment_metrics(
     ocr_candidate_structured_result_field_counts = _counter_dict(
         ocr_candidate_summary.get("structured_result_field_counts")
     )
+    ocr_candidate_structured_table_gate_counts = _counter_dict(
+        ocr_candidate_summary.get("structured_table_gate_counts")
+    )
+    ocr_candidate_structured_table_gate_issue_counts = _counter_dict(
+        ocr_candidate_summary.get("structured_table_gate_issue_counts")
+    )
     ocr_candidate_promotion_status_counts = _counter_dict(
         ocr_candidate_promotion_summary.get("candidate_status_counts")
     )
@@ -384,6 +390,29 @@ def build_experiment_metrics(
         ocr_candidate_summary.get("result_merged_cell_candidate_count")
     )
     ocr_result_table_footnote_count = _as_int(ocr_candidate_summary.get("result_table_footnote_count"))
+    ocr_structured_table_candidate_count = _as_int(
+        ocr_candidate_summary.get("structured_table_candidate_count")
+    )
+    ocr_structured_table_gate_passed_count = _as_int(
+        ocr_candidate_summary.get("structured_table_gate_passed_count")
+    )
+    ocr_structured_table_gate_review_count = _as_int(
+        ocr_candidate_summary.get("structured_table_gate_review_count")
+    )
+    ocr_structured_table_gate_blocked_count = _as_int(
+        ocr_candidate_summary.get("structured_table_gate_blocked_count")
+    )
+    ocr_structured_table_missing_locked_token_count = _as_int(
+        ocr_candidate_summary.get("structured_table_missing_locked_token_count")
+    )
+    ocr_structured_table_row_col_mismatch_count = (
+        ocr_candidate_structured_table_gate_issue_counts.get("structured_table_row_count_mismatch", 0)
+        + ocr_candidate_structured_table_gate_issue_counts.get("structured_table_column_count_mismatch", 0)
+    )
+    ocr_structured_table_missing_cell_bboxes_count = (
+        ocr_candidate_structured_table_gate_issue_counts.get("structured_table_missing_cell_bboxes", 0)
+        + ocr_candidate_structured_table_gate_issue_counts.get("structured_table_incomplete_cell_bboxes", 0)
+    )
     ocr_candidate_promotion_eligible_count = _as_int(ocr_candidate_promotion_summary.get("eligible_candidate_count"))
     ocr_candidate_promoted_count = _as_int(ocr_candidate_promotion_summary.get("promoted_candidate_count"))
     ocr_candidate_promotion_skipped_count = _as_int(ocr_candidate_promotion_summary.get("skipped_candidate_count"))
@@ -674,6 +703,13 @@ def build_experiment_metrics(
             "ocr_cell_bbox_count": ocr_cell_bbox_count,
             "ocr_result_merged_cell_candidate_count": ocr_result_merged_cell_candidate_count,
             "ocr_result_table_footnote_count": ocr_result_table_footnote_count,
+            "ocr_structured_table_candidate_count": ocr_structured_table_candidate_count,
+            "ocr_structured_table_gate_passed_count": ocr_structured_table_gate_passed_count,
+            "ocr_structured_table_gate_review_count": ocr_structured_table_gate_review_count,
+            "ocr_structured_table_gate_blocked_count": ocr_structured_table_gate_blocked_count,
+            "ocr_structured_table_missing_locked_token_count": ocr_structured_table_missing_locked_token_count,
+            "ocr_structured_table_row_col_mismatch_count": ocr_structured_table_row_col_mismatch_count,
+            "ocr_structured_table_missing_cell_bboxes_count": ocr_structured_table_missing_cell_bboxes_count,
             "ocr_candidate_promotion_eligible_count": ocr_candidate_promotion_eligible_count,
             "ocr_candidate_promoted_count": ocr_candidate_promoted_count,
             "ocr_candidate_promotion_skipped_count": ocr_candidate_promotion_skipped_count,
@@ -915,6 +951,23 @@ def build_experiment_metrics(
                 ocr_cell_bboxes_candidate_count,
                 ocr_candidate_qa_count,
             ),
+            "ocr_structured_table_gate_pass_rate": _rate(
+                ocr_structured_table_gate_passed_count,
+                ocr_structured_table_candidate_count,
+            ),
+            "ocr_structured_table_gate_review_rate": _rate(
+                ocr_structured_table_gate_review_count,
+                ocr_structured_table_candidate_count,
+            ),
+            "ocr_structured_table_structure_review_rate": _rate(
+                ocr_structured_table_gate_review_count + ocr_structured_table_gate_blocked_count,
+                ocr_structured_table_candidate_count,
+            ),
+            "ocr_structured_table_row_col_match_rate": _rate(
+                ocr_structured_table_candidate_count - ocr_structured_table_row_col_mismatch_count,
+                ocr_structured_table_candidate_count,
+            ),
+            "ocr_table_cell_bbox_coverage_rate": _rate(ocr_cell_bbox_count, ocr_structured_cell_count),
             "ocr_candidate_promotable_rate": _rate(ocr_candidate_promotable_count, ocr_candidate_qa_count),
             "ocr_candidate_blocked_rate": _rate(ocr_candidate_blocked_count, ocr_candidate_qa_count),
             "ocr_candidate_promotion_rate": _rate(ocr_candidate_promoted_count, ocr_candidate_qa_count),
@@ -963,6 +1016,8 @@ def build_experiment_metrics(
             "ocr_candidate_status_counts": ocr_candidate_status_counts,
             "ocr_candidate_issue_counts": ocr_candidate_issue_counts,
             "ocr_candidate_structured_result_field_counts": ocr_candidate_structured_result_field_counts,
+            "ocr_candidate_structured_table_gate_counts": ocr_candidate_structured_table_gate_counts,
+            "ocr_candidate_structured_table_gate_issue_counts": ocr_candidate_structured_table_gate_issue_counts,
             "ocr_candidate_promotion_status_counts": ocr_candidate_promotion_status_counts,
             "ocr_candidate_promotion_skip_counts": ocr_candidate_promotion_skip_counts,
             "translation_issue_counts": translation_issue_counts,

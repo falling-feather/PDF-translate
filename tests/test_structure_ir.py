@@ -1819,7 +1819,7 @@ class StructureIRTests(unittest.TestCase):
                     {
                         "task_id": table_task["task_id"],
                         "status": "succeeded",
-                        "text": "Metric Acc\nA 91.2",
+                        "text": "Metric Accuracy\nA 91.2",
                         "confidence": 0.91,
                         "engine": "unit_table_ocr",
                         "language": "en",
@@ -1827,12 +1827,14 @@ class StructureIRTests(unittest.TestCase):
                         "warnings": [],
                         "structured_cells": [
                             {"row": 0, "col": 0, "text": "Metric", "role": "header"},
-                            {"row": 0, "col": 1, "text": "Acc", "role": "header"},
+                            {"row": 0, "col": 1, "text": "Accuracy", "role": "header"},
                             {"row": 1, "col": 0, "text": "A"},
                             {"row": 1, "col": 1, "text": "91.2"},
                         ],
                         "cell_bboxes": [
                             {"row": 0, "col": 0, "bbox": [60, 540, 260, 580]},
+                            {"row": 0, "col": 1, "bbox": [260, 540, 500, 580]},
+                            {"row": 1, "col": 0, "bbox": [60, 580, 260, 620]},
                             {"row": 1, "col": 1, "bbox": [260, 580, 500, 620]},
                         ],
                         "merged_cell_candidates": [
@@ -1856,14 +1858,14 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(built["summary"]["structured_result_writeback_count"], 1)
         self.assertEqual(built["summary"]["structured_result_field_counts"]["structured_cells"], 1)
         self.assertEqual(built["summary"]["structured_result_item_counts"]["structured_cells"], 4)
-        self.assertEqual(built["writebacks"][0]["structured_result_item_counts"]["cell_bboxes"], 2)
+        self.assertEqual(built["writebacks"][0]["structured_result_item_counts"]["cell_bboxes"], 4)
         candidate = built["augmented_document_ir"]["pages"][0]["blocks"][0]["meta"]["ocr_candidates"][0]
         self.assertEqual(candidate["target_structure_type"], "table")
         self.assertEqual(candidate["table_context"]["table_id"], "p1-b0000")
         self.assertEqual(candidate["table_context"]["row_count"], 2)
         self.assertEqual(candidate["subtarget"]["type"], "table_block")
         self.assertEqual(candidate["structured_cells"][3]["text"], "91.2")
-        self.assertEqual(candidate["cell_bboxes"][1]["row"], 1)
+        self.assertEqual(candidate["cell_bboxes"][3]["row"], 1)
         self.assertEqual(candidate["merged_cell_candidates"][0]["reason"], "visual_header_span")
         self.assertEqual(candidate["table_footnotes"][0]["marker"], "*")
 
@@ -1878,24 +1880,90 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(candidate_qa["summary"]["merged_cell_candidates_candidate_count"], 1)
         self.assertEqual(candidate_qa["summary"]["table_footnotes_candidate_count"], 1)
         self.assertEqual(candidate_qa["summary"]["structured_cell_count"], 4)
-        self.assertEqual(candidate_qa["summary"]["cell_bbox_count"], 2)
+        self.assertEqual(candidate_qa["summary"]["cell_bbox_count"], 4)
         self.assertEqual(candidate_qa["summary"]["result_merged_cell_candidate_count"], 1)
         self.assertEqual(candidate_qa["summary"]["result_table_footnote_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["promotable_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["structured_table_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["structured_table_gate_passed_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["structured_table_gate_review_count"], 0)
         self.assertEqual(candidate_qa["candidates"][0]["table_context"]["table_id"], "p1-b0000")
         self.assertEqual(candidate_qa["candidates"][0]["subtarget"]["expected_granularity"], "rows_and_cells")
-        self.assertEqual(candidate_qa["candidates"][0]["structured_cells"][1]["text"], "Acc")
+        self.assertEqual(candidate_qa["candidates"][0]["status"], "candidate")
+        self.assertEqual(candidate_qa["candidates"][0]["structured_table_gate"]["status"], "passed")
+        self.assertEqual(candidate_qa["candidates"][0]["structured_cells"][1]["text"], "Accuracy")
         self.assertEqual(candidate_qa["candidates"][0]["table_footnotes"][0]["text"], "p < 0.05")
 
-        promotion_input = json.loads(json.dumps(candidate_qa, ensure_ascii=False))
-        promotion_input["candidates"][0]["status"] = "candidate"
-        promotion_input["candidates"][0]["reasons"] = []
-        promotion = build_ocr_candidate_promotion(built["augmented_document_ir"], promotion_input)
+        promotion = build_ocr_candidate_promotion(built["augmented_document_ir"], candidate_qa)
         self.assertEqual(promotion["summary"]["promoted_candidate_count"], 1)
         self.assertEqual(promotion["promotions"][0]["structured_cells"][3]["text"], "91.2")
         self.assertEqual(promotion["promotions"][0]["cell_bboxes"][0]["bbox"], [60, 540, 260, 580])
         self.assertEqual(promotion["promotions"][0]["merged_cell_candidates"][0]["type"], "colspan")
         promoted_meta = promotion["promoted_document_ir"]["pages"][0]["blocks"][0]["meta"]["ocr_promotions"][0]
         self.assertEqual(promoted_meta["table_footnotes"][0]["marker"], "*")
+
+    def test_structured_table_ocr_gate_requires_locked_tokens_and_bboxes(self) -> None:
+        document_ir_ocr = {
+            "doc_id": "table-ocr-gate",
+            "pages": [
+                {
+                    "page_no": 1,
+                    "text": "Table image",
+                    "meta": {},
+                    "blocks": [
+                        {
+                            "block_id": "p1-b0000",
+                            "page_no": 1,
+                            "type": "table",
+                            "text": "Table image",
+                            "meta": {
+                                "ocr_candidates": [
+                                    {
+                                        "task_id": "ocr-task-1",
+                                        "page_no": 1,
+                                        "block_id": "p1-b0000",
+                                        "scope": "region",
+                                        "block_type": "table",
+                                        "target_structure_type": "table",
+                                        "text": "Metric Accuracy\nA 90.0",
+                                        "confidence": 0.96,
+                                        "engine": "unit_table_ocr",
+                                        "language": "en",
+                                        "table_context": {
+                                            "table_id": "p1-b0000",
+                                            "row_count": 2,
+                                            "column_count": 2,
+                                            "locked_tokens": ["91.2"],
+                                        },
+                                        "structured_cells": [
+                                            {"row": 0, "col": 0, "text": "Metric"},
+                                            {"row": 0, "col": 1, "text": "Accuracy"},
+                                            {"row": 1, "col": 0, "text": "A"},
+                                            {"row": 1, "col": 1, "text": "90.0"},
+                                        ],
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+
+        qa = build_ocr_candidate_qa(document_ir_ocr, None)
+
+        self.assertEqual(qa["summary"]["candidate_count"], 1)
+        self.assertEqual(qa["summary"]["needs_review_candidate_count"], 1)
+        self.assertEqual(qa["summary"]["structured_table_candidate_count"], 1)
+        self.assertEqual(qa["summary"]["structured_table_gate_passed_count"], 0)
+        self.assertEqual(qa["summary"]["structured_table_gate_review_count"], 1)
+        self.assertEqual(qa["summary"]["structured_table_missing_locked_token_count"], 1)
+        candidate = qa["candidates"][0]
+        self.assertEqual(candidate["status"], "needs_review")
+        self.assertEqual(candidate["structured_table_gate"]["status"], "needs_review")
+        self.assertIn("structured_table_missing_locked_tokens", candidate["reasons"])
+        self.assertIn("structured_table_missing_cell_bboxes", candidate["reasons"])
+        self.assertIn("needs_structured_table_review", candidate["reasons"])
 
     def test_local_ocr_executor_runs_ready_tasks_into_results_payload(self) -> None:
         root = Path.cwd() / "test-output" / "ocr-executor"
@@ -2733,8 +2801,23 @@ class StructureIRTests(unittest.TestCase):
                     "cell_bbox_count": 2,
                     "result_merged_cell_candidate_count": 1,
                     "result_table_footnote_count": 1,
+                    "structured_table_gate_counts": {"passed": 1, "needs_review": 1},
+                    "structured_table_gate_issue_counts": {
+                        "structured_table_missing_locked_tokens": 1,
+                        "structured_table_missing_cell_bboxes": 1,
+                    },
+                    "structured_table_candidate_count": 2,
+                    "structured_table_gate_passed_count": 1,
+                    "structured_table_gate_review_count": 1,
+                    "structured_table_gate_blocked_count": 0,
+                    "structured_table_missing_locked_token_count": 1,
                     "status_counts": {"candidate": 1, "needs_review": 1, "blocked": 1},
-                    "issue_counts": {"needs_table_structure_review": 1, "too_short": 1},
+                    "issue_counts": {
+                        "needs_table_structure_review": 1,
+                        "structured_table_missing_locked_tokens": 1,
+                        "structured_table_missing_cell_bboxes": 1,
+                        "too_short": 1,
+                    },
                 },
             },
             ocr_candidate_promotion={
@@ -3121,6 +3204,13 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_cell_bbox_count"], 2)
         self.assertEqual(metrics["quality"]["ocr_result_merged_cell_candidate_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_result_table_footnote_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_table_candidate_count"], 2)
+        self.assertEqual(metrics["quality"]["ocr_structured_table_gate_passed_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_table_gate_review_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_table_gate_blocked_count"], 0)
+        self.assertEqual(metrics["quality"]["ocr_structured_table_missing_locked_token_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_table_row_col_mismatch_count"], 0)
+        self.assertEqual(metrics["quality"]["ocr_structured_table_missing_cell_bboxes_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_promotion_eligible_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_promoted_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_promotion_skipped_count"], 2)
@@ -3144,6 +3234,11 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["ocr_structured_result_candidate_rate"], 0.3333)
         self.assertEqual(metrics["rates"]["ocr_structured_cells_candidate_rate"], 0.3333)
         self.assertEqual(metrics["rates"]["ocr_cell_bboxes_candidate_rate"], 0.3333)
+        self.assertEqual(metrics["rates"]["ocr_structured_table_gate_pass_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["ocr_structured_table_gate_review_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["ocr_structured_table_structure_review_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["ocr_structured_table_row_col_match_rate"], 1.0)
+        self.assertEqual(metrics["rates"]["ocr_table_cell_bbox_coverage_rate"], 0.5)
         self.assertEqual(metrics["rates"]["ocr_candidate_promotable_rate"], 0.3333)
         self.assertEqual(metrics["rates"]["ocr_candidate_blocked_rate"], 0.3333)
         self.assertEqual(metrics["rates"]["ocr_candidate_promotion_rate"], 0.3333)
@@ -3159,6 +3254,13 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["breakdowns"]["ocr_candidate_status_counts"]["needs_review"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_candidate_issue_counts"]["too_short"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_candidate_structured_result_field_counts"]["cell_bboxes"], 1)
+        self.assertEqual(metrics["breakdowns"]["ocr_candidate_structured_table_gate_counts"]["passed"], 1)
+        self.assertEqual(
+            metrics["breakdowns"]["ocr_candidate_structured_table_gate_issue_counts"][
+                "structured_table_missing_locked_tokens"
+            ],
+            1,
+        )
         self.assertEqual(metrics["breakdowns"]["ocr_candidate_promotion_status_counts"]["candidate"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_candidate_promotion_skip_counts"]["status_not_promotable"], 2)
         self.assertEqual(metrics["breakdowns"]["stage_elapsed_ms"]["document_ir"], 50)
