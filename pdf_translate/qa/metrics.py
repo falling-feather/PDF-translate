@@ -433,6 +433,27 @@ def build_experiment_metrics(
     translated_pdf_qa_issue_count = _as_int(translated_pdf_summary.get("qa_issue_count"))
     translated_pdf_repair_item_count = _as_int(translated_pdf_summary.get("repair_item_count"))
     translated_pdf_warning_count = _as_int(translated_pdf_summary.get("warning_count"))
+    translated_pdf_structure_context_chunk_count = _as_int(
+        translated_pdf_summary.get("structure_context_chunk_count")
+    )
+    translated_pdf_source_table_reference_count = _as_int(
+        translated_pdf_summary.get("source_table_reference_count")
+    )
+    translated_pdf_source_caption_reference_count = _as_int(
+        translated_pdf_summary.get("source_caption_reference_count")
+    )
+    translated_pdf_source_footnote_reference_count = _as_int(
+        translated_pdf_summary.get("source_footnote_reference_count")
+    )
+    translated_pdf_source_footnote_cell_binding_count = _as_int(
+        translated_pdf_summary.get("source_footnote_cell_binding_count")
+    )
+    translated_pdf_continued_table_group_reference_count = _as_int(
+        translated_pdf_summary.get("continued_table_group_reference_count")
+    )
+    translated_pdf_structural_relation_reference_count = _as_int(
+        translated_pdf_summary.get("structural_relation_reference_count")
+    )
     max_english_residual_ratio = _as_float(translation_summary.get("max_english_residual_ratio"))
     total_elapsed_ms = _as_int(run_summary.get("total_elapsed_ms"))
     translation_elapsed_ms = _as_int(run_summary.get("translation_elapsed_ms"))
@@ -644,6 +665,17 @@ def build_experiment_metrics(
             "translated_pdf_qa_issue_count": translated_pdf_qa_issue_count,
             "translated_pdf_repair_item_count": translated_pdf_repair_item_count,
             "translated_pdf_warning_count": translated_pdf_warning_count,
+            "translated_pdf_structure_context_chunk_count": translated_pdf_structure_context_chunk_count,
+            "translated_pdf_source_table_reference_count": translated_pdf_source_table_reference_count,
+            "translated_pdf_source_caption_reference_count": translated_pdf_source_caption_reference_count,
+            "translated_pdf_source_footnote_reference_count": translated_pdf_source_footnote_reference_count,
+            "translated_pdf_source_footnote_cell_binding_count": translated_pdf_source_footnote_cell_binding_count,
+            "translated_pdf_continued_table_group_reference_count": (
+                translated_pdf_continued_table_group_reference_count
+            ),
+            "translated_pdf_structural_relation_reference_count": (
+                translated_pdf_structural_relation_reference_count
+            ),
             "max_english_residual_ratio": max_english_residual_ratio,
         },
         "performance": {
@@ -816,6 +848,10 @@ def build_experiment_metrics(
                 ocr_candidate_promotion_eligible_count,
             ),
             "qa_issue_per_chunk": _rate(translation_issue_count, chunk_count),
+            "translated_pdf_structure_context_chunk_rate": _rate(
+                translated_pdf_structure_context_chunk_count,
+                translated_pdf_chunk_count or chunk_count,
+            ),
             "translation_request_per_chunk": _rate(translation_request_count, chunk_count),
             "http_attempt_per_translation_request": _rate(
                 http_attempt_count,

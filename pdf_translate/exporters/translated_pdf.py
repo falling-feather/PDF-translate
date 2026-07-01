@@ -20,6 +20,28 @@ MARGIN_TOP = 54.0
 MARGIN_BOTTOM = 46.0
 FONT_CJK = "china-s"
 FONT_LATIN = "helv"
+STRUCTURE_QA_SUMMARY_FIELDS = [
+    "caption_count",
+    "caption_linked_count",
+    "caption_orphan_count",
+    "footnote_count",
+    "footnote_linked_count",
+    "footnote_orphan_count",
+    "table_footnote_count",
+    "cross_page_relationship_count",
+    "caption_cross_page_linked_count",
+    "caption_cross_page_orphan_count",
+    "footnote_cross_page_linked_count",
+    "footnote_cross_page_orphan_count",
+    "cross_page_parent_gap_max",
+]
+TABLE_RECONSTRUCTION_SUMMARY_FIELDS = [
+    "table_footnote_binding_count",
+    "table_footnote_cell_binding_count",
+    "table_footnote_bound_cell_count",
+    "table_footnote_unbound_count",
+    "table_footnote_table_level_count",
+]
 
 
 def _chunk_translation_text(chunk_dir: Path, chunk_id: str) -> str:
@@ -133,6 +155,136 @@ def _short_item(item: dict[str, Any], *keys: str) -> str:
         if value:
             return _clean_text(str(value))[:96]
     return "unknown"
+
+
+def _summary(report: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(report, dict):
+        return {}
+    summary = report.get("summary")
+    return summary if isinstance(summary, dict) else {}
+
+
+def _int_summary_fields(summary: dict[str, Any], fields: list[str]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for field in fields:
+        value = summary.get(field, 0)
+        if isinstance(value, bool):
+            out[field] = int(value)
+        elif isinstance(value, (int, float)):
+            out[field] = int(value)
+        elif isinstance(value, str):
+            try:
+                out[field] = int(float(value))
+            except ValueError:
+                out[field] = 0
+        else:
+            out[field] = 0
+    return out
+
+
+def _chunk_block_ids(chunk: TextChunk) -> set[str]:
+    return {str(block_id) for block_id in getattr(chunk, "block_ids", []) if str(block_id)}
+
+
+def _chunk_pages_1based(chunk: TextChunk) -> list[int]:
+    return [page + 1 for page in chunk.pages_0based]
+
+
+def _table_matches_chunk(table: dict[str, Any], chunk: TextChunk, block_ids: set[str]) -> bool:
+    table_id = str(table.get("block_id") or table.get("table_id") or "")
+    if block_ids:
+        return table_id in block_ids
+    pages = set(_chunk_pages_1based(chunk))
+    return int(table.get("page_no") or 0) in pages
+
+
+def _table_structure_context(chunk: TextChunk, table_reconstruction: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(table_reconstruction, dict):
+        table_reconstruction = {}
+    tables = [table for table in table_reconstruction.get("tables") or [] if isinstance(table, dict)]
+    groups = [group for group in table_reconstruction.get("continued_table_groups") or [] if isinstance(group, dict)]
+    block_ids = _chunk_block_ids(chunk)
+    selected = [table for table in tables if _table_matches_chunk(table, chunk, block_ids)]
+    table_ids = [
+        str(table.get("table_id") or table.get("block_id") or "")
+        for table in selected
+        if str(table.get("table_id") or table.get("block_id") or "")
+    ]
+    table_id_set = set(table_ids)
+    selected_groups = [
+        group
+        for group in groups
+        if table_id_set.intersection({str(table_id) for table_id in group.get("table_ids") or [] if str(table_id)})
+    ]
+    footnote_bindings = [
+        binding
+        for table in selected
+        for binding in table.get("footnote_bindings") or []
+        if isinstance(binding, dict)
+    ]
+    structural_relation_ids = [
+        str(relation_id)
+        for relation_id in getattr(chunk, "structural_relation_ids", [])
+        if str(relation_id)
+    ]
+    return {
+        "source_table_ids": table_ids,
+        "source_table_count": len(table_ids),
+        "source_caption_count": sum(len(table.get("caption_blocks") or []) for table in selected),
+        "source_footnote_count": sum(len(table.get("footnote_blocks") or []) for table in selected),
+        "source_footnote_cell_binding_count": sum(
+            1 for binding in footnote_bindings if str(binding.get("status") or "") == "bound_to_cells"
+        ),
+        "source_footnote_bound_cell_count": sum(
+            int(binding.get("matched_cell_count") or 0) for binding in footnote_bindings
+        ),
+        "merged_cell_candidate_reference_count": sum(
+            len(table.get("merged_cell_candidates") or []) for table in selected
+        ),
+        "continued_table_group_ids": [
+            str(group.get("group_id") or "") for group in selected_groups if str(group.get("group_id") or "")
+        ],
+        "continued_table_group_count": len(selected_groups),
+        "structural_relation_ids": structural_relation_ids,
+        "structural_relation_count": len(structural_relation_ids),
+    }
+
+
+def _structure_context_lines(chunk_report: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    table_ids = [str(item) for item in chunk_report.get("source_table_ids") or [] if str(item)]
+    if table_ids:
+        lines.append(
+            "Source tables: "
+            + ", ".join(table_ids[:6])
+            + (f" (+{len(table_ids) - 6})" if len(table_ids) > 6 else "")
+        )
+    caption_count = int(chunk_report.get("source_caption_count") or 0)
+    footnote_count = int(chunk_report.get("source_footnote_count") or 0)
+    if caption_count or footnote_count:
+        lines.append(f"Caption/footnote links: captions={caption_count}, footnotes={footnote_count}")
+    cell_binding_count = int(chunk_report.get("source_footnote_cell_binding_count") or 0)
+    bound_cell_count = int(chunk_report.get("source_footnote_bound_cell_count") or 0)
+    if cell_binding_count or bound_cell_count:
+        lines.append(f"Footnote cell bindings: bindings={cell_binding_count}, cells={bound_cell_count}")
+    merged_candidate_count = int(chunk_report.get("merged_cell_candidate_reference_count") or 0)
+    if merged_candidate_count:
+        lines.append(f"Merged-cell candidates: {merged_candidate_count}")
+    group_ids = [str(item) for item in chunk_report.get("continued_table_group_ids") or [] if str(item)]
+    if group_ids:
+        lines.append(
+            "Continued table groups: "
+            + ", ".join(group_ids[:6])
+            + (f" (+{len(group_ids) - 6})" if len(group_ids) > 6 else "")
+        )
+    relation_ids = [str(item) for item in chunk_report.get("structural_relation_ids") or [] if str(item)]
+    if relation_ids:
+        lines.append(
+            "Protected structure relations: "
+            + ", ".join(relation_ids[:4])
+            + (f" (+{len(relation_ids) - 4})" if len(relation_ids) > 4 else "")
+        )
+    return lines
 
 
 class _PdfFlow:
@@ -319,6 +471,8 @@ def build_translated_pdf_report(
     *,
     qa_report: dict[str, Any] | None = None,
     repair_plan: dict[str, Any] | None = None,
+    structure_qa: dict[str, Any] | None = None,
+    table_reconstruction: dict[str, Any] | None = None,
     title: str = "结构化译文",
     source_pdf: Path | str | None = None,
 ) -> dict[str, Any]:
@@ -328,23 +482,61 @@ def build_translated_pdf_report(
     warnings: list[str] = []
     total_tables = 0
     total_chars = 0
+    structure_summary_fields = _int_summary_fields(_summary(structure_qa), STRUCTURE_QA_SUMMARY_FIELDS)
+    table_summary_fields = _int_summary_fields(
+        _summary(table_reconstruction),
+        TABLE_RECONSTRUCTION_SUMMARY_FIELDS,
+    )
+    structure_context_chunk_count = 0
+    source_table_reference_count = 0
+    source_caption_reference_count = 0
+    source_footnote_reference_count = 0
+    source_footnote_cell_binding_count = 0
+    source_footnote_bound_cell_count = 0
+    merged_cell_candidate_reference_count = 0
+    continued_table_group_reference_count = 0
+    structural_relation_reference_count = 0
 
     for chunk in chunks:
         translation = _chunk_translation_text(chunk_dir, chunk.chunk_id)
         blocks = _markdown_blocks(translation)
         table_count = sum(1 for block in blocks if block.get("type") == "table")
+        structure_context = _table_structure_context(chunk, table_reconstruction)
+        has_structure_context = any(
+            int(structure_context.get(key) or 0) > 0
+            for key in (
+                "source_table_count",
+                "source_caption_count",
+                "source_footnote_count",
+                "source_footnote_cell_binding_count",
+                "merged_cell_candidate_reference_count",
+                "continued_table_group_count",
+                "structural_relation_count",
+            )
+        )
         total_tables += table_count
         total_chars += len(translation)
+        structure_context_chunk_count += int(has_structure_context)
+        source_table_reference_count += int(structure_context["source_table_count"])
+        source_caption_reference_count += int(structure_context["source_caption_count"])
+        source_footnote_reference_count += int(structure_context["source_footnote_count"])
+        source_footnote_cell_binding_count += int(structure_context["source_footnote_cell_binding_count"])
+        source_footnote_bound_cell_count += int(structure_context["source_footnote_bound_cell_count"])
+        merged_cell_candidate_reference_count += int(structure_context["merged_cell_candidate_reference_count"])
+        continued_table_group_reference_count += int(structure_context["continued_table_group_count"])
+        structural_relation_reference_count += int(structure_context["structural_relation_count"])
         if not translation:
             warnings.append(f"missing_translation:{chunk.chunk_id}")
         chunk_reports.append(
             {
                 "chunk_id": chunk.chunk_id,
-                "pages_1based": [p + 1 for p in chunk.pages_0based],
+                "pages_1based": _chunk_pages_1based(chunk),
                 "translated_char_count": len(translation),
                 "table_count": table_count,
                 "qa_issue_count": len(issues_by_chunk.get(chunk.chunk_id, [])),
                 "repair_item_count": len(repairs_by_chunk.get(chunk.chunk_id, [])),
+                "has_structure_context": has_structure_context,
+                **structure_context,
             }
         )
 
@@ -360,6 +552,17 @@ def build_translated_pdf_report(
             "table_count": total_tables,
             "qa_issue_count": sum(len(v) for v in issues_by_chunk.values()),
             "repair_item_count": sum(len(v) for v in repairs_by_chunk.values()),
+            **structure_summary_fields,
+            **table_summary_fields,
+            "structure_context_chunk_count": structure_context_chunk_count,
+            "source_table_reference_count": source_table_reference_count,
+            "source_caption_reference_count": source_caption_reference_count,
+            "source_footnote_reference_count": source_footnote_reference_count,
+            "source_footnote_cell_binding_count": source_footnote_cell_binding_count,
+            "source_footnote_bound_cell_count": source_footnote_bound_cell_count,
+            "merged_cell_candidate_reference_count": merged_cell_candidate_reference_count,
+            "continued_table_group_reference_count": continued_table_group_reference_count,
+            "structural_relation_reference_count": structural_relation_reference_count,
             "page_count": 0,
             "font": FONT_CJK,
             "warning_count": len(warnings),
@@ -376,6 +579,8 @@ def write_translated_pdf(
     *,
     qa_report: dict[str, Any] | None = None,
     repair_plan: dict[str, Any] | None = None,
+    structure_qa: dict[str, Any] | None = None,
+    table_reconstruction: dict[str, Any] | None = None,
     title: str = "结构化译文",
     source_pdf: Path | str | None = None,
     report_path: Path | None = None,
@@ -385,11 +590,18 @@ def write_translated_pdf(
         chunk_dir,
         qa_report=qa_report,
         repair_plan=repair_plan,
+        structure_qa=structure_qa,
+        table_reconstruction=table_reconstruction,
         title=title,
         source_pdf=source_pdf,
     )
     issues_by_chunk = _qa_issues_by_chunk(qa_report)
     repairs_by_chunk = _index_by_chunk((repair_plan or {}).get("items") or [])
+    chunk_reports_by_id = {
+        str(item.get("chunk_id")): item
+        for item in report.get("chunks", [])
+        if isinstance(item, dict) and str(item.get("chunk_id") or "")
+    }
 
     flow = _PdfFlow(title)
     flow.add_text(title, fontsize=20, color=(0.06, 0.32, 0.30), after=10)
@@ -428,6 +640,7 @@ def write_translated_pdf(
         if repairs:
             note_lines.append("修复: " + "; ".join(_short_item(item, "action", "reason") for item in repairs[:6]))
         flow.add_box("质量提示", note_lines)
+        flow.add_box("Structure context", _structure_context_lines(chunk_reports_by_id.get(chunk.chunk_id, {})))
 
         blocks = _markdown_blocks(translation)
         if not blocks:

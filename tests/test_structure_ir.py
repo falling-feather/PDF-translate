@@ -2589,6 +2589,13 @@ class StructureIRTests(unittest.TestCase):
                     "qa_issue_count": 4,
                     "repair_item_count": 2,
                     "warning_count": 0,
+                    "structure_context_chunk_count": 1,
+                    "source_table_reference_count": 2,
+                    "source_caption_reference_count": 1,
+                    "source_footnote_reference_count": 1,
+                    "source_footnote_cell_binding_count": 1,
+                    "continued_table_group_reference_count": 1,
+                    "structural_relation_reference_count": 2,
                 },
             },
             run_metrics={
@@ -2728,6 +2735,14 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["translated_pdf_table_count"], 1)
         self.assertEqual(metrics["quality"]["translated_pdf_qa_issue_count"], 4)
         self.assertEqual(metrics["quality"]["translated_pdf_repair_item_count"], 2)
+        self.assertEqual(metrics["quality"]["translated_pdf_structure_context_chunk_count"], 1)
+        self.assertEqual(metrics["quality"]["translated_pdf_source_table_reference_count"], 2)
+        self.assertEqual(metrics["quality"]["translated_pdf_source_caption_reference_count"], 1)
+        self.assertEqual(metrics["quality"]["translated_pdf_source_footnote_reference_count"], 1)
+        self.assertEqual(metrics["quality"]["translated_pdf_source_footnote_cell_binding_count"], 1)
+        self.assertEqual(metrics["quality"]["translated_pdf_continued_table_group_reference_count"], 1)
+        self.assertEqual(metrics["quality"]["translated_pdf_structural_relation_reference_count"], 2)
+        self.assertEqual(metrics["rates"]["translated_pdf_structure_context_chunk_rate"], 0.5)
         self.assertEqual(metrics["quality"]["table_shape_error_count"], 1)
         self.assertEqual(metrics["quality"]["table_cell_token_error_count"], 2)
         self.assertEqual(metrics["quality"]["missing_table_locked_token_count"], 3)
@@ -3235,6 +3250,8 @@ class StructureIRTests(unittest.TestCase):
                     image_count=0,
                 )
             ]
+            chunks[0].block_ids = ["p1-b0001", "p1-b0002", "p1-b0003"]
+            chunks[0].structural_relation_ids = ["p1-b0001->p1-b0002:caption_for_table"]
             (chunk_dir / "c0000.md").write_text(
                 "---\n{}\n---\n\n"
                 "# Results\n\n"
@@ -3263,6 +3280,54 @@ class StructureIRTests(unittest.TestCase):
                     }
                 ]
             }
+            structure_qa = {
+                "summary": {
+                    "caption_count": 1,
+                    "caption_linked_count": 1,
+                    "caption_orphan_count": 0,
+                    "footnote_count": 1,
+                    "footnote_linked_count": 1,
+                    "footnote_orphan_count": 0,
+                    "table_footnote_count": 1,
+                    "cross_page_relationship_count": 1,
+                    "caption_cross_page_linked_count": 1,
+                    "caption_cross_page_orphan_count": 0,
+                    "footnote_cross_page_linked_count": 0,
+                    "footnote_cross_page_orphan_count": 0,
+                    "cross_page_parent_gap_max": 1,
+                }
+            }
+            table_reconstruction = {
+                "summary": {
+                    "table_footnote_binding_count": 1,
+                    "table_footnote_cell_binding_count": 1,
+                    "table_footnote_bound_cell_count": 1,
+                    "table_footnote_unbound_count": 0,
+                    "table_footnote_table_level_count": 0,
+                },
+                "tables": [
+                    {
+                        "table_id": "p1-b0001",
+                        "block_id": "p1-b0001",
+                        "page_no": 1,
+                        "caption_blocks": [{"block_id": "p1-b0002", "text": "Table 1: Results"}],
+                        "footnote_blocks": [{"block_id": "p1-b0003", "text": "* p < 0.05"}],
+                        "footnote_bindings": [
+                            {
+                                "status": "bound_to_cells",
+                                "matched_cell_count": 1,
+                                "matched_cells": [{"row_index": 1, "column_index": 1}],
+                            }
+                        ],
+                        "merged_cell_candidates": [
+                            {"span_type": "colspan", "row_index": 0, "column_index": 0}
+                        ],
+                    }
+                ],
+                "continued_table_groups": [
+                    {"group_id": "ctg0001", "table_ids": ["p1-b0001"], "merge_status": "merged"}
+                ],
+            }
             pdf_path = root / "translated_full.pdf"
             report_path = root / "translated_pdf_report.json"
 
@@ -3272,6 +3337,8 @@ class StructureIRTests(unittest.TestCase):
                 pdf_path,
                 qa_report=qa_report,
                 repair_plan=repair_plan,
+                structure_qa=structure_qa,
+                table_reconstruction=table_reconstruction,
                 title="Unit Structured PDF",
                 source_pdf="sample.pdf",
                 report_path=report_path,
@@ -3288,9 +3355,23 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("Unit Structured PDF", text)
             self.assertIn("91.2", text)
             self.assertIn("missing_numbers", text)
+            self.assertIn("Structure context", text)
+            self.assertIn("Source tables", text)
             self.assertTrue(report["summary"]["generated"])
             self.assertEqual(report["summary"]["chunk_count"], 1)
             self.assertEqual(report["summary"]["table_count"], 1)
+            self.assertEqual(report["summary"]["caption_count"], 1)
+            self.assertEqual(report["summary"]["footnote_linked_count"], 1)
+            self.assertEqual(report["summary"]["table_footnote_cell_binding_count"], 1)
+            self.assertEqual(report["summary"]["structure_context_chunk_count"], 1)
+            self.assertEqual(report["summary"]["source_table_reference_count"], 1)
+            self.assertEqual(report["summary"]["source_caption_reference_count"], 1)
+            self.assertEqual(report["summary"]["source_footnote_cell_binding_count"], 1)
+            self.assertEqual(report["summary"]["continued_table_group_reference_count"], 1)
+            self.assertEqual(report["summary"]["structural_relation_reference_count"], 1)
+            self.assertTrue(report["chunks"][0]["has_structure_context"])
+            self.assertEqual(report["chunks"][0]["source_table_ids"], ["p1-b0001"])
+            self.assertEqual(report["chunks"][0]["continued_table_group_ids"], ["ctg0001"])
             saved = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["schema_version"], "translated-pdf-report-v1")
             self.assertEqual(saved["summary"]["qa_issue_count"], 1)
@@ -3659,6 +3740,10 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(metrics["evidence_files"]["translated_pdf_report"], "output/translated_pdf_report.json")
             self.assertEqual(translated_pdf_report["schema_version"], "translated-pdf-report-v1")
             self.assertTrue(translated_pdf_report["summary"]["generated"])
+            self.assertIn("caption_count", translated_pdf_report["summary"])
+            self.assertIn("table_footnote_cell_binding_count", translated_pdf_report["summary"])
+            self.assertIn("structure_context_chunk_count", translated_pdf_report["summary"])
+            self.assertIn("translated_pdf_structure_context_chunk_rate", metrics["rates"])
             pdf_doc = fitz.open(translated_pdf_path)
             try:
                 pdf_text = "\n".join(page.get_text("text") for page in pdf_doc)

@@ -526,6 +526,8 @@ def run_translate(
                 out_dir / "translated_full.pdf",
                 qa_report=qa_report,
                 repair_plan=repair_plan,
+                structure_qa=structure_qa,
+                table_reconstruction=table_reconstruction,
                 title=f"{main_pdf.stem} 结构化译文",
                 source_pdf=main_pdf,
                 report_path=out_dir / "translated_pdf_report.json",
