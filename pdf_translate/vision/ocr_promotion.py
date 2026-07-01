@@ -17,6 +17,8 @@ STRUCTURED_RESULT_FIELDS = (
     "equation_labels",
     "formula_confidence",
 )
+STRUCTURED_TABLE_PASS = "passed"
+STRUCTURED_FORMULA_PASS = "passed"
 
 
 def _json_copy(value: Any) -> Any:
@@ -50,6 +52,63 @@ def _structured_payload(value: Any) -> Any | None:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return value
     return None
+
+
+def _cell_position(cell: Any) -> tuple[int, int] | None:
+    if not isinstance(cell, dict):
+        return None
+    row_value = cell.get("row", cell.get("row_index"))
+    col_value = cell.get("col", cell.get("column", cell.get("column_index")))
+    if row_value is None or col_value is None:
+        return None
+    row = _as_int(row_value)
+    col = _as_int(col_value)
+    if row < 0 or col < 0:
+        return None
+    return row, col
+
+
+def _cell_text(cell: Any) -> str:
+    if isinstance(cell, dict):
+        return _text(cell.get("text") or cell.get("value"))
+    return _text(cell)
+
+
+def _rows_from_structured_cells(value: Any) -> list[list[str]]:
+    if not isinstance(value, list):
+        return []
+    positioned: list[tuple[int, int, str]] = []
+    for cell in value:
+        position = _cell_position(cell)
+        if position is None:
+            continue
+        text = _cell_text(cell)
+        positioned.append((position[0], position[1], text))
+    if not positioned:
+        return []
+    row_count = max(row for row, _col, _text_value in positioned) + 1
+    column_count = max(col for _row, col, _text_value in positioned) + 1
+    rows = [["" for _col in range(column_count)] for _row in range(row_count)]
+    for row, col, text in positioned:
+        current = rows[row][col].strip()
+        if current and text and text not in current:
+            rows[row][col] = f"{current} {text}"
+        elif text:
+            rows[row][col] = text
+    return rows
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [_text(item) for item in value if _text(item)]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _gate_status(qa_item: dict[str, Any], key: str) -> str:
+    gate = qa_item.get(key) if isinstance(qa_item.get(key), dict) else {}
+    return str(gate.get("status") or "")
 
 
 def _pages(document_ir: dict[str, Any]) -> dict[int, dict[str, Any]]:
@@ -196,6 +255,98 @@ def _record_promotion(target: dict[str, Any], meta: dict[str, Any]) -> None:
     promotions.append(meta)
 
 
+def _canonical_table_meta(meta: dict[str, Any]) -> dict[str, Any] | None:
+    rows = _rows_from_structured_cells(meta.get("structured_cells"))
+    if not rows:
+        return None
+    column_count = max((len(row) for row in rows), default=0)
+    table_context = meta.get("table_context") if isinstance(meta.get("table_context"), dict) else {}
+    table_meta: dict[str, Any] = {
+        "source": "ocr_candidate_promotion",
+        "source_task_id": str(meta.get("task_id") or ""),
+        "source_engine": str(meta.get("engine") or ""),
+        "rows": rows,
+        "row_count": len(rows),
+        "column_count": column_count,
+        "header": rows[0] if rows else [],
+        "confidence": "high",
+        "ocr_confidence": meta.get("confidence"),
+        "ocr_structured": True,
+    }
+    for key in ("table_id", "locked_tokens", "source_confidence", "warnings"):
+        value = table_context.get(key)
+        if value not in (None, "", []):
+            table_meta[key] = _json_copy(value)
+    for key in ("cell_bboxes", "merged_cell_candidates", "table_footnotes"):
+        value = _structured_payload(meta.get(key))
+        if value is not None:
+            table_meta[key] = value
+    return table_meta
+
+
+def _canonical_formula_meta(meta: dict[str, Any]) -> dict[str, Any] | None:
+    latex = _text(meta.get("formula_latex"))
+    tokens = _string_list(meta.get("formula_tokens"))
+    labels = _string_list(meta.get("equation_labels"))
+    if not latex and not tokens and not labels:
+        return None
+    formula_context = meta.get("formula_context") if isinstance(meta.get("formula_context"), dict) else {}
+    return {
+        "source": "ocr_candidate_promotion",
+        "source_task_id": str(meta.get("task_id") or ""),
+        "source_engine": str(meta.get("engine") or ""),
+        "latex": latex,
+        "tokens": tokens,
+        "equation_labels": labels,
+        "confidence": meta.get("formula_confidence", meta.get("confidence")),
+        "ocr_confidence": meta.get("confidence"),
+        "formula_id": str(formula_context.get("formula_id") or ""),
+        "ocr_structured": True,
+    }
+
+
+def _apply_canonical_structure(
+    target: dict[str, Any],
+    qa_item: dict[str, Any],
+    meta: dict[str, Any],
+) -> dict[str, Any]:
+    target_meta = target.setdefault("meta", {})
+    if not isinstance(target_meta, dict):
+        target_meta = {}
+        target["meta"] = target_meta
+
+    updates: dict[str, Any] = {}
+    targets: list[str] = []
+    target_structure_type = str(meta.get("target_structure_type") or qa_item.get("target_structure_type") or "")
+    if target_structure_type == "table" and _gate_status(qa_item, "structured_table_gate") == STRUCTURED_TABLE_PASS:
+        table_meta = _canonical_table_meta(meta)
+        if table_meta is not None:
+            target_meta["table"] = table_meta
+            targets.append("document_ir.block.meta.table")
+            updates.update(
+                {
+                    "structured_table_promoted": True,
+                    "canonical_table_row_count": table_meta["row_count"],
+                    "canonical_table_column_count": table_meta["column_count"],
+                }
+            )
+    if target_structure_type == "formula" and _gate_status(qa_item, "structured_formula_gate") == STRUCTURED_FORMULA_PASS:
+        formula_meta = _canonical_formula_meta(meta)
+        if formula_meta is not None:
+            target_meta["formula"] = formula_meta
+            targets.append("document_ir.block.meta.formula")
+            updates.update(
+                {
+                    "structured_formula_promoted": True,
+                    "canonical_formula_token_count": len(formula_meta.get("tokens") or []),
+                    "canonical_formula_equation_label_count": len(formula_meta.get("equation_labels") or []),
+                }
+            )
+    if targets:
+        updates["canonical_structure_targets"] = targets
+    return updates
+
+
 def _bbox_for_synthetic_block(page: dict[str, Any], candidate: dict[str, Any]) -> list[float]:
     bbox = candidate.get("bbox")
     if isinstance(bbox, list) and len(bbox) >= 4:
@@ -259,10 +410,12 @@ def _promote_to_block(
 ) -> dict[str, Any]:
     text = _text(source_candidate.get("text") or qa_item.get("preview"))
     meta = _promotion_meta(qa_item, source_candidate)
+    canonical_updates = _apply_canonical_structure(block, qa_item, meta)
+    meta.update(canonical_updates)
     block["text"] = _append_text(block.get("text"), text)
     _add_page_text(page, text)
     _record_promotion(block, meta)
-    return _attach_structure_trace(
+    record = _attach_structure_trace(
         {
             "task_id": meta["task_id"],
             "page_no": _as_int(qa_item.get("page_no")),
@@ -277,6 +430,17 @@ def _promote_to_block(
         },
         meta,
     )
+    record.update(canonical_updates)
+    return record
+
+
+def _synthetic_block_type(qa_item: dict[str, Any], source_candidate: dict[str, Any]) -> str:
+    target_structure_type = str(
+        source_candidate.get("target_structure_type") or qa_item.get("target_structure_type") or ""
+    )
+    if target_structure_type in {"table", "formula"}:
+        return target_structure_type
+    return "paragraph"
 
 
 def _promote_to_page_block(
@@ -287,10 +451,11 @@ def _promote_to_page_block(
     text = _text(source_candidate.get("text") or qa_item.get("preview"))
     meta = _promotion_meta(qa_item, source_candidate)
     block_id = _next_synthetic_block_id(page)
+    block_type = _synthetic_block_type(qa_item, source_candidate)
     block = {
         "block_id": block_id,
         "page_no": _as_int(page.get("page_no")),
-        "type": "paragraph",
+        "type": block_type,
         "text": text,
         "bbox": _bbox_for_synthetic_block(page, source_candidate),
         "order": _max_order(page) + 1,
@@ -301,14 +466,17 @@ def _promote_to_page_block(
             "ocr_promotions": [meta],
         },
     }
+    canonical_updates = _apply_canonical_structure(block, qa_item, meta)
+    meta.update(canonical_updates)
+    block["meta"]["ocr_promotions"] = [meta]
     blocks = page.setdefault("blocks", [])
     if not isinstance(blocks, list):
         blocks = []
         page["blocks"] = blocks
     blocks.append(block)
     _add_page_text(page, text)
-    _increment_block_type_count(page, "paragraph")
-    return _attach_structure_trace(
+    _increment_block_type_count(page, block_type)
+    record = _attach_structure_trace(
         {
             "task_id": meta["task_id"],
             "page_no": _as_int(page.get("page_no")),
@@ -316,13 +484,15 @@ def _promote_to_page_block(
             "source_target": str(qa_item.get("target") or ""),
             "promotion_target": "document_ir.page.blocks.synthetic",
             "action": "create_synthetic_ocr_block",
-            "block_type": "paragraph",
+            "block_type": block_type,
             "text_char_count": meta["text_char_count"],
             "confidence": meta["confidence"],
             "engine": meta["engine"],
         },
         meta,
     )
+    record.update(canonical_updates)
+    return record
 
 
 def build_ocr_candidate_promotion(
@@ -384,6 +554,8 @@ def build_ocr_candidate_promotion(
         promotions.append(promotion)
 
     promoted_text_char_count = sum(_as_int(item.get("text_char_count")) for item in promotions)
+    structured_table_promotion_count = sum(1 for item in promotions if item.get("structured_table_promoted"))
+    structured_formula_promotion_count = sum(1 for item in promotions if item.get("structured_formula_promoted"))
     return {
         "schema_version": SCHEMA_VERSION,
         "doc_id": str((promoted_ir or {}).get("doc_id") or (ocr_candidate_qa or {}).get("doc_id") or ""),
@@ -396,6 +568,9 @@ def build_ocr_candidate_promotion(
             "page_promotion_count": sum(
                 1 for item in promotions if item.get("promotion_target") == "document_ir.page.blocks.synthetic"
             ),
+            "canonical_structure_promotion_count": structured_table_promotion_count + structured_formula_promotion_count,
+            "structured_table_promotion_count": structured_table_promotion_count,
+            "structured_formula_promotion_count": structured_formula_promotion_count,
             "promoted_text_char_count": promoted_text_char_count,
             "candidate_status_counts": dict(status_counts),
             "skip_reason_counts": dict(skip_reason_counts),

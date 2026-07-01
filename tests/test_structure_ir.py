@@ -1896,9 +1896,28 @@ class StructureIRTests(unittest.TestCase):
 
         promotion = build_ocr_candidate_promotion(built["augmented_document_ir"], candidate_qa)
         self.assertEqual(promotion["summary"]["promoted_candidate_count"], 1)
+        self.assertEqual(promotion["summary"]["canonical_structure_promotion_count"], 1)
+        self.assertEqual(promotion["summary"]["structured_table_promotion_count"], 1)
+        self.assertEqual(promotion["summary"]["structured_formula_promotion_count"], 0)
+        self.assertTrue(promotion["promotions"][0]["structured_table_promoted"])
+        self.assertEqual(promotion["promotions"][0]["canonical_table_row_count"], 2)
+        self.assertEqual(promotion["promotions"][0]["canonical_table_column_count"], 2)
         self.assertEqual(promotion["promotions"][0]["structured_cells"][3]["text"], "91.2")
         self.assertEqual(promotion["promotions"][0]["cell_bboxes"][0]["bbox"], [60, 540, 260, 580])
         self.assertEqual(promotion["promotions"][0]["merged_cell_candidates"][0]["type"], "colspan")
+        self.assertEqual(
+            promotion["promotions"][0]["canonical_structure_targets"],
+            ["document_ir.block.meta.table"],
+        )
+        promoted_block = promotion["promoted_document_ir"]["pages"][0]["blocks"][0]
+        promoted_table = promoted_block["meta"]["table"]
+        self.assertEqual(promoted_table["source"], "ocr_candidate_promotion")
+        self.assertTrue(promoted_table["ocr_structured"])
+        self.assertEqual(promoted_table["rows"][1][1], "91.2")
+        promoted_doc_ir = document_ir_from_json_dict(promotion["promoted_document_ir"])
+        promoted_chunks = build_structure_chunks(promoted_doc_ir)
+        self.assertIn("| Metric | Accuracy |", promoted_chunks[0].text)
+        self.assertIn("| A | 91.2 |", promoted_chunks[0].text)
         promoted_meta = promotion["promoted_document_ir"]["pages"][0]["blocks"][0]["meta"]["ocr_promotions"][0]
         self.assertEqual(promoted_meta["table_footnotes"][0]["marker"], "*")
 
@@ -2034,8 +2053,20 @@ class StructureIRTests(unittest.TestCase):
 
         promotion = build_ocr_candidate_promotion(built["augmented_document_ir"], candidate_qa)
         self.assertEqual(promotion["summary"]["promoted_candidate_count"], 1)
+        self.assertEqual(promotion["summary"]["canonical_structure_promotion_count"], 1)
+        self.assertEqual(promotion["summary"]["structured_table_promotion_count"], 0)
+        self.assertEqual(promotion["summary"]["structured_formula_promotion_count"], 1)
+        self.assertTrue(promotion["promotions"][0]["structured_formula_promoted"])
+        self.assertEqual(promotion["promotions"][0]["canonical_formula_token_count"], 5)
+        self.assertEqual(promotion["promotions"][0]["canonical_formula_equation_label_count"], 1)
         self.assertEqual(promotion["promotions"][0]["formula_tokens"][0], "L_i")
         self.assertEqual(promotion["promotions"][0]["formula_context"]["formula_id"], "p1-b0000")
+        promoted_block = promotion["promoted_document_ir"]["pages"][0]["blocks"][0]
+        promoted_formula = promoted_block["meta"]["formula"]
+        self.assertEqual(promoted_formula["source"], "ocr_candidate_promotion")
+        self.assertEqual(promoted_formula["latex"], r"L_i = \sum_j x_{ij}")
+        self.assertEqual(promoted_formula["tokens"][0], "L_i")
+        self.assertEqual(promoted_formula["equation_labels"], ["(1)"])
         promoted_meta = promotion["promoted_document_ir"]["pages"][0]["blocks"][0]["meta"]["ocr_promotions"][0]
         self.assertEqual(promoted_meta["formula_latex"], r"L_i = \sum_j x_{ij}")
         self.assertEqual(promoted_meta["equation_labels"], ["(1)"])
@@ -3172,6 +3203,9 @@ class StructureIRTests(unittest.TestCase):
                     "skipped_candidate_count": 2,
                     "block_promotion_count": 1,
                     "page_promotion_count": 0,
+                    "canonical_structure_promotion_count": 1,
+                    "structured_table_promotion_count": 1,
+                    "structured_formula_promotion_count": 0,
                     "promoted_text_char_count": 120,
                     "candidate_status_counts": {"candidate": 1, "needs_review": 1, "blocked": 1},
                     "skip_reason_counts": {"status_not_promotable": 2},
@@ -3581,6 +3615,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_candidate_promotion_skipped_count"], 2)
         self.assertEqual(metrics["quality"]["ocr_candidate_block_promotion_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_page_promotion_count"], 0)
+        self.assertEqual(metrics["quality"]["ocr_canonical_structure_promotion_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_table_promotion_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_structured_formula_promotion_count"], 0)
         self.assertEqual(metrics["quality"]["ocr_candidate_promoted_text_char_count"], 120)
         self.assertEqual(metrics["rates"]["vision_preview_page_rate"], 0.5)
         self.assertEqual(metrics["rates"]["vision_region_crop_per_routed_page"], 1.5)
@@ -3613,6 +3650,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["ocr_candidate_promotable_rate"], 0.3333)
         self.assertEqual(metrics["rates"]["ocr_candidate_blocked_rate"], 0.3333)
         self.assertEqual(metrics["rates"]["ocr_candidate_promotion_rate"], 0.3333)
+        self.assertEqual(metrics["rates"]["ocr_canonical_structure_promotion_rate"], 1.0)
+        self.assertEqual(metrics["rates"]["ocr_structured_table_promotion_rate"], 1.0)
+        self.assertEqual(metrics["rates"]["ocr_structured_formula_promotion_rate"], 0.0)
         self.assertEqual(metrics["rates"]["ocr_candidate_eligible_promotion_rate"], 1.0)
         self.assertEqual(metrics["breakdowns"]["vision_action_counts"]["local_ocr"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_task_engine_counts"]["local_table_ocr"], 1)

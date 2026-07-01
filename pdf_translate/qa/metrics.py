@@ -464,6 +464,15 @@ def build_experiment_metrics(
     ocr_candidate_promotion_skipped_count = _as_int(ocr_candidate_promotion_summary.get("skipped_candidate_count"))
     ocr_candidate_block_promotion_count = _as_int(ocr_candidate_promotion_summary.get("block_promotion_count"))
     ocr_candidate_page_promotion_count = _as_int(ocr_candidate_promotion_summary.get("page_promotion_count"))
+    ocr_canonical_structure_promotion_count = _as_int(
+        ocr_candidate_promotion_summary.get("canonical_structure_promotion_count")
+    )
+    ocr_structured_table_promotion_count = _as_int(
+        ocr_candidate_promotion_summary.get("structured_table_promotion_count")
+    )
+    ocr_structured_formula_promotion_count = _as_int(
+        ocr_candidate_promotion_summary.get("structured_formula_promotion_count")
+    )
     ocr_candidate_promoted_text_char_count = _as_int(
         ocr_candidate_promotion_summary.get("promoted_text_char_count")
     )
@@ -788,6 +797,9 @@ def build_experiment_metrics(
             "ocr_candidate_promotion_skipped_count": ocr_candidate_promotion_skipped_count,
             "ocr_candidate_block_promotion_count": ocr_candidate_block_promotion_count,
             "ocr_candidate_page_promotion_count": ocr_candidate_page_promotion_count,
+            "ocr_canonical_structure_promotion_count": ocr_canonical_structure_promotion_count,
+            "ocr_structured_table_promotion_count": ocr_structured_table_promotion_count,
+            "ocr_structured_formula_promotion_count": ocr_structured_formula_promotion_count,
             "ocr_candidate_promoted_text_char_count": ocr_candidate_promoted_text_char_count,
             "ocr_candidate_page_count": ocr_candidate_page_count,
             "translation_issue_count": translation_issue_count,
@@ -1077,6 +1089,18 @@ def build_experiment_metrics(
             "ocr_candidate_eligible_promotion_rate": _rate(
                 ocr_candidate_promoted_count,
                 ocr_candidate_promotion_eligible_count,
+            ),
+            "ocr_canonical_structure_promotion_rate": _rate(
+                ocr_canonical_structure_promotion_count,
+                ocr_candidate_promoted_count,
+            ),
+            "ocr_structured_table_promotion_rate": _rate(
+                ocr_structured_table_promotion_count,
+                ocr_structured_table_gate_passed_count,
+            ),
+            "ocr_structured_formula_promotion_rate": _rate(
+                ocr_structured_formula_promotion_count,
+                ocr_structured_formula_gate_passed_count,
             ),
             "qa_issue_per_chunk": _rate(translation_issue_count, chunk_count),
             "translated_pdf_structure_context_chunk_rate": _rate(
