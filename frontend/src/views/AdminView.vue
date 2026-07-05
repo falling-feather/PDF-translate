@@ -168,6 +168,7 @@ function artifactReadySummary(job) {
   if (job.translated_pdf_ready) ready.push("译文PDF");
   if (job.bilingual_html_ready) ready.push("HTML");
   if (job.table_merged_cell_review_ready) ready.push("表格确认");
+  if (job.table_structure_publish_ready) ready.push("表格发布");
   if (job.repair_patch_review_ready) ready.push("补丁审核");
   if (job.repair_publish_report_ready) ready.push("修复报告");
   if (job.repair_published_full_ready) ready.push("修复稿");
@@ -387,6 +388,27 @@ async function adminReviewTableMergedCell(job) {
   await loadJobs();
   await loadAudit();
   alert("已更新表格合并候选审核");
+}
+
+async function adminConfirmTableStructurePublish(job) {
+  const blockingReviews = Number(job.table_merged_cell_review_required_count || 0);
+  if (blockingReviews > 0) {
+    alert(`仍有 ${blockingReviews} 个表格合并候选未完成确认，请先处理表格审核。`);
+    return;
+  }
+  if (!window.confirm("确认生成表格结构副本？原始表格重建证据仍会保留。")) return;
+  const r = await fetch(`/api/jobs/${job.job_id}/table-structure-publish/confirm`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatAdminError(data));
+    return;
+  }
+  await loadJobs();
+  await loadAudit();
+  alert("已生成表格结构副本");
 }
 
 async function adminConfirmRepairPublish(job) {
@@ -635,12 +657,15 @@ onMounted(() => {
               <td class="nowrap">
                 <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.repair_patch_review_ready" @click="adminReviewRepairPatch(j)">审核补丁</button>
                 <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.table_merged_cell_review_ready" @click="adminReviewTableMergedCell(j)">审核表格</button>
+                <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.table_merged_cell_review_ready || j.table_reconstruction_confirmed_ready || Number(j.table_merged_cell_review_required_count || 0) > 0" @click="adminConfirmTableStructurePublish(j)">确认表格</button>
                 <button type="button" class="linkish" :disabled="!j.input_pdf_ready" @click="adminDownload(j.job_id, 'input', 'input.pdf')">原PDF</button>
                 <button type="button" class="linkish" :disabled="!j.partial_output_ready" @click="adminDownload(j.job_id, 'output_md', 'translated.md')">MD</button>
                 <button type="button" class="linkish" :disabled="!j.translated_pdf_ready" @click="adminDownload(j.job_id, 'output_pdf', 'translated.pdf')">译PDF</button>
                 <button type="button" class="linkish" :disabled="!j.repair_publish_report_ready" @click="adminDownload(j.job_id, 'repair_publish', 'repair_publish.md')">修复报告</button>
                 <button type="button" class="linkish" :disabled="!j.repair_patch_review_ready" @click="adminDownload(j.job_id, 'repair_patch_review', 'repair_patch_review.md')">补丁审核</button>
                 <button type="button" class="linkish" :disabled="!j.table_merged_cell_review_ready" @click="adminDownload(j.job_id, 'table_merged_cell_review', 'table_merged_cell_review.md')">表格确认</button>
+                <button type="button" class="linkish" :disabled="!j.table_structure_publish_ready" @click="adminDownload(j.job_id, 'table_structure_publish', 'table_structure_publish.md')">表格发布</button>
+                <button type="button" class="linkish" :disabled="!j.table_reconstruction_confirmed_ready" @click="adminDownload(j.job_id, 'table_reconstruction_confirmed', 'table_reconstruction_confirmed.json')">表格副本</button>
                 <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.repair_publish_report_ready || j.repair_published_full_ready" @click="adminConfirmRepairPublish(j)">确认修复</button>
                 <button type="button" class="linkish" :disabled="!j.repair_published_full_ready" @click="adminDownload(j.job_id, 'repair_published_full', 'published_full.md')">修复稿</button>
                 <button type="button" class="linkish" :disabled="!j.bundle_zip_ready" @click="adminDownload(j.job_id, 'bundle_zip', j.job_id + '.zip')">ZIP</button>

@@ -45,11 +45,13 @@ from pdf_translate.qa.repair import (
 from pdf_translate.qa.structure import build_structure_qa
 from pdf_translate.qa.table_reconstruction import (
     apply_table_merged_cell_review_decision,
+    build_confirmed_table_reconstruction,
     build_structure_hints_manifest,
     build_table_merged_cell_review,
     build_table_reconstruction_report,
     build_table_translation_hints,
     table_merged_cell_review_to_markdown,
+    write_table_structure_publish,
     write_table_merged_cell_review_decision,
 )
 from pdf_translate.qa.translation import build_translation_qa, translation_qa_to_markdown
@@ -1079,6 +1081,90 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("needs another crop", md_path.read_text(encoding="utf-8"))
             stored = json.loads(json_path.read_text(encoding="utf-8"))
             self.assertEqual(stored["candidate_reviews"][1]["human_decision"], "needs_revision")
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+
+    def test_table_structure_publish_uses_human_review_without_overwriting_source(self) -> None:
+        table_reconstruction = {
+            "schema_version": "table-reconstruction-v1",
+            "doc_id": "publish-doc",
+            "summary": {"table_count": 1},
+            "tables": [
+                {
+                    "table_id": "p1-b0000",
+                    "block_id": "p1-b0000",
+                    "page_no": 1,
+                    "merged_cell_candidates": [
+                        {
+                            "span_type": "colspan",
+                            "row_index": 0,
+                            "column_index": 0,
+                            "row_span": 1,
+                            "column_span": 3,
+                            "text": "Dataset metrics",
+                            "candidate_status": "visually_supported",
+                        },
+                        {
+                            "span_type": "rowspan",
+                            "row_index": 1,
+                            "column_index": 0,
+                            "row_span": 2,
+                            "column_span": 1,
+                            "text": "BERT",
+                            "candidate_status": "candidate",
+                        },
+                    ],
+                }
+            ],
+        }
+        review = build_table_merged_cell_review(table_reconstruction)
+        review = apply_table_merged_cell_review_decision(
+            review,
+            "tmc-0001-p1-b0000-r0c0",
+            decision="confirm",
+            reviewer="mentor",
+            reviewed_at="2026-07-06T01:00:00+00:00",
+        )
+        review = apply_table_merged_cell_review_decision(
+            review,
+            "tmc-0002-p1-b0000-r1c0",
+            decision="reject",
+            reviewer="mentor",
+            reviewed_at="2026-07-06T01:05:00+00:00",
+        )
+
+        confirmed = build_confirmed_table_reconstruction(table_reconstruction, review)
+
+        self.assertEqual(table_reconstruction["tables"][0]["merged_cell_candidates"][0]["candidate_status"], "visually_supported")
+        self.assertEqual(confirmed["confirmation_schema_version"], "table-structure-publish-v1")
+        self.assertEqual(confirmed["summary"]["confirmed_merged_cell_candidate_count"], 1)
+        self.assertEqual(confirmed["summary"]["rejected_merged_cell_candidate_count"], 1)
+        table = confirmed["tables"][0]
+        self.assertEqual(table["confirmed_merged_cell_candidate_count"], 1)
+        self.assertEqual(table["confirmed_merged_cell_candidates"][0]["candidate_status"], "human_confirmed")
+        self.assertTrue(table["confirmed_merged_cell_candidates"][0]["effective_for_publish"])
+        self.assertEqual(table["merged_cell_candidates"][1]["candidate_status"], "rejected")
+        self.assertFalse(table["merged_cell_candidates"][1]["effective_for_publish"])
+
+        root = Path.cwd() / "test-output" / "table-structure-publish"
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True)
+        try:
+            report = write_table_structure_publish(
+                table_reconstruction,
+                review,
+                root / "table_structure_publish.json",
+                root / "table_structure_publish.md",
+                confirm=True,
+                published_reconstruction_path=root / "table_reconstruction_confirmed.json",
+            )
+            self.assertTrue(report["summary"]["published"])
+            self.assertEqual(report["summary"]["applied_confirmed_count"], 1)
+            self.assertTrue((root / "table_reconstruction_confirmed.json").is_file())
+            published = json.loads((root / "table_reconstruction_confirmed.json").read_text(encoding="utf-8"))
+            self.assertEqual(published["tables"][0]["confirmed_merged_cell_candidate_count"], 1)
         finally:
             if root.exists():
                 shutil.rmtree(root)
@@ -4979,6 +5065,9 @@ class StructureIRTests(unittest.TestCase):
             table_reconstruction_path = work_dir / "output" / "table_reconstruction.json"
             table_merged_cell_review_path = work_dir / "output" / "table_merged_cell_review.json"
             table_merged_cell_review_md_path = work_dir / "output" / "table_merged_cell_review.md"
+            table_structure_publish_path = work_dir / "output" / "table_structure_publish.json"
+            table_structure_publish_md_path = work_dir / "output" / "table_structure_publish.md"
+            table_reconstruction_confirmed_path = work_dir / "output" / "table_reconstruction_confirmed.json"
             structure_hints_manifest_path = work_dir / "output" / "structure_hints_manifest.json"
             chunk_boundary_qa_path = work_dir / "output" / "chunk_boundary_qa.json"
             chunk_strategy_comparison_path = work_dir / "output" / "chunk_strategy_comparison.json"
@@ -5026,6 +5115,9 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(table_reconstruction_path.is_file())
             self.assertTrue(table_merged_cell_review_path.is_file())
             self.assertTrue(table_merged_cell_review_md_path.is_file())
+            self.assertTrue(table_structure_publish_path.is_file())
+            self.assertTrue(table_structure_publish_md_path.is_file())
+            self.assertFalse(table_reconstruction_confirmed_path.exists())
             self.assertTrue(structure_hints_manifest_path.is_file())
             self.assertTrue(chunk_boundary_qa_path.is_file())
             self.assertTrue(chunk_strategy_comparison_path.is_file())
@@ -5072,6 +5164,7 @@ class StructureIRTests(unittest.TestCase):
             qa = json.loads(qa_path.read_text(encoding="utf-8"))
             table_reconstruction = json.loads(table_reconstruction_path.read_text(encoding="utf-8"))
             table_merged_cell_review = json.loads(table_merged_cell_review_path.read_text(encoding="utf-8"))
+            table_structure_publish = json.loads(table_structure_publish_path.read_text(encoding="utf-8"))
             structure_hints_manifest = json.loads(structure_hints_manifest_path.read_text(encoding="utf-8"))
             chunk_boundary_qa = json.loads(chunk_boundary_qa_path.read_text(encoding="utf-8"))
             chunk_strategy_comparison = json.loads(chunk_strategy_comparison_path.read_text(encoding="utf-8"))
@@ -5152,6 +5245,14 @@ class StructureIRTests(unittest.TestCase):
                 "表格合并单元格候选人工确认清单",
                 table_merged_cell_review_md_path.read_text(encoding="utf-8"),
             )
+            self.assertEqual(table_structure_publish["schema_version"], "table-structure-publish-v1")
+            self.assertFalse(table_structure_publish["summary"]["confirmed"])
+            self.assertFalse(table_structure_publish["summary"]["published"])
+            self.assertEqual(table_structure_publish["summary"]["publish_status"], "pending_confirmation")
+            self.assertIn(
+                "表格结构人工确认发布",
+                table_structure_publish_md_path.read_text(encoding="utf-8"),
+            )
             self.assertEqual(structure_hints_manifest["schema_version"], "structure-hints-manifest-v1")
             self.assertGreaterEqual(structure_hints_manifest["summary"]["chunk_count"], 1)
             self.assertIn("structure_hint_chunk_count", structure_hints_manifest["summary"])
@@ -5225,6 +5326,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("document_ir", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("ocr_candidate_promotion", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("table_merged_cell_review", run_metrics["summary"]["stage_elapsed_ms"])
+            self.assertIn("table_structure_publish", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("repair_patch_review", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("repair_publish", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("translated_pdf", run_metrics["summary"]["stage_elapsed_ms"])
@@ -5246,6 +5348,9 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("table_merged_cell_review_count", metrics["quality"])
             self.assertIn("table_merged_cell_review_required_rate", metrics["rates"])
             self.assertIn("table_merged_cell_review_default_decision_counts", metrics["breakdowns"])
+            self.assertFalse(metrics["quality"]["table_structure_publish_confirmed"])
+            self.assertFalse(metrics["quality"]["table_structure_publish_published"])
+            self.assertIn("table_structure_publish_rate", metrics["rates"])
             self.assertIn("structure_hint_chunk_count", metrics["quality"])
             self.assertIn("structure_hint_empty_chunk_count", metrics["quality"])
             self.assertIn("structure_hint_avg_char_count", metrics["quality"])
@@ -5302,6 +5407,14 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(
                 metrics["evidence_files"]["table_merged_cell_review"],
                 "output/table_merged_cell_review.json",
+            )
+            self.assertEqual(
+                metrics["evidence_files"]["table_structure_publish"],
+                "output/table_structure_publish.json",
+            )
+            self.assertEqual(
+                metrics["evidence_files"]["table_reconstruction_confirmed"],
+                "output/table_reconstruction_confirmed.json",
             )
             self.assertEqual(
                 metrics["evidence_files"]["structure_hints_manifest"],
@@ -5373,6 +5486,9 @@ class StructureIRTests(unittest.TestCase):
                 "table_reconstruction.json",
                 "table_merged_cell_review.json",
                 "table_merged_cell_review.md",
+                "table_structure_publish.json",
+                "table_structure_publish.md",
+                "table_reconstruction_confirmed.json",
                 "chunk_boundary_qa.json",
                 "chunk_strategy_comparison.json",
                 "vision_route.json",
@@ -5450,6 +5566,9 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/table_reconstruction.json", rels)
             self.assertIn("output/table_merged_cell_review.json", rels)
             self.assertIn("output/table_merged_cell_review.md", rels)
+            self.assertIn("output/table_structure_publish.json", rels)
+            self.assertIn("output/table_structure_publish.md", rels)
+            self.assertIn("output/table_reconstruction_confirmed.json", rels)
             self.assertIn("output/structure_hints_manifest.json", rels)
             self.assertIn("output/chunk_boundary_qa.json", rels)
             self.assertIn("output/chunk_strategy_comparison.json", rels)
@@ -5499,6 +5618,12 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(
                 map_bundle_arcname("output/table_merged_cell_review.md"),
                 "质量/表格合并候选人工确认.md",
+            )
+            self.assertEqual(map_bundle_arcname("output/table_structure_publish.json"), "质量/表格结构确认发布.json")
+            self.assertEqual(map_bundle_arcname("output/table_structure_publish.md"), "质量/表格结构确认发布.md")
+            self.assertEqual(
+                map_bundle_arcname("output/table_reconstruction_confirmed.json"),
+                "质量/表格重建确认副本.json",
             )
             self.assertEqual(map_bundle_arcname("output/structure_hints_manifest.json"), "设置/结构提示清单.json")
             self.assertEqual(map_bundle_arcname("output/chunk_boundary_qa.json"), "质量/分段边界QA.json")

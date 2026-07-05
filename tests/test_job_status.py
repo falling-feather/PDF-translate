@@ -9,7 +9,10 @@ from typer.testing import CliRunner
 from fastapi import HTTPException
 
 from pdf_translate.cli import app
-from pdf_translate.server.routes_web import _confirm_repair_publish_for_record
+from pdf_translate.server.routes_web import (
+    _confirm_repair_publish_for_record,
+    _confirm_table_structure_publish_for_record,
+)
 from pdf_translate.server.jobs import JOB_STATUS_SCHEMA_VERSION, JobRegistry
 
 
@@ -239,6 +242,27 @@ class JobStatusSnapshotTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        (out / "table_structure_publish.md").write_text("# 表格发布", encoding="utf-8")
+        (out / "table_reconstruction_confirmed.json").write_text(
+            json.dumps({"schema_version": "table-reconstruction-v1"}),
+            encoding="utf-8",
+        )
+        (out / "table_structure_publish.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "table-structure-publish-v1",
+                    "summary": {
+                        "confirmed": True,
+                        "published": True,
+                        "publish_status": "published",
+                        "blocking_review_count": 0,
+                        "applied_confirmed_count": 1,
+                        "rollback_available": True,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         registry.update(rec.job_id, status="done", phase="done")
 
         merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
@@ -260,6 +284,16 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(merged[0]["table_merged_cell_review_human_confirmed_count"], 1)
         self.assertEqual(merged[0]["table_merged_cell_review_rejected_count"], 1)
         self.assertEqual(merged[0]["table_merged_cell_review_needs_revision_count"], 1)
+        self.assertTrue(merged[0]["table_structure_publish_ready"])
+        self.assertGreater(merged[0]["table_structure_publish_bytes"], 0)
+        self.assertTrue(merged[0]["table_structure_publish_confirmed"])
+        self.assertTrue(merged[0]["table_structure_publish_published"])
+        self.assertEqual(merged[0]["table_structure_publish_status"], "published")
+        self.assertEqual(merged[0]["table_structure_publish_blocking_count"], 0)
+        self.assertEqual(merged[0]["table_structure_publish_applied_count"], 1)
+        self.assertTrue(merged[0]["table_structure_publish_rollback_available"])
+        self.assertTrue(merged[0]["table_reconstruction_confirmed_ready"])
+        self.assertGreater(merged[0]["table_reconstruction_confirmed_bytes"], 0)
         self.assertTrue(merged[0]["repair_publish_confirmed"])
         self.assertTrue(merged[0]["repair_publish_published"])
         self.assertEqual(merged[0]["repair_publish_status"], "published_with_warnings")
@@ -391,6 +425,174 @@ class JobStatusSnapshotTests(unittest.TestCase):
         review_report = json.loads((out / "repair_patch_review.json").read_text(encoding="utf-8"))
         self.assertEqual(review_report["patch_reviews"][0]["human_decision"], "reject")
 
+    def test_confirm_table_structure_publish_for_completed_job_writes_confirmed_copy(self) -> None:
+        root = self._case_root("table-structure-publish-confirm")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        out = rec.work_dir / "output"
+        out.mkdir()
+        (out / "table_reconstruction.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "table-reconstruction-v1",
+                    "doc_id": "table-doc",
+                    "summary": {"table_count": 1, "merged_cell_candidate_count": 1},
+                    "tables": [
+                        {
+                            "table_id": "p1-b0000",
+                            "block_id": "p1-b0000",
+                            "merged_cell_candidates": [
+                                {
+                                    "span_type": "colspan",
+                                    "row_index": 0,
+                                    "column_index": 0,
+                                    "row_span": 1,
+                                    "column_span": 2,
+                                    "reason": "visual_span_supported",
+                                    "text": "Dataset metrics",
+                                    "candidate_status": "visually_supported",
+                                    "covered_cells": [
+                                        {"row_index": 0, "column_index": 0},
+                                        {"row_index": 0, "column_index": 1},
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (out / "table_merged_cell_review.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "table-merged-cell-review-v1",
+                    "summary": {
+                        "candidate_review_count": 1,
+                        "review_required_count": 0,
+                        "human_reviewed_count": 1,
+                        "human_confirmed_count": 1,
+                        "rejected_count": 0,
+                        "needs_revision_count": 0,
+                    },
+                    "candidate_reviews": [
+                        {
+                            "review_id": "tmc-0001-p1-b0000-r0c0",
+                            "table_id": "p1-b0000",
+                            "block_id": "p1-b0000",
+                            "span_type": "colspan",
+                            "row_index": 0,
+                            "column_index": 0,
+                            "row_span": 1,
+                            "column_span": 2,
+                            "reason": "visual_span_supported",
+                            "covered_cells": [
+                                {"row_index": 0, "column_index": 0},
+                                {"row_index": 0, "column_index": 1},
+                            ],
+                            "human_decision": "confirm",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        registry.update(rec.job_id, status="done", phase="done")
+
+        report = _confirm_table_structure_publish_for_record(rec)
+
+        self.assertTrue(report["summary"]["published"])
+        self.assertEqual(report["summary"]["publish_status"], "published")
+        self.assertEqual(report["summary"]["applied_confirmed_count"], 1)
+        self.assertTrue((out / "table_structure_publish.json").is_file())
+        self.assertTrue((out / "table_structure_publish.md").is_file())
+        self.assertTrue((out / "table_reconstruction_confirmed.json").is_file())
+        confirmed = json.loads((out / "table_reconstruction_confirmed.json").read_text(encoding="utf-8"))
+        self.assertEqual(confirmed["summary"]["confirmed_merged_cell_candidate_count"], 1)
+        self.assertEqual(confirmed["tables"][0]["confirmed_merged_cell_candidate_count"], 1)
+        merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
+        self.assertTrue(merged[0]["table_structure_publish_published"])
+        self.assertTrue(merged[0]["table_reconstruction_confirmed_ready"])
+
+    def test_confirm_table_structure_publish_blocks_and_removes_stale_copy(self) -> None:
+        root = self._case_root("table-structure-publish-review-gate")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        out = rec.work_dir / "output"
+        out.mkdir()
+        (out / "table_reconstruction_confirmed.json").write_text("stale", encoding="utf-8")
+        (out / "table_reconstruction.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "table-reconstruction-v1",
+                    "doc_id": "table-doc",
+                    "summary": {"table_count": 1, "merged_cell_candidate_count": 1},
+                    "tables": [
+                        {
+                            "table_id": "p1-b0000",
+                            "block_id": "p1-b0000",
+                            "merged_cell_candidates": [
+                                {
+                                    "span_type": "colspan",
+                                    "row_index": 0,
+                                    "column_index": 0,
+                                    "row_span": 1,
+                                    "column_span": 2,
+                                    "reason": "visual_span_supported",
+                                    "candidate_status": "visually_supported",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (out / "table_merged_cell_review.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "table-merged-cell-review-v1",
+                    "summary": {
+                        "candidate_review_count": 1,
+                        "review_required_count": 1,
+                        "human_reviewed_count": 1,
+                        "human_confirmed_count": 0,
+                        "rejected_count": 0,
+                        "needs_revision_count": 1,
+                    },
+                    "candidate_reviews": [
+                        {
+                            "review_id": "tmc-0001-p1-b0000-r0c0",
+                            "table_id": "p1-b0000",
+                            "block_id": "p1-b0000",
+                            "span_type": "colspan",
+                            "row_index": 0,
+                            "column_index": 0,
+                            "row_span": 1,
+                            "column_span": 2,
+                            "reason": "visual_span_supported",
+                            "human_decision": "needs_revision",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        registry.update(rec.job_id, status="done", phase="done")
+
+        with self.assertRaises(HTTPException) as ctx:
+            _confirm_table_structure_publish_for_record(rec)
+
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertFalse((out / "table_reconstruction_confirmed.json").exists())
+        publish_report = json.loads((out / "table_structure_publish.json").read_text(encoding="utf-8"))
+        self.assertTrue(publish_report["summary"]["confirmed"])
+        self.assertFalse(publish_report["summary"]["published"])
+        self.assertEqual(publish_report["summary"]["publish_status"], "blocked_review_required")
+        self.assertEqual(publish_report["summary"]["blocking_review_count"], 1)
+
     def test_artifact_summary_marks_done_without_translation_inconsistent(self) -> None:
         root = self._case_root("artifact-inconsistent")
         registry = JobRegistry(root)
@@ -410,6 +612,8 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertFalse(merged[0]["repair_publish_report_ready"])
         self.assertFalse(merged[0]["repair_patch_review_ready"])
         self.assertFalse(merged[0]["table_merged_cell_review_ready"])
+        self.assertFalse(merged[0]["table_structure_publish_ready"])
+        self.assertFalse(merged[0]["table_reconstruction_confirmed_ready"])
         self.assertFalse(merged[0]["repair_published_full_ready"])
         self.assertFalse(merged[0]["bundle_zip_ready"])
 
@@ -456,6 +660,8 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertFalse(merged[0]["repair_publish_report_ready"])
         self.assertEqual(merged[0]["repair_publish_open_issue_count"], 0)
         self.assertFalse(merged[0]["table_merged_cell_review_ready"])
+        self.assertFalse(merged[0]["table_structure_publish_ready"])
+        self.assertFalse(merged[0]["table_reconstruction_confirmed_ready"])
         self.assertFalse(merged[0]["repair_published_full_ready"])
         self.assertNotIn("status", merged[0])
 

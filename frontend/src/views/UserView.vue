@@ -166,6 +166,7 @@ function artifactSummary(j) {
   if (j.translated_pdf_ready) ready.push("译文 PDF");
   if (j.bilingual_html_ready) ready.push("双语 HTML");
   if (j.table_merged_cell_review_ready) ready.push("表格确认");
+  if (j.table_structure_publish_ready) ready.push("表格发布");
   if (j.repair_patch_review_ready) ready.push("补丁审核");
   if (j.repair_publish_report_ready) ready.push("修复报告");
   if (j.repair_published_full_ready) ready.push("修复发布稿");
@@ -449,6 +450,28 @@ async function reviewTableMergedCell(jid) {
   taskMap.value = { ...taskMap.value, [jid]: data };
   await loadMyJobs();
   alert("已更新表格合并候选审核");
+}
+
+async function confirmTableStructurePublish(jid) {
+  const job = taskMap.value[jid] || {};
+  const blockingReviews = Number(job.table_merged_cell_review_required_count || 0);
+  if (blockingReviews > 0) {
+    alert(`仍有 ${blockingReviews} 个表格合并候选未完成确认，请先处理表格审核。`);
+    return;
+  }
+  if (!window.confirm("确认生成表格结构副本？原始表格重建证据仍会保留。")) return;
+  const r = await fetch(`/api/jobs/${jid}/table-structure-publish/confirm`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatErrorPayload(data));
+    return;
+  }
+  taskMap.value = { ...taskMap.value, [jid]: data };
+  await loadMyJobs();
+  alert("已生成表格结构副本");
 }
 
 async function confirmRepairPublish(jid) {
@@ -843,6 +866,33 @@ onUnmounted(() => {
                   @click="reviewTableMergedCell(tid)"
                 >
                   审核表格
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done'"
+                  type="button"
+                  class="btn"
+                  :disabled="!taskMap[tid].table_merged_cell_review_ready || taskMap[tid].table_reconstruction_confirmed_ready || Number(taskMap[tid].table_merged_cell_review_required_count || 0) > 0"
+                  @click="confirmTableStructurePublish(tid)"
+                >
+                  确认表格结构
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].table_structure_publish_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/table-structure-publish.md`, `${tid}_table_structure_publish.md`)"
+                >
+                  表格发布
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].table_reconstruction_confirmed_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/table-reconstruction-confirmed.json`, `${tid}_table_reconstruction_confirmed.json`)"
+                >
+                  表格副本
                 </button>
                 <button
                   v-if="taskMap[tid].status === 'done'"

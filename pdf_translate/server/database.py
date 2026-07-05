@@ -380,6 +380,12 @@ def log_job_finished(
         "table_merged_cell_review": str((root / "output" / "table_merged_cell_review.json").resolve())
         if (root / "output" / "table_merged_cell_review.json").is_file()
         else None,
+        "table_structure_publish": str((root / "output" / "table_structure_publish.json").resolve())
+        if (root / "output" / "table_structure_publish.json").is_file()
+        else None,
+        "table_reconstruction_confirmed": str((root / "output" / "table_reconstruction_confirmed.json").resolve())
+        if (root / "output" / "table_reconstruction_confirmed.json").is_file()
+        else None,
         "repair_published_full": str((root / "output" / "published_full.md").resolve())
         if (root / "output" / "published_full.md").is_file()
         else None,

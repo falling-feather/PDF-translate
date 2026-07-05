@@ -12,6 +12,8 @@ DEFAULT_EVIDENCE_FILES = {
     "structure_qa": "output/structure_qa.json",
     "table_reconstruction": "output/table_reconstruction.json",
     "table_merged_cell_review": "output/table_merged_cell_review.json",
+    "table_structure_publish": "output/table_structure_publish.json",
+    "table_reconstruction_confirmed": "output/table_reconstruction_confirmed.json",
     "vision_route": "output/vision_route.json",
     "ocr_tasks": "output/ocr_tasks.json",
     "ocr_results": "output/ocr_results.json",
@@ -106,6 +108,7 @@ def build_experiment_metrics(
     structure_hints_manifest: dict[str, Any] | None = None,
     table_reconstruction: dict[str, Any] | None = None,
     table_merged_cell_review: dict[str, Any] | None = None,
+    table_structure_publish: dict[str, Any] | None = None,
     ocr_tasks: dict[str, Any] | None = None,
     ocr_results: dict[str, Any] | None = None,
     ocr_writeback: dict[str, Any] | None = None,
@@ -138,6 +141,7 @@ def build_experiment_metrics(
     chunk_strategy_summary = _summary(chunk_strategy_comparison)
     structure_hints_summary = _summary(structure_hints_manifest)
     table_merged_cell_review_summary = _summary(table_merged_cell_review)
+    table_structure_publish_summary = _summary(table_structure_publish)
     translation_summary = _summary(translation_qa)
     repair_summary = _summary(repair_plan)
     repair_request_summary = _summary(repair_requests)
@@ -289,6 +293,14 @@ def build_experiment_metrics(
     )
     table_merged_cell_review_bbox_evidence_counts = _counter_dict(
         table_merged_cell_review_summary.get("bbox_evidence_counts")
+    )
+    table_structure_publish_confirmed = _as_bool(table_structure_publish_summary.get("confirmed"))
+    table_structure_publish_published = _as_bool(table_structure_publish_summary.get("published"))
+    table_structure_publish_blocking_count = _as_int(
+        table_structure_publish_summary.get("blocking_review_count")
+    )
+    table_structure_publish_applied_count = _as_int(
+        table_structure_publish_summary.get("applied_confirmed_count")
     )
     table_caption_linked_count = _as_int(table_reconstruction_summary.get("caption_linked_table_count"))
     table_footnote_linked_count = _as_int(table_reconstruction_summary.get("footnote_linked_table_count"))
@@ -774,6 +786,10 @@ def build_experiment_metrics(
             "table_merged_cell_review_needs_revision_count": (
                 table_merged_cell_review_needs_revision_count
             ),
+            "table_structure_publish_confirmed": table_structure_publish_confirmed,
+            "table_structure_publish_published": table_structure_publish_published,
+            "table_structure_publish_blocking_count": table_structure_publish_blocking_count,
+            "table_structure_publish_applied_count": table_structure_publish_applied_count,
             "table_caption_linked_count": table_caption_linked_count,
             "table_footnote_linked_count": table_footnote_linked_count,
             "table_footnote_binding_count": table_footnote_binding_count,
@@ -1080,6 +1096,10 @@ def build_experiment_metrics(
             "table_merged_cell_review_human_reviewed_rate": _rate(
                 table_merged_cell_review_human_reviewed_count,
                 table_merged_cell_review_count,
+            ),
+            "table_structure_publish_rate": _rate(
+                int(table_structure_publish_published),
+                int(table_structure_publish_confirmed),
             ),
             "table_numeric_cell_rate": _rate(table_numeric_cell_count, table_cell_count),
             "table_caption_link_rate": _rate(table_caption_linked_count, table_count),
@@ -1403,6 +1423,7 @@ def write_experiment_metrics(
     structure_hints_manifest: dict[str, Any] | None = None,
     table_reconstruction: dict[str, Any] | None = None,
     table_merged_cell_review: dict[str, Any] | None = None,
+    table_structure_publish: dict[str, Any] | None = None,
     ocr_tasks: dict[str, Any] | None = None,
     ocr_results: dict[str, Any] | None = None,
     ocr_writeback: dict[str, Any] | None = None,
@@ -1432,6 +1453,7 @@ def write_experiment_metrics(
         structure_hints_manifest=structure_hints_manifest,
         table_reconstruction=table_reconstruction,
         table_merged_cell_review=table_merged_cell_review,
+        table_structure_publish=table_structure_publish,
         ocr_tasks=ocr_tasks,
         ocr_results=ocr_results,
         ocr_writeback=ocr_writeback,

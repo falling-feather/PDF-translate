@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from pdf_translate.extractors.document_ir import BlockIR, DocumentIR
 
 SCHEMA_VERSION = "table-reconstruction-v1"
 MERGED_CELL_REVIEW_SCHEMA_VERSION = "table-merged-cell-review-v1"
+TABLE_STRUCTURE_PUBLISH_SCHEMA_VERSION = "table-structure-publish-v1"
 
 _NUMBER_RE = re.compile(r"\b\d+(?:[.,]\d+)?%?")
 _UNIT_RE = re.compile(
@@ -1820,6 +1822,261 @@ def write_table_merged_cell_review_decision(
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
     markdown_path.write_text(table_merged_cell_review_to_markdown(updated), encoding="utf-8")
     return updated
+
+
+def _table_merged_review_key(item: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        str(item.get("table_id") or item.get("block_id") or ""),
+        str(item.get("span_type") or item.get("type") or "unknown"),
+        _nonnegative_int(item.get("row_index", item.get("row"))) or 0,
+        _nonnegative_int(item.get("column_index", item.get("col", item.get("column")))) or 0,
+        _positive_int(item.get("row_span")) or 1,
+        _positive_int(item.get("column_span")) or 1,
+        str(item.get("reason") or "unknown"),
+        tuple(sorted(_candidate_covered_set(item))),
+    )
+
+
+def _table_merged_cell_review_index(review_report: dict[str, Any] | None) -> dict[tuple[Any, ...], dict[str, Any]]:
+    if not isinstance(review_report, dict):
+        return {}
+    out: dict[tuple[Any, ...], dict[str, Any]] = {}
+    reviews = review_report.get("candidate_reviews") if isinstance(review_report.get("candidate_reviews"), list) else []
+    for item in reviews:
+        if isinstance(item, dict):
+            out[_table_merged_review_key(item)] = item
+    return out
+
+
+def build_confirmed_table_reconstruction(
+    table_reconstruction: dict[str, Any] | None,
+    table_merged_cell_review: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build a confirmed reconstruction copy from human-reviewed merged-cell candidates."""
+    if not isinstance(table_reconstruction, dict):
+        table_reconstruction = {}
+    confirmed = deepcopy(table_reconstruction)
+    review_index = _table_merged_cell_review_index(table_merged_cell_review)
+    tables = confirmed.get("tables") if isinstance(confirmed.get("tables"), list) else []
+    applied_confirmed_count = 0
+    rejected_candidate_count = 0
+    needs_revision_count = 0
+    pending_candidate_count = 0
+    tables_updated_count = 0
+    tables_with_confirmed_count = 0
+
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        table_id = str(table.get("table_id") or table.get("block_id") or "")
+        candidates = table.get("merged_cell_candidates") if isinstance(table.get("merged_cell_candidates"), list) else []
+        updated_candidates: list[dict[str, Any]] = []
+        confirmed_candidates: list[dict[str, Any]] = []
+        table_changed = False
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            item = deepcopy(candidate)
+            key_source = {
+                **item,
+                "table_id": table_id,
+            }
+            review = review_index.get(_table_merged_review_key(key_source))
+            decision = ""
+            if isinstance(review, dict):
+                try:
+                    decision = normalize_table_merged_cell_review_human_decision(review.get("human_decision"))
+                except ValueError:
+                    decision = "needs_revision"
+                item["review_id"] = str(review.get("review_id") or "")
+                item["human_decision"] = decision
+                item["human_comment"] = str(review.get("human_comment") or "")
+                item["reviewed_by"] = str(review.get("reviewed_by") or "")
+                item["reviewed_at"] = str(review.get("reviewed_at") or "")
+                item["confirmation_source"] = "table_merged_cell_review"
+            if decision == "confirm":
+                item["candidate_status"] = "human_confirmed"
+                item["confirmation_status"] = "human_confirmed"
+                item["effective_for_publish"] = True
+                confirmed_candidates.append(deepcopy(item))
+                applied_confirmed_count += 1
+                table_changed = True
+            elif decision == "reject":
+                item["candidate_status"] = "rejected"
+                item["confirmation_status"] = "rejected"
+                item["effective_for_publish"] = False
+                rejected_candidate_count += 1
+                table_changed = True
+            elif decision == "needs_revision":
+                item["confirmation_status"] = "needs_revision"
+                item["effective_for_publish"] = False
+                needs_revision_count += 1
+                table_changed = True
+            else:
+                item["confirmation_status"] = item.get("confirmation_status") or "pending_review"
+                item["effective_for_publish"] = False
+                pending_candidate_count += 1
+            updated_candidates.append(item)
+        if table_changed:
+            tables_updated_count += 1
+        if confirmed_candidates:
+            tables_with_confirmed_count += 1
+        table["merged_cell_candidates"] = updated_candidates
+        table["confirmed_merged_cell_candidates"] = confirmed_candidates
+        table["confirmed_merged_cell_candidate_count"] = len(confirmed_candidates)
+        table["merged_cell_candidate_status_counts"] = _count_candidate_statuses(updated_candidates)
+
+    summary = confirmed.get("summary") if isinstance(confirmed.get("summary"), dict) else {}
+    summary.update(
+        {
+            "source_schema_version": str(table_reconstruction.get("schema_version") or ""),
+            "confirmed_merged_cell_candidate_count": applied_confirmed_count,
+            "rejected_merged_cell_candidate_count": rejected_candidate_count,
+            "needs_revision_merged_cell_candidate_count": needs_revision_count,
+            "pending_merged_cell_candidate_count": pending_candidate_count,
+            "tables_updated_by_review_count": tables_updated_count,
+            "tables_with_confirmed_merged_cells": tables_with_confirmed_count,
+        }
+    )
+    confirmed["schema_version"] = SCHEMA_VERSION
+    confirmed["confirmation_schema_version"] = TABLE_STRUCTURE_PUBLISH_SCHEMA_VERSION
+    confirmed["summary"] = summary
+    return confirmed
+
+
+def build_table_structure_publish(
+    table_reconstruction: dict[str, Any] | None,
+    table_merged_cell_review: dict[str, Any] | None,
+    *,
+    confirm: bool = False,
+    published_reconstruction_path: Path | None = None,
+) -> dict[str, Any]:
+    if not isinstance(table_reconstruction, dict):
+        table_reconstruction = {}
+    if not isinstance(table_merged_cell_review, dict):
+        table_merged_cell_review = {}
+    review_summary = table_merged_cell_review.get("summary") if isinstance(table_merged_cell_review.get("summary"), dict) else {}
+    review_required_count = _nonnegative_int(review_summary.get("review_required_count")) or 0
+    needs_revision_count = _nonnegative_int(review_summary.get("needs_revision_count")) or 0
+    blocking_review_count = review_required_count
+    confirmed_reconstruction = build_confirmed_table_reconstruction(
+        table_reconstruction,
+        table_merged_cell_review,
+    )
+    confirmed_summary = confirmed_reconstruction.get("summary") if isinstance(confirmed_reconstruction.get("summary"), dict) else {}
+    published = bool(confirm and blocking_review_count == 0)
+    if not confirm:
+        publish_status = "pending_confirmation"
+    elif published:
+        publish_status = "published"
+    else:
+        publish_status = "blocked_review_required"
+
+    report = {
+        "schema_version": TABLE_STRUCTURE_PUBLISH_SCHEMA_VERSION,
+        "summary": {
+            "table_reconstruction_schema_version": str(table_reconstruction.get("schema_version") or ""),
+            "table_merged_cell_review_schema_version": str(table_merged_cell_review.get("schema_version") or ""),
+            "confirmed": bool(confirm),
+            "published": published,
+            "publish_status": publish_status,
+            "reason": "" if published else "table_merged_cell_review_required" if confirm else "pending_confirmation",
+            "candidate_review_count": _nonnegative_int(review_summary.get("candidate_review_count")) or 0,
+            "review_required_count": review_required_count,
+            "blocking_review_count": blocking_review_count,
+            "human_reviewed_count": _nonnegative_int(review_summary.get("human_reviewed_count")) or 0,
+            "human_confirmed_count": _nonnegative_int(review_summary.get("human_confirmed_count")) or 0,
+            "rejected_count": _nonnegative_int(review_summary.get("rejected_count")) or 0,
+            "needs_revision_count": needs_revision_count,
+            "applied_confirmed_count": _nonnegative_int(
+                confirmed_summary.get("confirmed_merged_cell_candidate_count")
+            )
+            or 0,
+            "rejected_candidate_count": _nonnegative_int(
+                confirmed_summary.get("rejected_merged_cell_candidate_count")
+            )
+            or 0,
+            "tables_updated_count": _nonnegative_int(
+                confirmed_summary.get("tables_updated_by_review_count")
+            )
+            or 0,
+            "rollback_available": True,
+            "published_reconstruction_path": published_reconstruction_path.as_posix()
+            if published and published_reconstruction_path is not None
+            else "",
+        },
+        "confirmed_reconstruction": confirmed_reconstruction if published else None,
+    }
+    return report
+
+
+def table_structure_publish_to_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    lines = [
+        "# 表格结构人工确认发布",
+        "",
+        "| 指标 | 值 |",
+        "| --- | --- |",
+        f"| 确认请求 | {bool(summary.get('confirmed'))} |",
+        f"| 发布状态 | {summary.get('publish_status') or '-'} |",
+        f"| 候选总数 | {summary.get('candidate_review_count', 0)} |",
+        f"| 阻断项 | {summary.get('blocking_review_count', 0)} |",
+        f"| 已人工复核 | {summary.get('human_reviewed_count', 0)} |",
+        f"| 已确认候选 | {summary.get('human_confirmed_count', 0)} |",
+        f"| 已拒绝候选 | {summary.get('rejected_count', 0)} |",
+        f"| 需修改/复查 | {summary.get('needs_revision_count', 0)} |",
+        f"| 已应用确认候选 | {summary.get('applied_confirmed_count', 0)} |",
+        f"| 更新表格数 | {summary.get('tables_updated_count', 0)} |",
+        f"| 发布副本 | {summary.get('published_reconstruction_path') or '-'} |",
+        "",
+        "> 说明：本报告只生成确认后的表格结构副本，不覆盖原始 table_reconstruction.json；PDF 重排和正式替换仍需后续流程消费该副本。",
+        "",
+    ]
+    if summary.get("publish_status") == "blocked_review_required":
+        lines.append("仍有表格合并候选未完成确认或被退回复查，暂不生成确认结构副本。")
+    elif summary.get("publish_status") == "pending_confirmation":
+        lines.append("尚未收到发布确认请求。")
+    else:
+        lines.append("已生成确认后的表格结构副本。")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_table_structure_publish(
+    table_reconstruction: dict[str, Any] | None,
+    table_merged_cell_review: dict[str, Any] | None,
+    json_path: Path,
+    markdown_path: Path,
+    *,
+    confirm: bool = False,
+    published_reconstruction_path: Path | None = None,
+) -> dict[str, Any]:
+    report = build_table_structure_publish(
+        table_reconstruction,
+        table_merged_cell_review,
+        confirm=confirm,
+        published_reconstruction_path=published_reconstruction_path,
+    )
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    if summary.get("published") and published_reconstruction_path is not None:
+        confirmed = report.get("confirmed_reconstruction")
+        if isinstance(confirmed, dict):
+            published_reconstruction_path.parent.mkdir(parents=True, exist_ok=True)
+            published_reconstruction_path.write_text(
+                json.dumps(confirmed, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+    elif published_reconstruction_path is not None and published_reconstruction_path.exists():
+        try:
+            published_reconstruction_path.unlink()
+        except OSError:
+            pass
+    json_report = dict(report)
+    json_report.pop("confirmed_reconstruction", None)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(json_report, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(table_structure_publish_to_markdown(json_report), encoding="utf-8")
+    return json_report
 
 
 def _chunk_block_ids(chunk: TextChunk) -> set[str]:

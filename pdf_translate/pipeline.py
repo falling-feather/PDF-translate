@@ -39,6 +39,7 @@ from pdf_translate.qa.table_reconstruction import (
     write_structure_hints_manifest,
     write_table_merged_cell_review,
     write_table_reconstruction_report,
+    write_table_structure_publish,
 )
 from pdf_translate.qa.translation import write_translation_qa
 from pdf_translate.rich_content import extract_page_rich_meta
@@ -356,6 +357,15 @@ def run_translate(
             out_dir / "table_merged_cell_review.json",
             out_dir / "table_merged_cell_review.md",
         )
+    with run_metrics.stage("table_structure_publish"):
+        table_structure_publish = write_table_structure_publish(
+            table_reconstruction,
+            table_merged_cell_review,
+            out_dir / "table_structure_publish.json",
+            out_dir / "table_structure_publish.md",
+            confirm=False,
+            published_reconstruction_path=out_dir / "table_reconstruction_confirmed.json",
+        )
     with run_metrics.stage("structure_chunking"):
         structure_chunks = build_structure_chunks(
             promoted_document_ir,
@@ -590,6 +600,7 @@ def run_translate(
             structure_hints_manifest=structure_hints_manifest,
             table_reconstruction=table_reconstruction,
             table_merged_cell_review=table_merged_cell_review,
+            table_structure_publish=table_structure_publish,
             ocr_tasks=ocr_tasks,
             ocr_results=ocr_results,
             ocr_writeback=ocr_writeback,
