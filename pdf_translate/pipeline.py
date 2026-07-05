@@ -36,6 +36,7 @@ from pdf_translate.qa.repair import (
 from pdf_translate.qa.structure import write_structure_qa
 from pdf_translate.qa.table_reconstruction import (
     build_table_translation_hints,
+    load_preferred_table_reconstruction,
     write_structure_hints_manifest,
     write_table_merged_cell_review,
     write_table_reconstruction_report,
@@ -465,6 +466,10 @@ def run_translate(
             mem.save_deferred_carry("")
 
     def _write_translation_qa_report() -> None:
+        downstream_table_reconstruction = load_preferred_table_reconstruction(
+            out_dir,
+            fallback=table_reconstruction,
+        )
         with run_metrics.stage("translation_qa"):
             qa_report = write_translation_qa(
                 chunks,
@@ -474,7 +479,7 @@ def run_translate(
                 glossary=mem.load_glossary(),
                 pending_review=mem.load_pending_review(),
                 document_ir=doc_ir,
-                table_reconstruction=table_reconstruction,
+                table_reconstruction=downstream_table_reconstruction,
             )
         with run_metrics.stage("repair_plan"):
             repair_plan = write_repair_plan(
@@ -534,7 +539,7 @@ def run_translate(
                 glossary=mem.load_glossary(),
                 pending_review=mem.load_pending_review(),
                 document_ir=doc_ir,
-                table_reconstruction=table_reconstruction,
+                table_reconstruction=downstream_table_reconstruction,
             )
         with run_metrics.stage("repair_publish", confirmed=publish_repairs):
             repair_publish = write_repair_publish(
@@ -564,7 +569,7 @@ def run_translate(
                 qa_report=qa_report,
                 repair_plan=repair_plan,
                 structure_qa=structure_qa,
-                table_reconstruction=table_reconstruction,
+                table_reconstruction=downstream_table_reconstruction,
                 title=f"{main_pdf.stem} 结构化译文",
                 source_pdf=main_pdf,
                 report_path=out_dir / "translated_pdf_report.json",

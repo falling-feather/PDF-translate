@@ -12,7 +12,9 @@ import fitz
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 
+from pdf_translate.chunking import TextChunk
 from pdf_translate.error_codes import PdfTranslateError, error_info_from_exception, make_error_info
+from pdf_translate.exporters.translated_pdf import write_translated_pdf
 from pdf_translate.export_filename import suggest_md_download_name, suggest_zip_bundle_name
 from pdf_translate.pipeline_cancel import cancel_flag_path
 from pdf_translate.qa.repair import (
@@ -21,6 +23,7 @@ from pdf_translate.qa.repair import (
     write_repair_publish,
 )
 from pdf_translate.qa.table_reconstruction import (
+    load_preferred_table_reconstruction,
     table_structure_publish_to_markdown,
     write_table_merged_cell_review,
     write_table_merged_cell_review_batch_decision,
@@ -58,6 +61,91 @@ def _read_json_artifact(path: Path, *, missing_message: str, invalid_message: st
     if not isinstance(raw, dict):
         raise HTTPException(409, invalid_message)
     return raw
+
+
+def _optional_json_dict_artifact(path: Path) -> dict[str, Any] | None:
+    if not path.is_file() or path.stat().st_size == 0:
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _optional_json_list_artifact(path: Path) -> list[Any] | None:
+    if not path.is_file() or path.stat().st_size == 0:
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return raw if isinstance(raw, list) else None
+
+
+def _load_chunks_for_pdf_refresh(out_dir: Path) -> list[TextChunk]:
+    manifest = _optional_json_list_artifact(out_dir / "chunks_manifest.json") or []
+    chunk_dir = out_dir / "chunks"
+    chunks: list[TextChunk] = []
+    for entry in manifest:
+        if not isinstance(entry, dict):
+            continue
+        chunk_id = str(entry.get("chunk_id") or "").strip()
+        if not chunk_id or not (chunk_dir / f"{chunk_id}.md").is_file():
+            continue
+        pages = []
+        for page in entry.get("pages_1based") or []:
+            try:
+                page_index = int(page) - 1
+            except (TypeError, ValueError):
+                continue
+            if page_index >= 0:
+                pages.append(page_index)
+        chunk = TextChunk(
+            chunk_id=chunk_id,
+            pages_0based=pages,
+            text=str(entry.get("text") or ""),
+            link_count=int(entry.get("link_count") or 0),
+            image_count=int(entry.get("image_count") or 0),
+        )
+        chunk.block_ids = list(entry.get("block_ids") or [])
+        chunk.block_types = entry.get("block_types") if isinstance(entry.get("block_types"), dict) else {}
+        chunk.warnings = list(entry.get("warnings") or [])
+        chunk.boundary_fragment_ids = list(entry.get("boundary_fragment_ids") or [])
+        chunk.structural_relation_ids = list(entry.get("structural_relation_ids") or [])
+        chunk.approx_tokens = int(entry.get("approx_tokens") or 0)
+        budget = entry.get("budget") if isinstance(entry.get("budget"), dict) else {}
+        chunk.budget_target_chars = int(budget.get("target_chars") or 0)
+        chunk.budget_max_chars = int(budget.get("max_chars") or 0)
+        chunk.split_reason = str(budget.get("split_reason") or "")
+        chunk.budget_overflow_chars = int(budget.get("overflow_chars") or 0)
+        chunk.budget_pressure = str(budget.get("pressure") or "")
+        chunks.append(chunk)
+    return chunks
+
+
+def _refresh_translated_pdf_with_confirmed_tables_for_record(rec: JobRecord) -> dict[str, Any] | None:
+    out_dir = rec.work_dir / "output"
+    table_reconstruction = load_preferred_table_reconstruction(out_dir)
+    summary = table_reconstruction.get("summary") if isinstance(table_reconstruction.get("summary"), dict) else {}
+    if summary.get("table_structure_source") != "confirmed":
+        return None
+    chunks = _load_chunks_for_pdf_refresh(out_dir)
+    if not chunks:
+        return None
+    source_pdf = rec.work_dir / "input.pdf"
+    return write_translated_pdf(
+        chunks,
+        out_dir / "chunks",
+        out_dir / "translated_full.pdf",
+        qa_report=_optional_json_dict_artifact(out_dir / "qa_report.json"),
+        repair_plan=_optional_json_dict_artifact(out_dir / "repair_plan.json"),
+        structure_qa=_optional_json_dict_artifact(out_dir / "structure_qa.json"),
+        table_reconstruction=table_reconstruction,
+        title=f"{Path(rec.original_filename or 'translated').stem} structured translation",
+        source_pdf=source_pdf if source_pdf.is_file() else None,
+        report_path=out_dir / "translated_pdf_report.json",
+    )
 
 
 def _read_or_create_repair_patch_review(out_dir: Path, repair_merge: dict[str, Any]) -> dict[str, Any]:
@@ -160,6 +248,27 @@ def _confirm_table_structure_publish_for_record(rec: JobRecord) -> dict[str, Any
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
     if not summary.get("published"):
         raise HTTPException(409, str(summary.get("reason") or "表格结构副本未生成"))
+    try:
+        pdf_report = _refresh_translated_pdf_with_confirmed_tables_for_record(rec)
+    except Exception as exc:  # noqa: BLE001 - optional PDF refresh must not block confirmation.
+        pdf_report = None
+        summary["translated_pdf_refresh_status"] = f"failed:{type(exc).__name__}"
+    else:
+        summary["translated_pdf_refresh_status"] = "refreshed" if pdf_report else "skipped_missing_translation_chunks"
+    if isinstance(pdf_report, dict):
+        pdf_summary = pdf_report.get("summary") if isinstance(pdf_report.get("summary"), dict) else {}
+        summary["translated_pdf_table_reconstruction_source"] = pdf_report.get("table_reconstruction_source") or ""
+        summary["translated_pdf_confirmed_candidate_reference_count"] = int(
+            pdf_summary.get("confirmed_merged_cell_candidate_reference_count") or 0
+        )
+    (out_dir / "table_structure_publish.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (out_dir / "table_structure_publish.md").write_text(
+        table_structure_publish_to_markdown(report),
+        encoding="utf-8",
+    )
     return report
 
 

@@ -323,6 +323,11 @@ def _table_cell_token_errors(
             "row_count": int(table.get("row_count") or 0),
             "column_count": int(table.get("column_count") or 0),
         }
+        merged_cell_candidates = [
+            candidate
+            for candidate in table.get("merged_cell_candidates") or []
+            if isinstance(candidate, dict)
+        ]
         for cell in table.get("cells") or []:
             if not isinstance(cell, dict):
                 continue
@@ -346,6 +351,8 @@ def _table_cell_token_errors(
                     "block_id": table.get("block_id") or table_id,
                     "page_no": table.get("page_no"),
                     "source_table_shape": source_shape,
+                    "merged_cell_candidates": merged_cell_candidates[:20],
+                    "merged_cell_candidate_count": len(merged_cell_candidates),
                     "row_index": row_index,
                     "column_index": column_index,
                     "role": cell.get("role") or "data",

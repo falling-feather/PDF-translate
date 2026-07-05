@@ -2031,6 +2031,96 @@ def build_confirmed_table_reconstruction(
     return confirmed
 
 
+def _read_json_dict_if_valid(path: Path) -> dict[str, Any] | None:
+    if not path.is_file() or path.stat().st_size == 0:
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def effective_table_reconstruction_view(
+    table_reconstruction: dict[str, Any] | None,
+    *,
+    source: str | None = None,
+) -> dict[str, Any]:
+    """Return a downstream-facing table reconstruction view."""
+    if not isinstance(table_reconstruction, dict):
+        return {}
+    view = deepcopy(table_reconstruction)
+    inferred_source = source or (
+        "confirmed" if str(view.get("confirmation_schema_version") or "") else "source"
+    )
+    tables = view.get("tables") if isinstance(view.get("tables"), list) else []
+    merged_candidates: list[dict[str, Any]] = []
+    confirmed_candidate_count = 0
+    tables_with_confirmed = 0
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        raw_candidates = (
+            table.get("merged_cell_candidates")
+            if isinstance(table.get("merged_cell_candidates"), list)
+            else []
+        )
+        confirmed_candidates = (
+            table.get("confirmed_merged_cell_candidates")
+            if isinstance(table.get("confirmed_merged_cell_candidates"), list)
+            else []
+        )
+        if inferred_source == "confirmed":
+            effective_candidates = [candidate for candidate in confirmed_candidates if isinstance(candidate, dict)]
+            table["raw_merged_cell_candidate_count"] = len(
+                [candidate for candidate in raw_candidates if isinstance(candidate, dict)]
+            )
+            table["merged_cell_candidates"] = deepcopy(effective_candidates)
+            table["merged_cell_candidate_count"] = len(effective_candidates)
+            table["effective_merged_cell_candidate_count"] = len(effective_candidates)
+        else:
+            effective_candidates = [candidate for candidate in raw_candidates if isinstance(candidate, dict)]
+        confirmed_count = len([candidate for candidate in confirmed_candidates if isinstance(candidate, dict)])
+        confirmed_candidate_count += confirmed_count
+        if confirmed_count:
+            tables_with_confirmed += 1
+        merged_candidates.extend(effective_candidates)
+
+    summary = view.get("summary") if isinstance(view.get("summary"), dict) else {}
+    summary["table_structure_source"] = inferred_source
+    summary["effective_merged_cell_candidate_count"] = len(merged_candidates)
+    summary["merged_cell_candidate_count"] = len(merged_candidates)
+    summary["merged_cell_candidate_type_counts"] = _count_candidate_types(merged_candidates)
+    summary["merged_cell_candidate_reason_counts"] = _count_candidate_reasons(merged_candidates)
+    summary["merged_cell_candidate_status_counts"] = _count_candidate_statuses(merged_candidates)
+    summary["merged_cell_candidate_visual_evidence_counts"] = _count_candidate_visual_evidence_levels(
+        merged_candidates
+    )
+    summary["merged_cell_candidate_bbox_evidence_counts"] = _count_candidate_evidence_statuses(
+        merged_candidates
+    )
+    if inferred_source == "confirmed":
+        summary["confirmed_merged_cell_candidate_count"] = confirmed_candidate_count
+        summary["tables_with_confirmed_merged_cells"] = tables_with_confirmed
+    view["summary"] = summary
+    return view
+
+
+def load_preferred_table_reconstruction(
+    output_dir: Path,
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    confirmed = _read_json_dict_if_valid(output_dir / "table_reconstruction_confirmed.json")
+    if confirmed is not None:
+        return effective_table_reconstruction_view(confirmed, source="confirmed")
+    if isinstance(fallback, dict):
+        return effective_table_reconstruction_view(fallback, source="source")
+    source_report = _read_json_dict_if_valid(output_dir / "table_reconstruction.json")
+    if source_report is not None:
+        return effective_table_reconstruction_view(source_report, source="source")
+    return {}
+
+
 def build_table_structure_publish(
     table_reconstruction: dict[str, Any] | None,
     table_merged_cell_review: dict[str, Any] | None,
@@ -2118,6 +2208,14 @@ def table_structure_publish_to_markdown(report: dict[str, Any]) -> str:
         "",
         "> 说明：本报告只生成确认后的表格结构副本，不覆盖原始 table_reconstruction.json；PDF 重排和正式替换仍需后续流程消费该副本。",
         "",
+    ]
+    lines[15:15] = [
+        f"| PDF 刷新状态 | {summary.get('translated_pdf_refresh_status') or '-'} |",
+        f"| PDF 表格结构来源 | {summary.get('translated_pdf_table_reconstruction_source') or '-'} |",
+        (
+            "| PDF 已确认候选引用 | "
+            f"{summary.get('translated_pdf_confirmed_candidate_reference_count', 0)} |"
+        ),
     ]
     if summary.get("publish_status") == "blocked_review_required":
         lines.append("仍有表格合并候选未完成确认或被退回复查，暂不生成确认结构副本。")

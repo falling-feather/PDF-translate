@@ -41,6 +41,12 @@ TABLE_RECONSTRUCTION_SUMMARY_FIELDS = [
     "table_footnote_bound_cell_count",
     "table_footnote_unbound_count",
     "table_footnote_table_level_count",
+    "effective_merged_cell_candidate_count",
+    "confirmed_merged_cell_candidate_count",
+    "rejected_merged_cell_candidate_count",
+    "needs_revision_merged_cell_candidate_count",
+    "pending_merged_cell_candidate_count",
+    "tables_with_confirmed_merged_cells",
 ]
 
 
@@ -164,6 +170,18 @@ def _summary(report: dict[str, Any] | None) -> dict[str, Any]:
     return summary if isinstance(summary, dict) else {}
 
 
+def _table_reconstruction_source(table_reconstruction: dict[str, Any] | None) -> str:
+    if not isinstance(table_reconstruction, dict):
+        return "missing"
+    summary = table_reconstruction.get("summary") if isinstance(table_reconstruction.get("summary"), dict) else {}
+    source = str(summary.get("table_structure_source") or "").strip()
+    if source:
+        return source
+    if str(table_reconstruction.get("confirmation_schema_version") or ""):
+        return "confirmed"
+    return "source"
+
+
 def _int_summary_fields(summary: dict[str, Any], fields: list[str]) -> dict[str, int]:
     out: dict[str, int] = {}
     for field in fields:
@@ -241,6 +259,9 @@ def _table_structure_context(chunk: TextChunk, table_reconstruction: dict[str, A
         "merged_cell_candidate_reference_count": sum(
             len(table.get("merged_cell_candidates") or []) for table in selected
         ),
+        "confirmed_merged_cell_candidate_reference_count": sum(
+            len(table.get("confirmed_merged_cell_candidates") or []) for table in selected
+        ),
         "continued_table_group_ids": [
             str(group.get("group_id") or "") for group in selected_groups if str(group.get("group_id") or "")
         ],
@@ -270,6 +291,9 @@ def _structure_context_lines(chunk_report: dict[str, Any]) -> list[str]:
     merged_candidate_count = int(chunk_report.get("merged_cell_candidate_reference_count") or 0)
     if merged_candidate_count:
         lines.append(f"Merged-cell candidates: {merged_candidate_count}")
+    confirmed_candidate_count = int(chunk_report.get("confirmed_merged_cell_candidate_reference_count") or 0)
+    if confirmed_candidate_count:
+        lines.append(f"Confirmed merged-cell candidates: {confirmed_candidate_count}")
     group_ids = [str(item) for item in chunk_report.get("continued_table_group_ids") or [] if str(item)]
     if group_ids:
         lines.append(
@@ -494,6 +518,7 @@ def build_translated_pdf_report(
     source_footnote_cell_binding_count = 0
     source_footnote_bound_cell_count = 0
     merged_cell_candidate_reference_count = 0
+    confirmed_merged_cell_candidate_reference_count = 0
     continued_table_group_reference_count = 0
     structural_relation_reference_count = 0
 
@@ -510,6 +535,7 @@ def build_translated_pdf_report(
                 "source_footnote_count",
                 "source_footnote_cell_binding_count",
                 "merged_cell_candidate_reference_count",
+                "confirmed_merged_cell_candidate_reference_count",
                 "continued_table_group_count",
                 "structural_relation_count",
             )
@@ -523,6 +549,9 @@ def build_translated_pdf_report(
         source_footnote_cell_binding_count += int(structure_context["source_footnote_cell_binding_count"])
         source_footnote_bound_cell_count += int(structure_context["source_footnote_bound_cell_count"])
         merged_cell_candidate_reference_count += int(structure_context["merged_cell_candidate_reference_count"])
+        confirmed_merged_cell_candidate_reference_count += int(
+            structure_context["confirmed_merged_cell_candidate_reference_count"]
+        )
         continued_table_group_reference_count += int(structure_context["continued_table_group_count"])
         structural_relation_reference_count += int(structure_context["structural_relation_count"])
         if not translation:
@@ -544,6 +573,12 @@ def build_translated_pdf_report(
         "schema_version": SCHEMA_VERSION,
         "title": title,
         "source_pdf": str(source_pdf) if source_pdf is not None else "",
+        "table_reconstruction_source": _table_reconstruction_source(table_reconstruction),
+        "table_reconstruction_confirmation_schema_version": str(
+            (table_reconstruction or {}).get("confirmation_schema_version") or ""
+        )
+        if isinstance(table_reconstruction, dict)
+        else "",
         "summary": {
             "generated": False,
             "chunk_count": len(chunks),
@@ -561,6 +596,9 @@ def build_translated_pdf_report(
             "source_footnote_cell_binding_count": source_footnote_cell_binding_count,
             "source_footnote_bound_cell_count": source_footnote_bound_cell_count,
             "merged_cell_candidate_reference_count": merged_cell_candidate_reference_count,
+            "confirmed_merged_cell_candidate_reference_count": (
+                confirmed_merged_cell_candidate_reference_count
+            ),
             "continued_table_group_reference_count": continued_table_group_reference_count,
             "structural_relation_reference_count": structural_relation_reference_count,
             "page_count": 0,

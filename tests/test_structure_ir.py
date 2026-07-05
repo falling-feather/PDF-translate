@@ -51,6 +51,8 @@ from pdf_translate.qa.table_reconstruction import (
     build_table_merged_cell_review,
     build_table_reconstruction_report,
     build_table_translation_hints,
+    effective_table_reconstruction_view,
+    load_preferred_table_reconstruction,
     table_merged_cell_review_to_markdown,
     write_table_merged_cell_review_batch_decision,
     write_table_merged_cell_review_decision,
@@ -1272,6 +1274,70 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue((root / "table_reconstruction_confirmed.json").is_file())
             published = json.loads((root / "table_reconstruction_confirmed.json").read_text(encoding="utf-8"))
             self.assertEqual(published["tables"][0]["confirmed_merged_cell_candidate_count"], 1)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+
+    def test_preferred_table_reconstruction_uses_confirmed_effective_view(self) -> None:
+        root = Path.cwd() / "test-output" / "preferred-table-reconstruction"
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True)
+        raw = {
+            "schema_version": "table-reconstruction-v1",
+            "summary": {"merged_cell_candidate_count": 2},
+            "tables": [
+                {
+                    "table_id": "p1-b0000",
+                    "block_id": "p1-b0000",
+                    "page_no": 1,
+                    "merged_cell_candidates": [
+                        {"span_type": "colspan", "candidate_status": "candidate", "reason": "raw_a"},
+                        {"span_type": "rowspan", "candidate_status": "candidate", "reason": "raw_b"},
+                    ],
+                }
+            ],
+        }
+        confirmed = {
+            **raw,
+            "confirmation_schema_version": "table-structure-publish-v1",
+            "summary": {"confirmed_merged_cell_candidate_count": 1},
+            "tables": [
+                {
+                    **raw["tables"][0],
+                    "confirmed_merged_cell_candidates": [
+                        {
+                            "span_type": "colspan",
+                            "candidate_status": "human_confirmed",
+                            "reason": "confirmed_a",
+                        }
+                    ],
+                }
+            ],
+        }
+        try:
+            (root / "table_reconstruction.json").write_text(json.dumps(raw), encoding="utf-8")
+            (root / "table_reconstruction_confirmed.json").write_text(
+                json.dumps(confirmed),
+                encoding="utf-8",
+            )
+
+            preferred = load_preferred_table_reconstruction(root, fallback=raw)
+
+            self.assertEqual(preferred["summary"]["table_structure_source"], "confirmed")
+            self.assertEqual(preferred["summary"]["merged_cell_candidate_count"], 1)
+            self.assertEqual(preferred["summary"]["confirmed_merged_cell_candidate_count"], 1)
+            self.assertEqual(len(preferred["tables"][0]["merged_cell_candidates"]), 1)
+            self.assertEqual(preferred["tables"][0]["raw_merged_cell_candidate_count"], 2)
+            self.assertEqual(raw["summary"]["merged_cell_candidate_count"], 2)
+
+            (root / "table_reconstruction_confirmed.json").write_text("{bad", encoding="utf-8")
+            fallback = load_preferred_table_reconstruction(root, fallback=raw)
+            self.assertEqual(fallback["summary"]["table_structure_source"], "source")
+            self.assertEqual(fallback["summary"]["merged_cell_candidate_count"], 2)
+
+            direct = effective_table_reconstruction_view(confirmed)
+            self.assertEqual(direct["summary"]["table_structure_source"], "confirmed")
         finally:
             if root.exists():
                 shutil.rmtree(root)
@@ -5104,6 +5170,73 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(saved["schema_version"], "translated-pdf-report-v1")
             self.assertEqual(saved["summary"]["qa_issue_count"], 1)
             self.assertEqual(saved["summary"]["repair_item_count"], 1)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
+    def test_translated_pdf_report_marks_confirmed_table_reconstruction(self) -> None:
+        root = Path.cwd() / "test-output" / "translated-pdf-confirmed-source"
+        if root.exists():
+            shutil.rmtree(root)
+        chunk_dir = root / "chunks"
+        chunk_dir.mkdir(parents=True)
+        try:
+            chunk = TextChunk(
+                chunk_id="c0000",
+                pages_0based=[0],
+                text="Table text",
+                link_count=0,
+                image_count=0,
+            )
+            chunk.block_ids = ["p1-b0000"]
+            (chunk_dir / "c0000.md").write_text(
+                "| Header | Value |\n| --- | --- |\n| A | 1 |\n",
+                encoding="utf-8",
+            )
+            confirmed = effective_table_reconstruction_view(
+                {
+                    "schema_version": "table-reconstruction-v1",
+                    "confirmation_schema_version": "table-structure-publish-v1",
+                    "summary": {"confirmed_merged_cell_candidate_count": 1},
+                    "tables": [
+                        {
+                            "table_id": "p1-b0000",
+                            "block_id": "p1-b0000",
+                            "page_no": 1,
+                            "merged_cell_candidates": [
+                                {"span_type": "colspan", "reason": "raw"},
+                                {"span_type": "rowspan", "reason": "raw"},
+                            ],
+                            "confirmed_merged_cell_candidates": [
+                                {
+                                    "span_type": "colspan",
+                                    "candidate_status": "human_confirmed",
+                                    "reason": "confirmed",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+
+            report = write_translated_pdf(
+                [chunk],
+                chunk_dir,
+                root / "translated_full.pdf",
+                table_reconstruction=confirmed,
+                title="Confirmed PDF",
+                report_path=root / "translated_pdf_report.json",
+            )
+
+            self.assertEqual(report["table_reconstruction_source"], "confirmed")
+            self.assertEqual(report["summary"]["merged_cell_candidate_reference_count"], 1)
+            self.assertEqual(report["summary"]["confirmed_merged_cell_candidate_reference_count"], 1)
+            self.assertEqual(report["summary"]["confirmed_merged_cell_candidate_count"], 1)
+            saved = json.loads((root / "translated_pdf_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["table_reconstruction_source"], "confirmed")
         finally:
             if root.exists():
                 shutil.rmtree(root)

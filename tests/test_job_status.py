@@ -500,6 +500,28 @@ class JobStatusSnapshotTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        chunk_dir = out / "chunks"
+        chunk_dir.mkdir()
+        (chunk_dir / "c0000.md").write_text(
+            "| Header | Value |\n| --- | --- |\n| Dataset metrics | 91.2 |\n",
+            encoding="utf-8",
+        )
+        (out / "chunks_manifest.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "chunk_id": "c0000",
+                        "pages_1based": [1],
+                        "link_count": 0,
+                        "image_count": 0,
+                        "block_ids": ["p1-b0000"],
+                        "structural_relation_ids": [],
+                        "budget": {},
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
         registry.update(rec.job_id, status="done", phase="done")
 
         report = _confirm_table_structure_publish_for_record(rec)
@@ -513,6 +535,16 @@ class JobStatusSnapshotTests(unittest.TestCase):
         confirmed = json.loads((out / "table_reconstruction_confirmed.json").read_text(encoding="utf-8"))
         self.assertEqual(confirmed["summary"]["confirmed_merged_cell_candidate_count"], 1)
         self.assertEqual(confirmed["tables"][0]["confirmed_merged_cell_candidate_count"], 1)
+        self.assertEqual(report["summary"]["translated_pdf_refresh_status"], "refreshed")
+        self.assertEqual(report["summary"]["translated_pdf_table_reconstruction_source"], "confirmed")
+        self.assertEqual(report["summary"]["translated_pdf_confirmed_candidate_reference_count"], 1)
+        self.assertTrue((out / "translated_full.pdf").is_file())
+        translated_pdf_report = json.loads((out / "translated_pdf_report.json").read_text(encoding="utf-8"))
+        self.assertEqual(translated_pdf_report["table_reconstruction_source"], "confirmed")
+        self.assertEqual(
+            translated_pdf_report["summary"]["confirmed_merged_cell_candidate_reference_count"],
+            1,
+        )
         merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
         self.assertTrue(merged[0]["table_structure_publish_published"])
         self.assertTrue(merged[0]["table_reconstruction_confirmed_ready"])
