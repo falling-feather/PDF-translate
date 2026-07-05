@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -133,6 +134,130 @@ def _structured_result_fields(source: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _is_table_task(task: dict[str, Any]) -> bool:
+    return (
+        str(task.get("target_structure_type") or "") == "table"
+        or str(task.get("block_type") or "") == "table"
+        or str(task.get("layout_scope") or "") == "table_region"
+        or isinstance(task.get("table_context"), dict)
+    )
+
+
+def _pipe_table_rows(text: str) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if "|" not in line:
+            continue
+        parts = [part.strip() for part in line.strip("|").split("|")]
+        if len(parts) < 2:
+            continue
+        if all(part and set(part) <= {"-", ":", " "} for part in parts):
+            continue
+        rows.append(parts)
+    if len(rows) < 2:
+        return []
+    width = max(len(row) for row in rows)
+    return [row + [""] * (width - len(row)) for row in rows]
+
+
+def _whitespace_table_rows(text: str, expected_columns: int) -> list[list[str]]:
+    if expected_columns < 2:
+        return []
+    rows: list[list[str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "\t" in line:
+            parts = [part.strip() for part in line.split("\t") if part.strip()]
+        else:
+            parts = [part.strip() for part in re.split(r"\s{2,}", line) if part.strip()]
+            if len(parts) < expected_columns:
+                parts = [part.strip() for part in line.split() if part.strip()]
+        if len(parts) != expected_columns:
+            return []
+        rows.append(parts)
+    return rows if len(rows) >= 2 else []
+
+
+def _positive_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value if value > 0 else 0
+    if isinstance(value, float):
+        return int(value) if value > 0 else 0
+    if isinstance(value, str):
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            return 0
+        return parsed if parsed > 0 else 0
+    return 0
+
+
+def _estimated_cell_bboxes(rows: list[list[str]], bbox: list[float]) -> list[dict[str, Any]]:
+    if len(bbox) != 4 or not rows:
+        return []
+    row_count = len(rows)
+    column_count = max((len(row) for row in rows), default=0)
+    if row_count <= 0 or column_count <= 0:
+        return []
+    x0, y0, x1, y1 = bbox
+    width = (x1 - x0) / column_count
+    height = (y1 - y0) / row_count
+    out: list[dict[str, Any]] = []
+    for row_index, row in enumerate(rows):
+        for col_index, _ in enumerate(row):
+            out.append(
+                {
+                    "row": row_index,
+                    "col": col_index,
+                    "bbox": [
+                        round(x0 + width * col_index, 2),
+                        round(y0 + height * row_index, 2),
+                        round(x0 + width * (col_index + 1), 2),
+                        round(y0 + height * (row_index + 1), 2),
+                    ],
+                    "estimated": True,
+                }
+            )
+    return out
+
+
+def _infer_structured_table_from_text(text: str, task: dict[str, Any], bbox: list[float]) -> dict[str, Any]:
+    if not _is_table_task(task):
+        return {}
+    table_context = task.get("table_context") if isinstance(task.get("table_context"), dict) else {}
+    expected_columns = _positive_int(table_context.get("column_count"))
+    rows = _pipe_table_rows(text) or _whitespace_table_rows(text, expected_columns)
+    if not rows:
+        return {}
+    column_count = max(len(row) for row in rows)
+    structured_cells: list[dict[str, Any]] = []
+    for row_index, row in enumerate(rows):
+        for col_index, value in enumerate(row):
+            cell: dict[str, Any] = {
+                "row": row_index,
+                "col": col_index,
+                "text": value,
+                "source": "local_text_table_parser",
+            }
+            if row_index == 0:
+                cell["role"] = "header"
+            structured_cells.append(cell)
+    inferred: dict[str, Any] = {
+        "structured_cells": structured_cells,
+        "row_count": len(rows),
+        "column_count": column_count,
+    }
+    cell_bboxes = _estimated_cell_bboxes(rows, bbox)
+    if cell_bboxes:
+        inferred["cell_bboxes"] = cell_bboxes
+    return inferred
+
+
 def _item_count(value: Any) -> int:
     if isinstance(value, list):
         return len(value)
@@ -205,6 +330,13 @@ def _candidate(
     if subtarget:
         candidate["subtarget"] = _json_copy(subtarget)
     candidate.update(_structured_result_fields(result))
+    if "structured_cells" not in candidate:
+        inferred = _infer_structured_table_from_text(text, task, bbox)
+        if inferred:
+            candidate.update(inferred)
+            candidate["warnings"].append("structured_table_inferred_from_text")
+            if "cell_bboxes" in inferred:
+                candidate["warnings"].append("cell_bboxes_estimated_from_region")
     return candidate
 
 

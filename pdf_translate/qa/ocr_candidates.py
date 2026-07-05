@@ -29,6 +29,10 @@ STRUCTURED_FORMULA_PASS = "passed"
 STRUCTURED_FORMULA_REVIEW = "needs_review"
 STRUCTURED_FORMULA_BLOCKED = "blocked"
 STRUCTURED_FORMULA_NOT_APPLICABLE = "not_applicable"
+TRACE_ONLY_WARNINGS = {
+    "structured_table_inferred_from_text",
+    "cell_bboxes_estimated_from_region",
+}
 
 
 def _json_copy(value: Any) -> Any:
@@ -132,6 +136,12 @@ def _string_items(value: Any) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [_normalized_text(value)]
     return []
+
+
+def _actionable_warnings(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item) and str(item) not in TRACE_ONLY_WARNINGS]
 
 
 def _cell_text(cell: Any) -> str:
@@ -443,7 +453,7 @@ def _assessment(item: dict[str, Any], *, review_confidence: float) -> dict[str, 
         and block_type == "formula"
     ):
         reasons.append("needs_formula_structure_review")
-    if item.get("warnings"):
+    if _actionable_warnings(item.get("warnings")):
         reasons.append("engine_warnings_present")
 
     if blockers:

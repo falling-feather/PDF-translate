@@ -1989,6 +1989,102 @@ class StructureIRTests(unittest.TestCase):
         promoted_meta = promotion["promoted_document_ir"]["pages"][0]["blocks"][0]["meta"]["ocr_promotions"][0]
         self.assertEqual(promoted_meta["table_footnotes"][0]["marker"], "*")
 
+    def test_table_ocr_plain_text_can_be_locally_structured(self) -> None:
+        doc_ir = DocumentIR(
+            doc_id="plain-text-table-ocr",
+            source_pdf="plain-text-table-ocr.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text="Metric Accuracy\nA 91.2",
+                    image_count=1,
+                    warnings=["low_text_image_heavy_page", "table_like_content"],
+                    meta={"text_char_count": 18, "text_area_ratio": 0.02, "image_area_ratio": 0.5},
+                    blocks=[
+                        BlockIR(
+                            "p1-b0000",
+                            1,
+                            "table",
+                            "Metric Accuracy\nA 91.2",
+                            (60, 540, 500, 620),
+                            0,
+                            locked_tokens=["91.2"],
+                            meta={"table": {"row_count": 2, "column_count": 2, "confidence": "medium"}},
+                        ),
+                    ],
+                )
+            ],
+        )
+        route = {
+            "schema_version": "vision-route-v1",
+            "doc_id": doc_ir.doc_id,
+            "summary": {},
+            "pages": [
+                {
+                    "page_no": 1,
+                    "action": "local_ocr",
+                    "risk_level": "high",
+                    "risk_score": 0.8,
+                    "reasons": ["possible_image_table"],
+                    "evidence": {
+                        "page_preview_path": "vision_pages/page-0001.png",
+                        "region_crops": [
+                            {
+                                "block_id": "p1-b0000",
+                                "block_type": "table",
+                                "crop_path": "vision_crops/page-0001/p1-b0000-table.png",
+                                "bbox": [60, 540, 500, 620],
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+        manifest = build_ocr_task_manifest(doc_ir, route)
+        table_task = manifest["tasks"][0]
+        results = build_ocr_results_payload(
+            manifest,
+            {
+                "schema_version": "ocr-results-v1",
+                "results": [
+                    {
+                        "task_id": table_task["task_id"],
+                        "status": "succeeded",
+                        "text": "| Metric | Accuracy |\n| --- | --- |\n| A | 91.2 |",
+                        "confidence": 0.9,
+                        "engine": "plain_text_table_ocr",
+                        "language": "en",
+                        "bbox": [60, 540, 500, 620],
+                    }
+                ],
+            },
+        )
+
+        built = build_ocr_writeback(doc_ir, manifest, results)
+        candidate = built["augmented_document_ir"]["pages"][0]["blocks"][0]["meta"]["ocr_candidates"][0]
+        self.assertEqual(built["summary"]["structured_result_writeback_count"], 1)
+        self.assertEqual(candidate["structured_cells"][0]["source"], "local_text_table_parser")
+        self.assertEqual(candidate["structured_cells"][3]["text"], "91.2")
+        self.assertEqual(candidate["cell_bboxes"][3]["row"], 1)
+        self.assertIn("structured_table_inferred_from_text", candidate["warnings"])
+        self.assertIn("cell_bboxes_estimated_from_region", candidate["warnings"])
+
+        candidate_qa = build_ocr_candidate_qa(built["augmented_document_ir"], built)
+        self.assertEqual(candidate_qa["summary"]["promotable_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["structured_table_gate_passed_count"], 1)
+        self.assertEqual(candidate_qa["candidates"][0]["status"], "candidate")
+        promotion = build_ocr_candidate_promotion(built["augmented_document_ir"], candidate_qa)
+        self.assertEqual(promotion["summary"]["structured_table_promotion_count"], 1)
+        promoted_table = promotion["promoted_document_ir"]["pages"][0]["blocks"][0]["meta"]["table"]
+        self.assertTrue(promoted_table["ocr_structured"])
+        self.assertEqual(promoted_table["rows"][1][1], "91.2")
+        promoted_doc_ir = document_ir_from_json_dict(promotion["promoted_document_ir"])
+        promoted_chunks = build_structure_chunks(promoted_doc_ir)
+        self.assertIn("| Metric | Accuracy |", promoted_chunks[0].text)
+        self.assertIn("| A | 91.2 |", promoted_chunks[0].text)
+
     def test_formula_ocr_writeback_preserves_structure_context(self) -> None:
         doc_ir = DocumentIR(
             doc_id="formula-ocr-context",
