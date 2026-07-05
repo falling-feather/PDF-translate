@@ -763,6 +763,83 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(hint_manifest["chunks"][0]["merged_cell_candidate_type_counts"]["colspan"], 1)
         self.assertIn("疑似合并单元格候选", hint_manifest["chunks"][0]["hint_text"])
 
+    def test_table_reconstruction_uses_meta_merged_cell_candidates(self) -> None:
+        table = BlockIR(
+            "p1-b0000",
+            1,
+            "table",
+            "Dataset metrics\nModel Acc F1\nA 91 88",
+            (40, 640, 540, 760),
+            0,
+            meta={
+                "table": {
+                    "source": "ocr_candidate_promotion",
+                    "source_task_id": "ocr-task-0001",
+                    "source_engine": "plain_text_table_ocr",
+                    "rows": [["Dataset metrics", "", ""], ["Model", "Acc", "F1"], ["A", "91", "88"]],
+                    "row_count": 3,
+                    "column_count": 3,
+                    "header": ["Model", "Acc", "F1"],
+                    "confidence": "high",
+                    "merged_cell_candidates": [
+                        {
+                            "type": "colspan",
+                            "row": 0,
+                            "cols": [0, 1, 2],
+                            "text": "Dataset metrics",
+                            "reason": "single_cell_ragged_row",
+                            "confidence": 0.91,
+                            "source": "local_text_table_parser",
+                        }
+                    ],
+                }
+            },
+        )
+        doc_ir = DocumentIR(
+            doc_id="meta-merged-cell-candidates",
+            source_pdf="sample.pdf",
+            pages=[PageIR(1, 600, 800, table.text, [table])],
+        )
+
+        report = build_table_reconstruction_report(doc_ir, build_structure_qa(doc_ir))
+
+        self.assertEqual(report["summary"]["table_count"], 1)
+        self.assertEqual(report["summary"]["merged_cell_candidate_count"], 1)
+        self.assertEqual(report["summary"]["merged_cell_candidate_type_counts"]["colspan"], 1)
+        self.assertEqual(report["summary"]["merged_cell_candidate_reason_counts"]["single_cell_ragged_row"], 1)
+        table_report = report["tables"][0]
+        self.assertEqual(table_report["merged_cell_candidate_count"], 1)
+        candidate = table_report["merged_cell_candidates"][0]
+        self.assertEqual(candidate["span_type"], "colspan")
+        self.assertEqual(candidate["type"], "colspan")
+        self.assertEqual(candidate["row_index"], 0)
+        self.assertEqual(candidate["row"], 0)
+        self.assertEqual(candidate["column_index"], 0)
+        self.assertEqual(candidate["col"], 0)
+        self.assertEqual(candidate["row_span"], 1)
+        self.assertEqual(candidate["column_span"], 3)
+        self.assertEqual(candidate["cols"], [0, 1, 2])
+        self.assertEqual(
+            [(cell["row_index"], cell["column_index"]) for cell in candidate["covered_cells"]],
+            [(0, 1), (0, 2)],
+        )
+        self.assertEqual(candidate["source"], "local_text_table_parser")
+        self.assertEqual(candidate["source_task_id"], "ocr-task-0001")
+        self.assertEqual(candidate["engine"], "plain_text_table_ocr")
+
+        hints = build_table_translation_hints(TextChunk("c0000", [0], table.text, 0, 0), report)
+        self.assertIn("r0c0", hints)
+        self.assertIn("colspan 1x3", hints)
+        self.assertIn("single_cell_ragged_row", hints)
+        self.assertIn("Dataset metrics", hints)
+        hint_manifest = build_structure_hints_manifest([TextChunk("c0000", [0], table.text, 0, 0)], report)
+        self.assertEqual(hint_manifest["summary"]["structure_hint_merged_cell_candidate_count"], 1)
+        self.assertEqual(hint_manifest["summary"]["structure_hint_merged_cell_candidate_type_counts"]["colspan"], 1)
+        self.assertEqual(
+            hint_manifest["summary"]["structure_hint_merged_cell_candidate_reason_counts"]["single_cell_ragged_row"],
+            1,
+        )
+
     def test_table_reconstruction_builds_continued_table_groups(self) -> None:
         page1_table = BlockIR(
             "p1-b0000",
@@ -2195,6 +2272,28 @@ class StructureIRTests(unittest.TestCase):
         promoted_table = promotion["promoted_document_ir"]["pages"][0]["blocks"][0]["meta"]["table"]
         self.assertEqual(promoted_table["rows"][0], ["Dataset metrics", "", ""])
         self.assertEqual(promoted_table["merged_cell_candidates"][0]["source"], "local_text_table_parser")
+        promoted_doc_ir = document_ir_from_json_dict(promotion["promoted_document_ir"])
+        reconstruction = build_table_reconstruction_report(promoted_doc_ir, build_structure_qa(promoted_doc_ir))
+        self.assertEqual(reconstruction["summary"]["merged_cell_candidate_count"], 1)
+        self.assertEqual(reconstruction["summary"]["merged_cell_candidate_type_counts"]["colspan"], 1)
+        self.assertEqual(
+            reconstruction["summary"]["merged_cell_candidate_reason_counts"]["single_cell_ragged_row"],
+            1,
+        )
+        reconstruction_candidate = reconstruction["tables"][0]["merged_cell_candidates"][0]
+        self.assertEqual(reconstruction_candidate["column_span"], 3)
+        self.assertEqual(reconstruction_candidate["reason"], "single_cell_ragged_row")
+        self.assertEqual(reconstruction_candidate["source"], "local_text_table_parser")
+        self.assertEqual(reconstruction_candidate["source_task_id"], table_task["task_id"])
+        self.assertEqual(reconstruction_candidate["engine"], "plain_text_table_ocr")
+        hints = build_table_translation_hints(
+            TextChunk("c0000", [0], promoted_doc_ir.pages[0].blocks[0].text, 0, 0),
+            reconstruction,
+        )
+        self.assertIn("r0c0", hints)
+        self.assertIn("colspan 1x3", hints)
+        self.assertIn("single_cell_ragged_row", hints)
+        self.assertIn("Dataset metrics", hints)
 
     def test_formula_ocr_writeback_preserves_structure_context(self) -> None:
         doc_ir = DocumentIR(

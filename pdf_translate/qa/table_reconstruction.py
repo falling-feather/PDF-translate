@@ -100,6 +100,28 @@ def _as_rows(raw_rows: Any) -> list[list[str]]:
     return rows
 
 
+def _nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        parsed = int(value)
+        return parsed if parsed >= 0 else None
+    if isinstance(value, str):
+        try:
+            parsed = int(float(value.strip()))
+        except ValueError:
+            return None
+        return parsed if parsed >= 0 else None
+    return None
+
+
+def _positive_int(value: Any) -> int:
+    parsed = _nonnegative_int(value)
+    return parsed if parsed and parsed > 0 else 0
+
+
 def _normalise_rows(rows: list[list[str]], column_count: int) -> list[list[str]]:
     if column_count <= 0:
         column_count = max((len(row) for row in rows), default=0)
@@ -312,6 +334,167 @@ def _merged_candidate(
     }
 
 
+def _normalised_covered_cells(value: Any) -> list[dict[str, int]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, int]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        row = _nonnegative_int(item.get("row_index", item.get("row")))
+        column = _nonnegative_int(item.get("column_index", item.get("col", item.get("column"))))
+        if row is None or column is None:
+            continue
+        out.append({"row_index": row, "column_index": column})
+    return out
+
+
+def _normalise_meta_merged_candidate(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    span_type = str(value.get("span_type") or value.get("type") or "unknown").strip() or "unknown"
+    rows = value.get("rows") if isinstance(value.get("rows"), list) else []
+    cols = value.get("cols") if isinstance(value.get("cols"), list) else []
+    row_index = _nonnegative_int(value.get("row_index", value.get("row")))
+    if row_index is None and rows:
+        row_index = _nonnegative_int(rows[0])
+    column_index = _nonnegative_int(value.get("column_index", value.get("col", value.get("column"))))
+    if column_index is None and cols:
+        column_index = _nonnegative_int(cols[0])
+    if row_index is None or column_index is None:
+        return None
+
+    row_span = _positive_int(value.get("row_span"))
+    column_span = _positive_int(value.get("column_span"))
+    normalised_rows = [_nonnegative_int(item) for item in rows]
+    normalised_rows = [item for item in normalised_rows if item is not None]
+    normalised_cols = [_nonnegative_int(item) for item in cols]
+    normalised_cols = [item for item in normalised_cols if item is not None]
+    if row_span <= 0 and normalised_rows:
+        row_span = max(normalised_rows) - row_index + 1
+    if column_span <= 0 and normalised_cols:
+        column_span = max(normalised_cols) - column_index + 1
+    row_span = row_span if row_span > 0 else 1
+    column_span = column_span if column_span > 0 else 1
+
+    covered_cells = _normalised_covered_cells(value.get("covered_cells"))
+    if not covered_cells and span_type == "colspan" and column_span > 1:
+        covered_cells = [
+            {"row_index": row_index, "column_index": column}
+            for column in range(column_index + 1, column_index + column_span)
+        ]
+    if not covered_cells and span_type == "rowspan" and row_span > 1:
+        covered_cells = [
+            {"row_index": row_index + offset, "column_index": column_index}
+            for offset in range(1, row_span)
+        ]
+
+    candidate = _merged_candidate(
+        span_type=span_type,
+        row_index=row_index,
+        column_index=column_index,
+        row_span=row_span,
+        column_span=column_span,
+        text=str(value.get("text") or ""),
+        reason=str(value.get("reason") or "provided_merged_cell_candidate"),
+        confidence=str(value.get("confidence") or "unknown"),
+        covered_cells=covered_cells,
+    )
+    candidate["source"] = str(value.get("source") or "table_meta")
+    candidate["type"] = span_type
+    candidate["row"] = row_index
+    candidate["col"] = column_index
+    if normalised_rows:
+        candidate["rows"] = normalised_rows
+    if normalised_cols:
+        candidate["cols"] = normalised_cols
+    for key in ("task_id", "source_task_id", "engine"):
+        if value.get(key) not in (None, "", []):
+            candidate[key] = str(value.get(key))
+    return candidate
+
+
+def _meta_merged_cell_candidates(table_meta: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_candidates = table_meta.get("merged_cell_candidates")
+    if not isinstance(raw_candidates, list):
+        return []
+    candidates: list[dict[str, Any]] = []
+    for raw_candidate in raw_candidates:
+        candidate = _normalise_meta_merged_candidate(raw_candidate)
+        if candidate is not None:
+            if "source_task_id" not in candidate and table_meta.get("source_task_id") not in (None, "", []):
+                candidate["source_task_id"] = str(table_meta.get("source_task_id"))
+            if "engine" not in candidate and table_meta.get("source_engine") not in (None, "", []):
+                candidate["engine"] = str(table_meta.get("source_engine"))
+            candidates.append(candidate)
+    return candidates
+
+
+def _candidate_covered_set(candidate: dict[str, Any]) -> set[tuple[int, int]]:
+    covered: set[tuple[int, int]] = set()
+    for cell in candidate.get("covered_cells") or []:
+        if not isinstance(cell, dict):
+            continue
+        row = _nonnegative_int(cell.get("row_index", cell.get("row")))
+        column = _nonnegative_int(cell.get("column_index", cell.get("col", cell.get("column"))))
+        if row is None or column is None:
+            continue
+        covered.add((row, column))
+    return covered
+
+
+def _candidate_exact_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        candidate.get("span_type"),
+        candidate.get("row_index"),
+        candidate.get("column_index"),
+        candidate.get("row_span"),
+        candidate.get("column_span"),
+        candidate.get("reason"),
+        tuple(sorted(_candidate_covered_set(candidate))),
+    )
+
+
+def _candidate_geometry_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        candidate.get("span_type"),
+        candidate.get("row_index"),
+        candidate.get("column_index"),
+        candidate.get("row_span"),
+        candidate.get("column_span"),
+        tuple(sorted(_candidate_covered_set(candidate))),
+    )
+
+
+def _candidate_supersedes(existing: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    if (
+        existing.get("span_type") != candidate.get("span_type")
+        or existing.get("row_index") != candidate.get("row_index")
+        or existing.get("column_index") != candidate.get("column_index")
+    ):
+        return False
+    existing_covered = _candidate_covered_set(existing)
+    candidate_covered = _candidate_covered_set(candidate)
+    if not existing_covered or not candidate_covered:
+        return False
+    return existing_covered.issuperset(candidate_covered)
+
+
+def _merge_merged_cell_candidates(*candidate_groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for group in candidate_groups:
+        for candidate in group:
+            key = _candidate_geometry_key(candidate)
+            if key in seen or any(_candidate_supersedes(existing, candidate) for existing in merged):
+                continue
+            merged = [existing for existing in merged if not _candidate_supersedes(candidate, existing)]
+            seen = {_candidate_geometry_key(existing) for existing in merged}
+            seen.add(key)
+            merged.append(candidate)
+    return merged
+
+
 def _merged_cell_candidates(rows: list[list[str]], column_count: int) -> list[dict[str, Any]]:
     if column_count < 2 or not rows:
         return []
@@ -320,16 +503,7 @@ def _merged_cell_candidates(rows: list[list[str]], column_count: int) -> list[di
     seen: set[tuple[Any, ...]] = set()
 
     def add(candidate: dict[str, Any]) -> None:
-        covered = tuple((cell["row_index"], cell["column_index"]) for cell in candidate.get("covered_cells") or [])
-        key = (
-            candidate.get("span_type"),
-            candidate.get("row_index"),
-            candidate.get("column_index"),
-            candidate.get("row_span"),
-            candidate.get("column_span"),
-            candidate.get("reason"),
-            covered,
-        )
+        key = _candidate_exact_key(candidate)
         if key not in seen:
             seen.add(key)
             candidates.append(candidate)
@@ -485,7 +659,10 @@ def _table_entry(
         if column_count > 0 and len(row) < column_count
     ]
     empty_cell_count = sum(1 for cell in cells if cell.get("empty"))
-    merged_cell_candidates = _merged_cell_candidates(raw_rows, column_count)
+    merged_cell_candidates = _merge_merged_cell_candidates(
+        _meta_merged_cell_candidates(table_meta),
+        _merged_cell_candidates(raw_rows, column_count),
+    )
     warnings = _table_warnings(
         table_meta,
         rows=raw_rows,
