@@ -516,6 +516,40 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             headers={"Content-Disposition": cd},
         )
 
+    @api.get("/jobs/{job_id}/download/repair-publish.md")
+    def download_repair_publish(job_id: str, p: Principal = Depends(bearer_principal)) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "repair_publish.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "局部修复发布确认报告尚未生成")
+        ascii_fallback = "repair_publish.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_repair_publish.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
+    @api.get("/jobs/{job_id}/download/published-full.md")
+    def download_published_full(job_id: str, p: Principal = Depends(bearer_principal)) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "published_full.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "人工确认修复发布稿尚未生成")
+        ascii_fallback = "published_full.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_published_full.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
     @api.get("/jobs/{job_id}/download/bundle.zip")
     def download_zip(job_id: str, p: Principal = Depends(bearer_principal)) -> Response:
         rec = app_registry.get(job_id)
@@ -662,6 +696,16 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             if not p.is_file() or p.stat().st_size == 0:
                 raise HTTPException(404, "PDF 译文尚未生成")
             return FileResponse(p, filename="translated_full.pdf", media_type="application/pdf")
+        if kind == "repair_publish":
+            p = root / "output" / "repair_publish.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "局部修复发布确认报告尚未生成")
+            return FileResponse(p, filename="repair_publish.md", media_type="text/markdown; charset=utf-8")
+        if kind == "repair_published_full":
+            p = root / "output" / "published_full.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "人工确认修复发布稿尚未生成")
+            return FileResponse(p, filename="published_full.md", media_type="text/markdown; charset=utf-8")
         if kind == "bundle_zip":
             if rec.status not in ("done", "cancelled"):
                 raise HTTPException(409, "任务未完成或未终止")
@@ -676,7 +720,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             ascii_fb = "bundle.zip"
             cd = f'attachment; filename="{ascii_fb}"; filename*=UTF-8\'\'{quote(zip_disp)}'
             return Response(content=data, media_type="application/zip", headers={"Content-Disposition": cd})
-        raise HTTPException(400, "kind 必须是 input / output_md / output_pdf / bundle_zip")
+        raise HTTPException(400, "kind 必须是 input / output_md / output_pdf / repair_publish / repair_published_full / bundle_zip")
 
     api.include_router(admin)
     return api

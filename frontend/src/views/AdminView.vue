@@ -167,6 +167,8 @@ function artifactReadySummary(job) {
   if (job.partial_output_ready) ready.push("MD");
   if (job.translated_pdf_ready) ready.push("译文PDF");
   if (job.bilingual_html_ready) ready.push("HTML");
+  if (job.repair_publish_report_ready) ready.push("修复报告");
+  if (job.repair_published_full_ready) ready.push("修复稿");
   if (job.bundle_zip_ready) ready.push("ZIP");
   return ready.length ? `可用：${ready.join(" / ")}` : "暂无可下载产物";
 }
@@ -534,6 +536,8 @@ onMounted(() => {
                 <button type="button" class="linkish" :disabled="!j.input_pdf_ready" @click="adminDownload(j.job_id, 'input', 'input.pdf')">原PDF</button>
                 <button type="button" class="linkish" :disabled="!j.partial_output_ready" @click="adminDownload(j.job_id, 'output_md', 'translated.md')">MD</button>
                 <button type="button" class="linkish" :disabled="!j.translated_pdf_ready" @click="adminDownload(j.job_id, 'output_pdf', 'translated.pdf')">译PDF</button>
+                <button type="button" class="linkish" :disabled="!j.repair_publish_report_ready" @click="adminDownload(j.job_id, 'repair_publish', 'repair_publish.md')">修复报告</button>
+                <button type="button" class="linkish" :disabled="!j.repair_published_full_ready" @click="adminDownload(j.job_id, 'repair_published_full', 'published_full.md')">修复稿</button>
                 <button type="button" class="linkish" :disabled="!j.bundle_zip_ready" @click="adminDownload(j.job_id, 'bundle_zip', j.job_id + '.zip')">ZIP</button>
               </td>
             </tr>

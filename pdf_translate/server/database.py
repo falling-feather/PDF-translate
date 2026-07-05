@@ -371,6 +371,12 @@ def log_job_finished(
         "translated_pdf": str((root / "output" / "translated_full.pdf").resolve())
         if (root / "output" / "translated_full.pdf").is_file()
         else None,
+        "repair_publish": str((root / "output" / "repair_publish.json").resolve())
+        if (root / "output" / "repair_publish.json").is_file()
+        else None,
+        "repair_published_full": str((root / "output" / "published_full.md").resolve())
+        if (root / "output" / "published_full.md").is_file()
+        else None,
         "bundle_zip_ready": ok and (root / "output" / "translated_full.md").is_file(),
     }
     if err:

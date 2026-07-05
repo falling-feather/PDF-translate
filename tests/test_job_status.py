@@ -178,6 +178,47 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertGreater(merged[0]["translated_pdf_bytes"], 0)
         self.assertTrue(merged[0]["bundle_zip_ready"])
 
+    def test_artifact_summary_reports_repair_publish_status(self) -> None:
+        root = self._case_root("repair-publish-artifacts")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        out = rec.work_dir / "output"
+        out.mkdir()
+        (out / "translated_full.md").write_text("translated", encoding="utf-8")
+        (out / "translated_full.pdf").write_bytes(b"%PDF-1.4 translated")
+        (out / "repair_publish.md").write_text("# 发布确认", encoding="utf-8")
+        (out / "published_full.md").write_text("published translation", encoding="utf-8")
+        (out / "repair_publish.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "repair-publish-v1",
+                    "summary": {
+                        "confirmed": True,
+                        "published": True,
+                        "publish_status": "published_with_warnings",
+                        "open_merge_issue_count": 2,
+                        "rollback_available": True,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        registry.update(rec.job_id, status="done", phase="done")
+
+        merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
+
+        self.assertTrue(merged[0]["repair_publish_report_ready"])
+        self.assertGreater(merged[0]["repair_publish_report_bytes"], 0)
+        self.assertTrue(merged[0]["repair_publish_confirmed"])
+        self.assertTrue(merged[0]["repair_publish_published"])
+        self.assertEqual(merged[0]["repair_publish_status"], "published_with_warnings")
+        self.assertEqual(merged[0]["repair_publish_open_issue_count"], 2)
+        self.assertTrue(merged[0]["repair_publish_rollback_available"])
+        self.assertTrue(merged[0]["repair_published_full_ready"])
+        self.assertGreater(merged[0]["repair_published_full_bytes"], 0)
+        self.assertIn("repair_publish_open_issues", merged[0]["artifact_warnings"])
+
     def test_artifact_summary_marks_done_without_translation_inconsistent(self) -> None:
         root = self._case_root("artifact-inconsistent")
         registry = JobRegistry(root)
@@ -194,6 +235,8 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertFalse(merged[0]["partial_output_ready"])
         self.assertFalse(merged[0]["translated_pdf_ready"])
         self.assertEqual(merged[0]["translated_pdf_bytes"], 0)
+        self.assertFalse(merged[0]["repair_publish_report_ready"])
+        self.assertFalse(merged[0]["repair_published_full_ready"])
         self.assertFalse(merged[0]["bundle_zip_ready"])
 
     def test_storage_drift_reports_missing_and_unindexed_work_dirs(self) -> None:
@@ -236,6 +279,9 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertIn("status_snapshot_missing", merged[0]["artifact_warnings"])
         self.assertFalse(merged[0]["translated_pdf_ready"])
         self.assertEqual(merged[0]["translated_pdf_bytes"], 0)
+        self.assertFalse(merged[0]["repair_publish_report_ready"])
+        self.assertEqual(merged[0]["repair_publish_open_issue_count"], 0)
+        self.assertFalse(merged[0]["repair_published_full_ready"])
         self.assertNotIn("status", merged[0])
 
     def test_cli_web_status_reads_same_diagnostic_summary(self) -> None:

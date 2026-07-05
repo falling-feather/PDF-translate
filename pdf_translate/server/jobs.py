@@ -355,16 +355,47 @@ class JobRegistry:
         except OSError:
             return 0
 
+    @staticmethod
+    def _repair_publish_summary(path: Path) -> tuple[dict[str, Any], str | None]:
+        if not path.is_file():
+            return {}, None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}, "repair_publish_report_invalid"
+        summary = raw.get("summary")
+        if not isinstance(summary, dict):
+            return {}, "repair_publish_summary_missing"
+        return summary, None
+
+    @staticmethod
+    def _as_int(value: Any) -> int:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float)):
+            return int(value)
+        try:
+            return int(str(value or "0").strip() or "0")
+        except ValueError:
+            return 0
+
     def artifact_fields_for_record(self, rec: JobRecord) -> dict[str, Any]:
         input_pdf = rec.work_dir / "input.pdf"
         output_dir = rec.work_dir / "output"
         translated_md = output_dir / "translated_full.md"
         translated_pdf = output_dir / "translated_full.pdf"
         bilingual_html = output_dir / "bilingual.html"
+        repair_publish_json = output_dir / "repair_publish.json"
+        repair_publish_md = output_dir / "repair_publish.md"
+        repair_published_full = output_dir / "published_full.md"
         input_bytes = self._file_size(input_pdf)
         translated_bytes = self._file_size(translated_md)
         pdf_bytes = self._file_size(translated_pdf)
         html_bytes = self._file_size(bilingual_html)
+        repair_publish_json_bytes = self._file_size(repair_publish_json)
+        repair_publish_md_bytes = self._file_size(repair_publish_md)
+        repair_published_full_bytes = self._file_size(repair_published_full)
+        repair_summary, repair_warning = self._repair_publish_summary(repair_publish_json)
 
         warnings: list[str] = []
         if not rec.work_dir.is_dir():
@@ -377,6 +408,22 @@ class JobRegistry:
             warnings.append("translated_pdf_missing_for_done")
         if rec.status == "cancelled" and translated_bytes <= 0:
             warnings.append("translated_md_missing_for_cancelled")
+        if rec.status == "done" and translated_bytes > 0 and repair_publish_json_bytes <= 0:
+            warnings.append("repair_publish_report_missing_for_done")
+        if repair_warning:
+            warnings.append(repair_warning)
+
+        repair_publish_confirmed = bool(repair_summary.get("confirmed"))
+        repair_publish_published = bool(repair_summary.get("published"))
+        repair_publish_status = str(repair_summary.get("publish_status") or "")
+        repair_publish_open_issue_count = self._as_int(repair_summary.get("open_merge_issue_count"))
+        repair_publish_rollback_available = bool(repair_summary.get("rollback_available"))
+        if repair_publish_open_issue_count > 0:
+            warnings.append("repair_publish_open_issues")
+        if repair_publish_confirmed and not repair_publish_published:
+            warnings.append("repair_publish_requested_not_published")
+        if repair_publish_published and repair_published_full_bytes <= 0:
+            warnings.append("repair_published_full_missing")
 
         severe = {
             "work_dir_missing",
@@ -409,6 +456,15 @@ class JobRegistry:
             "translated_pdf_bytes": pdf_bytes,
             "bilingual_html_ready": html_bytes > 0,
             "bilingual_html_bytes": html_bytes,
+            "repair_publish_report_ready": repair_publish_json_bytes > 0 or repair_publish_md_bytes > 0,
+            "repair_publish_report_bytes": max(repair_publish_json_bytes, repair_publish_md_bytes),
+            "repair_publish_confirmed": repair_publish_confirmed,
+            "repair_publish_published": repair_publish_published,
+            "repair_publish_status": repair_publish_status,
+            "repair_publish_open_issue_count": repair_publish_open_issue_count,
+            "repair_publish_rollback_available": repair_publish_rollback_available,
+            "repair_published_full_ready": repair_published_full_bytes > 0,
+            "repair_published_full_bytes": repair_published_full_bytes,
             "bundle_zip_ready": rec.status in ("done", "cancelled") and translated_bytes > 0,
         }
 
@@ -552,6 +608,15 @@ class JobRegistry:
                 "translated_pdf_bytes": 0,
                 "bilingual_html_ready": False,
                 "bilingual_html_bytes": 0,
+                "repair_publish_report_ready": False,
+                "repair_publish_report_bytes": 0,
+                "repair_publish_confirmed": False,
+                "repair_publish_published": False,
+                "repair_publish_status": "",
+                "repair_publish_open_issue_count": 0,
+                "repair_publish_rollback_available": False,
+                "repair_published_full_ready": False,
+                "repair_published_full_bytes": 0,
                 "bundle_zip_ready": False,
             }
         pub = rec.to_public()
