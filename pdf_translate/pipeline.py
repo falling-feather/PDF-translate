@@ -528,6 +528,7 @@ def run_translate(
                 source_full_path=out_dir / "repaired_full.md",
                 published_full_path=out_dir / "published_full.md",
                 original_full_path=out_dir / "translated_full.md",
+                repair_patch_review=repair_patch_review,
             )
         with run_metrics.stage("bilingual_html"):
             write_bilingual_html(

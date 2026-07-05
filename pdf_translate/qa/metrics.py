@@ -549,11 +549,19 @@ def build_experiment_metrics(
     repair_merge_applied_strategy_counts = _counter_dict(repair_merge_summary.get("applied_strategy_counts"))
     repair_patch_review_count = _as_int(repair_patch_review_summary.get("patch_count"))
     repair_patch_review_safe_count = _as_int(repair_patch_review_summary.get("auto_merge_safe_count"))
+    repair_patch_review_effective_safe_count = _as_int(repair_patch_review_summary.get("effective_safe_count"))
     repair_patch_review_required_count = _as_int(repair_patch_review_summary.get("review_required_count"))
     repair_patch_review_blocking_count = _as_int(repair_patch_review_summary.get("publish_blocking_count"))
+    repair_patch_review_human_reviewed_count = _as_int(repair_patch_review_summary.get("human_reviewed_count"))
     repair_patch_review_table_count = _as_int(repair_patch_review_summary.get("table_patch_review_count"))
     repair_patch_review_decision_counts = _counter_dict(
         repair_patch_review_summary.get("default_decision_counts")
+    )
+    repair_patch_review_effective_decision_counts = _counter_dict(
+        repair_patch_review_summary.get("effective_decision_counts")
+    )
+    repair_patch_review_human_decision_counts = _counter_dict(
+        repair_patch_review_summary.get("human_decision_counts")
     )
     repair_patch_review_risk_counts = _counter_dict(repair_patch_review_summary.get("risk_level_counts"))
     repair_publish_confirmed = _as_bool(repair_publish_summary.get("confirmed"))
@@ -849,8 +857,10 @@ def build_experiment_metrics(
             "repair_merge_table_targeted_patch_count": repair_merge_table_targeted_patch_count,
             "repair_patch_review_count": repair_patch_review_count,
             "repair_patch_review_safe_count": repair_patch_review_safe_count,
+            "repair_patch_review_effective_safe_count": repair_patch_review_effective_safe_count,
             "repair_patch_review_required_count": repair_patch_review_required_count,
             "repair_patch_review_blocking_count": repair_patch_review_blocking_count,
+            "repair_patch_review_human_reviewed_count": repair_patch_review_human_reviewed_count,
             "repair_patch_review_table_count": repair_patch_review_table_count,
             "repair_publish_confirmed": repair_publish_confirmed,
             "repair_publish_published": repair_publish_published,
@@ -1017,6 +1027,14 @@ def build_experiment_metrics(
                 repair_merge_applied_count,
             ),
             "repair_patch_review_safe_rate": _rate(repair_patch_review_safe_count, repair_patch_review_count),
+            "repair_patch_review_effective_safe_rate": _rate(
+                repair_patch_review_effective_safe_count,
+                repair_patch_review_count,
+            ),
+            "repair_patch_review_human_reviewed_rate": _rate(
+                repair_patch_review_human_reviewed_count,
+                repair_patch_review_count,
+            ),
             "repair_patch_review_required_rate": _rate(
                 repair_patch_review_required_count,
                 repair_patch_review_count,
@@ -1193,6 +1211,8 @@ def build_experiment_metrics(
             "repair_merge_strategy_counts": repair_merge_strategy_counts,
             "repair_merge_applied_strategy_counts": repair_merge_applied_strategy_counts,
             "repair_patch_review_default_decision_counts": repair_patch_review_decision_counts,
+            "repair_patch_review_effective_decision_counts": repair_patch_review_effective_decision_counts,
+            "repair_patch_review_human_decision_counts": repair_patch_review_human_decision_counts,
             "repair_patch_review_risk_counts": repair_patch_review_risk_counts,
             "repair_publish_status_counts": {repair_publish_status: 1} if repair_publish_status else {},
             "stage_elapsed_ms": stage_elapsed_ms,

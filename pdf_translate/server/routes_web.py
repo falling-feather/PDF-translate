@@ -14,7 +14,11 @@ from fastapi.responses import FileResponse, Response
 from pdf_translate.error_codes import PdfTranslateError, error_info_from_exception, make_error_info
 from pdf_translate.export_filename import suggest_md_download_name, suggest_zip_bundle_name
 from pdf_translate.pipeline_cancel import cancel_flag_path
-from pdf_translate.qa.repair import write_repair_patch_review, write_repair_publish
+from pdf_translate.qa.repair import (
+    write_repair_patch_review,
+    write_repair_patch_review_decision,
+    write_repair_publish,
+)
 
 from pdf_translate.server.auth_deps import Principal, bearer_principal, mint_token, require_admin
 from pdf_translate.server import database
@@ -48,6 +52,18 @@ def _read_json_artifact(path: Path, *, missing_message: str, invalid_message: st
     return raw
 
 
+def _read_or_create_repair_patch_review(out_dir: Path, repair_merge: dict[str, Any]) -> dict[str, Any]:
+    json_path = out_dir / "repair_patch_review.json"
+    md_path = out_dir / "repair_patch_review.md"
+    if json_path.is_file() and json_path.stat().st_size > 0:
+        return _read_json_artifact(
+            json_path,
+            missing_message="局部修复补丁审核报告尚未生成",
+            invalid_message="局部修复补丁审核报告无法解析",
+        )
+    return write_repair_patch_review(repair_merge, json_path, md_path)
+
+
 def _confirm_repair_publish_for_record(rec: JobRecord) -> dict[str, Any]:
     if rec.status != "done":
         raise HTTPException(409, "任务尚未完成，不能确认发布修复稿")
@@ -57,11 +73,7 @@ def _confirm_repair_publish_for_record(rec: JobRecord) -> dict[str, Any]:
         missing_message="局部修复合并报告尚未生成",
         invalid_message="局部修复合并报告无法解析",
     )
-    write_repair_patch_review(
-        repair_merge,
-        out_dir / "repair_patch_review.json",
-        out_dir / "repair_patch_review.md",
-    )
+    repair_patch_review = _read_or_create_repair_patch_review(out_dir, repair_merge)
     report = write_repair_publish(
         repair_merge,
         out_dir / "repair_publish.json",
@@ -70,6 +82,7 @@ def _confirm_repair_publish_for_record(rec: JobRecord) -> dict[str, Any]:
         source_full_path=out_dir / "repaired_full.md",
         published_full_path=out_dir / "published_full.md",
         original_full_path=out_dir / "translated_full.md",
+        repair_patch_review=repair_patch_review,
     )
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
     if not summary.get("published"):
@@ -593,6 +606,74 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             media_type="text/markdown; charset=utf-8",
             headers={"Content-Disposition": cd},
         )
+
+    @api.get("/jobs/{job_id}/repair-patch-review")
+    def get_repair_patch_review(job_id: str, p: Principal = Depends(bearer_principal)) -> dict:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        out_dir = rec.work_dir / "output"
+        repair_merge = _read_json_artifact(
+            out_dir / "repair_merge.json",
+            missing_message="局部修复合并报告尚未生成",
+            invalid_message="局部修复合并报告无法解析",
+        )
+        return _read_or_create_repair_patch_review(out_dir, repair_merge)
+
+    @api.post("/jobs/{job_id}/repair-patch-review/{review_id}")
+    def update_repair_patch_review(
+        job_id: str,
+        review_id: str,
+        request: Request,
+        payload: dict[str, Any] = Body(...),
+        p: Principal = Depends(bearer_principal),
+    ) -> dict:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        if rec.status != "done":
+            raise HTTPException(409, "任务尚未完成，暂不能审核局部修复补丁")
+        out_dir = rec.work_dir / "output"
+        repair_merge = _read_json_artifact(
+            out_dir / "repair_merge.json",
+            missing_message="局部修复合并报告尚未生成",
+            invalid_message="局部修复合并报告无法解析",
+        )
+        _read_or_create_repair_patch_review(out_dir, repair_merge)
+        try:
+            report = write_repair_patch_review_decision(
+                out_dir / "repair_patch_review.json",
+                out_dir / "repair_patch_review.md",
+                review_id,
+                decision=payload.get("decision"),
+                reviewer=p.username,
+                comment=payload.get("comment") or "",
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(404, f"补丁审核项不存在：{review_id}") from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "局部修复补丁审核报告尚未生成") from exc
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        app_registry.update(job_id, message="已更新局部修复补丁审核")
+        database.log_audit(
+            action="job_repair_patch_review_update",
+            ip=client_ip(request),
+            user_id=p.user_id,
+            username=p.username,
+            job_id=job_id,
+            detail={
+                "review_id": review_id,
+                "decision": payload.get("decision"),
+                "publish_blocking_count": summary.get("publish_blocking_count"),
+                "human_reviewed_count": summary.get("human_reviewed_count"),
+            },
+        )
+        updated = app_registry.get(job_id) or rec
+        d = _job_dict(updated)
+        d["repair_patch_review_summary"] = summary
+        return d
 
     @api.get("/jobs/{job_id}/download/published-full.md")
     def download_published_full(job_id: str, p: Principal = Depends(bearer_principal)) -> FileResponse:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,8 @@ VALIDATION_SCHEMA_VERSION = "repair-validation-v1"
 MERGE_SCHEMA_VERSION = "repair-merge-v1"
 PATCH_REVIEW_SCHEMA_VERSION = "repair-patch-review-v1"
 PUBLISH_SCHEMA_VERSION = "repair-publish-v1"
+
+HUMAN_PATCH_REVIEW_DECISIONS = {"", "approve", "reject", "needs_revision"}
 
 _ISSUE_RULES = {
     "missing_translation": {
@@ -1310,6 +1313,124 @@ def _patch_review_decision(patch: dict[str, Any]) -> tuple[str, str, str]:
     return "manual_review_required", "medium", "未知补丁状态，需要人工复核。"
 
 
+def normalize_patch_review_human_decision(decision: Any) -> str:
+    value = str(decision or "").strip().lower()
+    aliases = {
+        "": "",
+        "clear": "",
+        "pending": "",
+        "approve": "approve",
+        "approved": "approve",
+        "accept": "approve",
+        "accepted": "approve",
+        "reject": "reject",
+        "rejected": "reject",
+        "deny": "reject",
+        "denied": "reject",
+        "needs_revision": "needs_revision",
+        "needs_changes": "needs_revision",
+        "revise": "needs_revision",
+        "manual_review_required": "needs_revision",
+    }
+    if value not in aliases:
+        allowed = "approve / reject / needs_revision / clear"
+        raise ValueError(f"human_decision must be one of: {allowed}")
+    return aliases[value]
+
+
+def _effective_patch_review_decision(review: dict[str, Any]) -> str:
+    try:
+        human_decision = normalize_patch_review_human_decision(review.get("human_decision"))
+    except ValueError:
+        return "manual_review_required"
+    if human_decision == "approve":
+        return "approve_candidate"
+    if human_decision == "reject":
+        return "reject_candidate"
+    if human_decision == "needs_revision":
+        return "manual_review_required"
+    return str(review.get("default_decision") or "manual_review_required")
+
+
+def _refresh_repair_patch_review_summary(report: dict[str, Any]) -> dict[str, Any]:
+    old_summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    reviews = [review for review in report.get("patch_reviews") or [] if isinstance(review, dict)]
+    status_counts: Counter[str] = Counter()
+    default_decision_counts: Counter[str] = Counter()
+    effective_decision_counts: Counter[str] = Counter()
+    human_decision_counts: Counter[str] = Counter()
+    risk_counts: Counter[str] = Counter()
+    action_counts: Counter[str] = Counter()
+    scope_counts: Counter[str] = Counter()
+    table_patch_count = 0
+    human_reviewed_count = 0
+
+    for review in reviews:
+        status = str(review.get("merge_status") or "")
+        default_decision = str(review.get("default_decision") or "manual_review_required")
+        effective_decision = _effective_patch_review_decision(review)
+        try:
+            human_decision = normalize_patch_review_human_decision(review.get("human_decision"))
+        except ValueError:
+            human_decision = "needs_revision"
+        risk_level = str(review.get("risk_level") or "")
+        action = str(review.get("action") or "")
+        scope = str(review.get("scope") or "")
+        strategy = str(review.get("merge_strategy") or "")
+
+        review["human_decision"] = human_decision
+        review["effective_decision"] = effective_decision
+        review["publish_blocking"] = effective_decision != "approve_candidate"
+
+        if strategy == "replace_markdown_table_by_evidence":
+            table_patch_count += 1
+        if status:
+            status_counts[status] += 1
+        if default_decision:
+            default_decision_counts[default_decision] += 1
+        if effective_decision:
+            effective_decision_counts[effective_decision] += 1
+        if human_decision:
+            human_reviewed_count += 1
+            human_decision_counts[human_decision] += 1
+        if risk_level:
+            risk_counts[risk_level] += 1
+        if action:
+            action_counts[action] += 1
+        if scope:
+            scope_counts[scope] += 1
+
+    patch_count = len(reviews)
+    default_safe_count = default_decision_counts.get("approve_candidate", 0)
+    effective_safe_count = effective_decision_counts.get("approve_candidate", 0)
+    publish_blocking_count = patch_count - effective_safe_count
+    report["summary"] = {
+        "repair_merge_schema_version": old_summary.get("repair_merge_schema_version"),
+        "patch_count": patch_count,
+        "auto_merge_safe_count": default_safe_count,
+        "effective_safe_count": effective_safe_count,
+        "review_required_count": publish_blocking_count,
+        "publish_blocking_count": publish_blocking_count,
+        "human_reviewed_count": human_reviewed_count,
+        "human_pending_count": patch_count - human_reviewed_count,
+        "human_approved_count": human_decision_counts.get("approve", 0),
+        "human_rejected_count": human_decision_counts.get("reject", 0),
+        "human_needs_revision_count": human_decision_counts.get("needs_revision", 0),
+        "table_patch_review_count": table_patch_count,
+        "applied_count": _safe_nonnegative_int(old_summary.get("applied_count")) or 0,
+        "manual_merge_required_count": _safe_nonnegative_int(old_summary.get("manual_merge_required_count")) or 0,
+        "conflict_count": _safe_nonnegative_int(old_summary.get("conflict_count")) or 0,
+        "status_counts": dict(status_counts),
+        "default_decision_counts": dict(default_decision_counts),
+        "effective_decision_counts": dict(effective_decision_counts),
+        "human_decision_counts": dict(human_decision_counts),
+        "risk_level_counts": dict(risk_counts),
+        "action_counts": dict(action_counts),
+        "scope_counts": dict(scope_counts),
+    }
+    return report
+
+
 def build_repair_patch_review(repair_merge: dict[str, Any]) -> dict[str, Any]:
     """Build a patch-level review manifest before repaired output is published."""
     merge_summary = repair_merge.get("summary") if isinstance(repair_merge.get("summary"), dict) else {}
@@ -1354,7 +1475,11 @@ def build_repair_patch_review(repair_merge: dict[str, Any]) -> dict[str, Any]:
                 "merge_strategy": strategy,
                 "risk_level": risk_level,
                 "default_decision": decision,
+                "effective_decision": decision,
                 "human_decision": "",
+                "human_comment": "",
+                "reviewed_by": "",
+                "reviewed_at": "",
                 "decision_reason": decision_reason,
                 "publish_blocking": decision != "approve_candidate",
                 "reason": patch.get("reason") or "",
@@ -1365,32 +1490,20 @@ def build_repair_patch_review(repair_merge: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    patch_count = len(reviews)
-    auto_merge_safe_count = decision_counts.get("approve_candidate", 0)
-    review_required_count = patch_count - auto_merge_safe_count
-    return {
+    report = {
         "schema_version": PATCH_REVIEW_SCHEMA_VERSION,
         "summary": {
             "repair_merge_schema_version": repair_merge.get("schema_version"),
-            "patch_count": patch_count,
-            "auto_merge_safe_count": auto_merge_safe_count,
-            "review_required_count": review_required_count,
-            "publish_blocking_count": review_required_count,
-            "table_patch_review_count": table_patch_count,
             "applied_count": _safe_nonnegative_int(merge_summary.get("applied_count")) or 0,
             "manual_merge_required_count": _safe_nonnegative_int(
                 merge_summary.get("manual_merge_required_count")
             )
             or 0,
             "conflict_count": _safe_nonnegative_int(merge_summary.get("conflict_count")) or 0,
-            "status_counts": dict(status_counts),
-            "default_decision_counts": dict(decision_counts),
-            "risk_level_counts": dict(risk_counts),
-            "action_counts": dict(action_counts),
-            "scope_counts": dict(scope_counts),
         },
         "patch_reviews": reviews,
     }
+    return _refresh_repair_patch_review_summary(report)
 
 
 def repair_patch_review_to_markdown(report: dict[str, Any]) -> str:
@@ -1461,6 +1574,69 @@ def write_repair_patch_review(
     return report
 
 
+def apply_repair_patch_review_decision(
+    report: dict[str, Any],
+    review_id: str,
+    *,
+    decision: Any,
+    reviewer: str = "",
+    comment: str = "",
+    reviewed_at: str | None = None,
+) -> dict[str, Any]:
+    normalized = normalize_patch_review_human_decision(decision)
+    target_id = str(review_id or "").strip()
+    if not target_id:
+        raise KeyError("review_id is required")
+    reviews = report.get("patch_reviews") if isinstance(report.get("patch_reviews"), list) else []
+    for review in reviews:
+        if not isinstance(review, dict) or str(review.get("review_id") or "") != target_id:
+            continue
+        review["human_decision"] = normalized
+        if normalized:
+            review["human_comment"] = str(comment or "").strip()
+            review["reviewed_by"] = str(reviewer or "").strip()
+            review["reviewed_at"] = reviewed_at or datetime.now(timezone.utc).isoformat()
+        else:
+            review["human_comment"] = ""
+            review["reviewed_by"] = ""
+            review["reviewed_at"] = ""
+        return _refresh_repair_patch_review_summary(report)
+    raise KeyError(target_id)
+
+
+def write_repair_patch_review_decision(
+    json_path: Path,
+    markdown_path: Path,
+    review_id: str,
+    *,
+    decision: Any,
+    reviewer: str = "",
+    comment: str = "",
+    reviewed_at: str | None = None,
+) -> dict[str, Any]:
+    if not json_path.is_file() or json_path.stat().st_size == 0:
+        raise FileNotFoundError(json_path)
+    try:
+        report = json.loads(json_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("repair patch review report is invalid") from exc
+    if not isinstance(report, dict):
+        raise ValueError("repair patch review report is invalid")
+    updated = apply_repair_patch_review_decision(
+        report,
+        review_id,
+        decision=decision,
+        reviewer=reviewer,
+        comment=comment,
+        reviewed_at=reviewed_at,
+    )
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(repair_patch_review_to_markdown(updated), encoding="utf-8")
+    return updated
+
+
 def build_repair_publish(
     repair_merge: dict[str, Any],
     *,
@@ -1468,9 +1644,15 @@ def build_repair_publish(
     source_full_path: Path | None = None,
     published_full_path: Path | None = None,
     original_full_path: Path | None = None,
+    repair_patch_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create an explicit, auditable publication copy from the repaired merge output."""
     summary = repair_merge.get("summary") if isinstance(repair_merge.get("summary"), dict) else {}
+    review_summary = (
+        repair_patch_review.get("summary")
+        if isinstance(repair_patch_review, dict) and isinstance(repair_patch_review.get("summary"), dict)
+        else {}
+    )
     source_path_text = str(summary.get("repaired_full_path") or "")
     source_path = source_full_path or (Path(source_path_text) if source_path_text else None)
     target_path = published_full_path
@@ -1479,6 +1661,8 @@ def build_repair_publish(
     conflict_count = _safe_nonnegative_int(summary.get("conflict_count")) or 0
     skipped_count = _safe_nonnegative_int(summary.get("skipped_count")) or 0
     open_merge_issue_count = manual_required_count + conflict_count
+    patch_review_blocking_count = _safe_nonnegative_int(review_summary.get("publish_blocking_count")) or 0
+    patch_review_human_reviewed_count = _safe_nonnegative_int(review_summary.get("human_reviewed_count")) or 0
 
     status = "pending_confirmation"
     reason = "需要显式人工确认后才生成发布副本。"
@@ -1491,6 +1675,9 @@ def build_repair_publish(
     if skipped_count:
         warnings.append(f"{skipped_count} 条修复未进入合并。")
 
+    if patch_review_blocking_count:
+        warnings.append(f"{patch_review_blocking_count} patch reviews are not approved for publication.")
+
     if confirm:
         if source_path is None or not source_path.is_file():
             status = "blocked_missing_repaired_full"
@@ -1501,6 +1688,9 @@ def build_repair_publish(
         elif applied_count <= 0:
             status = "blocked_no_applied_repairs"
             reason = "没有已应用的修复补丁，未生成发布副本。"
+        elif patch_review_blocking_count > 0:
+            status = "blocked_patch_review"
+            reason = "Repair patch review still has blocking items; published_full.md was not generated."
         else:
             target_path.parent.mkdir(parents=True, exist_ok=True)
             target_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
@@ -1522,6 +1712,10 @@ def build_repair_publish(
             "conflict_count": conflict_count,
             "skipped_count": skipped_count,
             "open_merge_issue_count": open_merge_issue_count,
+            "patch_review_blocking_count": patch_review_blocking_count,
+            "patch_review_human_reviewed_count": patch_review_human_reviewed_count,
+            "patch_review_human_decision_counts": review_summary.get("human_decision_counts") or {},
+            "patch_review_effective_decision_counts": review_summary.get("effective_decision_counts") or {},
             "source_repaired_full_path": source_path.as_posix() if source_path else "",
             "published_full_path": target_path.as_posix() if target_path else "",
             "original_full_path": original_full_path.as_posix() if original_full_path else "",
@@ -1531,6 +1725,7 @@ def build_repair_publish(
         "source": {
             "repair_merge_summary": summary,
             "repair_merge_patches": repair_merge.get("patches") or [],
+            "repair_patch_review_summary": review_summary,
         },
     }
 
@@ -1572,6 +1767,7 @@ def write_repair_publish(
     source_full_path: Path | None = None,
     published_full_path: Path | None = None,
     original_full_path: Path | None = None,
+    repair_patch_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     report = build_repair_publish(
         repair_merge,
@@ -1579,6 +1775,7 @@ def write_repair_publish(
         source_full_path=source_full_path,
         published_full_path=published_full_path or json_path.parent / "published_full.md",
         original_full_path=original_full_path,
+        repair_patch_review=repair_patch_review,
     )
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

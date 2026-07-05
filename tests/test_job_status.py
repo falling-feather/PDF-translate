@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from typer.testing import CliRunner
+from fastapi import HTTPException
 
 from pdf_translate.cli import app
 from pdf_translate.server.routes_web import _confirm_repair_publish_for_record
@@ -280,6 +281,85 @@ class JobStatusSnapshotTests(unittest.TestCase):
         merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
         self.assertTrue(merged[0]["repair_publish_published"])
         self.assertTrue(merged[0]["repair_published_full_ready"])
+
+    def test_confirm_repair_publish_respects_existing_patch_review_gate(self) -> None:
+        root = self._case_root("repair-publish-patch-review-gate")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        out = rec.work_dir / "output"
+        out.mkdir()
+        (out / "translated_full.md").write_text("original translation", encoding="utf-8")
+        (out / "repaired_full.md").write_text("repaired translation", encoding="utf-8")
+        (out / "repair_merge.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "repair-merge-v1",
+                    "summary": {
+                        "applied_count": 1,
+                        "patched_chunk_count": 1,
+                        "manual_merge_required_count": 0,
+                        "conflict_count": 0,
+                        "skipped_count": 0,
+                        "repaired_full_path": (out / "repaired_full.md").as_posix(),
+                    },
+                    "patches": [
+                        {
+                            "request_id": "rq0000",
+                            "repair_id": "rp0000",
+                            "chunk_id": "c0000",
+                            "status": "applied",
+                            "strategy": "replace_chunk",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (out / "repair_patch_review.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "repair-patch-review-v1",
+                    "summary": {
+                        "repair_merge_schema_version": "repair-merge-v1",
+                        "patch_count": 1,
+                        "auto_merge_safe_count": 1,
+                        "effective_safe_count": 0,
+                        "review_required_count": 1,
+                        "publish_blocking_count": 1,
+                        "human_reviewed_count": 1,
+                        "human_rejected_count": 1,
+                        "human_decision_counts": {"reject": 1},
+                        "effective_decision_counts": {"reject_candidate": 1},
+                    },
+                    "patch_reviews": [
+                        {
+                            "review_id": "pr0000",
+                            "chunk_id": "c0000",
+                            "merge_status": "applied",
+                            "merge_strategy": "replace_chunk",
+                            "default_decision": "approve_candidate",
+                            "effective_decision": "reject_candidate",
+                            "human_decision": "reject",
+                            "publish_blocking": True,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        registry.update(rec.job_id, status="done", phase="done")
+
+        with self.assertRaises(HTTPException) as ctx:
+            _confirm_repair_publish_for_record(rec)
+
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertFalse((out / "published_full.md").exists())
+        publish_report = json.loads((out / "repair_publish.json").read_text(encoding="utf-8"))
+        self.assertEqual(publish_report["summary"]["publish_status"], "blocked_patch_review")
+        self.assertEqual(publish_report["summary"]["patch_review_blocking_count"], 1)
+        review_report = json.loads((out / "repair_patch_review.json").read_text(encoding="utf-8"))
+        self.assertEqual(review_report["patch_reviews"][0]["human_decision"], "reject")
 
     def test_artifact_summary_marks_done_without_translation_inconsistent(self) -> None:
         root = self._case_root("artifact-inconsistent")

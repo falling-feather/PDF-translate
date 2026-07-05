@@ -322,7 +322,45 @@ async function adminDownload(jobId, kind, filename) {
   URL.revokeObjectURL(a.href);
 }
 
+async function adminReviewRepairPatch(job) {
+  const reportRes = await fetch(`/api/jobs/${job.job_id}/repair-patch-review`, { headers: authHeaders() });
+  const report = await reportRes.json().catch(() => ({}));
+  if (!reportRes.ok) {
+    alert(formatAdminError(report));
+    return;
+  }
+  const reviews = Array.isArray(report.patch_reviews) ? report.patch_reviews : [];
+  if (!reviews.length) {
+    alert("暂无可审核补丁");
+    return;
+  }
+  const suggested = reviews.find((item) => item.publish_blocking) || reviews[0];
+  const reviewId = window.prompt("补丁 ID", suggested.review_id || "");
+  if (!reviewId) return;
+  const decision = window.prompt("决策：approve / reject / needs_revision / clear", "approve");
+  if (!decision) return;
+  const comment = window.prompt("备注（可留空）", "") || "";
+  const r = await fetch(`/api/jobs/${job.job_id}/repair-patch-review/${encodeURIComponent(reviewId.trim())}`, {
+    method: "POST",
+    headers: authHeaders(true),
+    body: JSON.stringify({ decision: decision.trim(), comment }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatAdminError(data));
+    return;
+  }
+  await loadJobs();
+  await loadAudit();
+  alert("已更新补丁审核");
+}
+
 async function adminConfirmRepairPublish(job) {
+  const blockingReviews = Number(job.repair_patch_review_blocking_count || 0);
+  if (blockingReviews > 0) {
+    alert(`仍有 ${blockingReviews} 个补丁未通过审核，请先处理补丁审核。`);
+    return;
+  }
   const openIssues = Number(job.repair_publish_open_issue_count || 0);
   const confirmText = openIssues > 0
     ? `当前仍有 ${openIssues} 个开放合并问题。确认后会生成修复发布稿，但原始译文仍会保留。是否继续？`
@@ -561,6 +599,7 @@ onMounted(() => {
                 <span v-if="artifactWarnings(j)" class="muted small artifact-note">{{ artifactWarnings(j) }}</span>
               </td>
               <td class="nowrap">
+                <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.repair_patch_review_ready" @click="adminReviewRepairPatch(j)">审核补丁</button>
                 <button type="button" class="linkish" :disabled="!j.input_pdf_ready" @click="adminDownload(j.job_id, 'input', 'input.pdf')">原PDF</button>
                 <button type="button" class="linkish" :disabled="!j.partial_output_ready" @click="adminDownload(j.job_id, 'output_md', 'translated.md')">MD</button>
                 <button type="button" class="linkish" :disabled="!j.translated_pdf_ready" @click="adminDownload(j.job_id, 'output_pdf', 'translated.pdf')">译PDF</button>

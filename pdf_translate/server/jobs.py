@@ -441,6 +441,8 @@ class JobRegistry:
         repair_patch_review_count = self._as_int(patch_review_summary.get("patch_count"))
         repair_patch_review_required_count = self._as_int(patch_review_summary.get("review_required_count"))
         repair_patch_review_blocking_count = self._as_int(patch_review_summary.get("publish_blocking_count"))
+        repair_patch_review_human_reviewed_count = self._as_int(patch_review_summary.get("human_reviewed_count"))
+        repair_patch_review_effective_safe_count = self._as_int(patch_review_summary.get("effective_safe_count"))
         if repair_publish_open_issue_count > 0:
             warnings.append("repair_publish_open_issues")
         if repair_patch_review_blocking_count > 0:
@@ -488,6 +490,8 @@ class JobRegistry:
             "repair_patch_review_count": repair_patch_review_count,
             "repair_patch_review_required_count": repair_patch_review_required_count,
             "repair_patch_review_blocking_count": repair_patch_review_blocking_count,
+            "repair_patch_review_human_reviewed_count": repair_patch_review_human_reviewed_count,
+            "repair_patch_review_effective_safe_count": repair_patch_review_effective_safe_count,
             "repair_publish_confirmed": repair_publish_confirmed,
             "repair_publish_published": repair_publish_published,
             "repair_publish_status": repair_publish_status,
@@ -645,6 +649,8 @@ class JobRegistry:
                 "repair_patch_review_count": 0,
                 "repair_patch_review_required_count": 0,
                 "repair_patch_review_blocking_count": 0,
+                "repair_patch_review_human_reviewed_count": 0,
+                "repair_patch_review_effective_safe_count": 0,
                 "repair_publish_confirmed": False,
                 "repair_publish_published": False,
                 "repair_publish_status": "",

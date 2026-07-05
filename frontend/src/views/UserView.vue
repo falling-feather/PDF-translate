@@ -384,8 +384,46 @@ async function cancelJob(jid) {
   await pollJob(jid);
 }
 
+async function reviewRepairPatch(jid) {
+  const reportRes = await fetch(`/api/jobs/${jid}/repair-patch-review`, { headers: authHeaders() });
+  const report = await reportRes.json().catch(() => ({}));
+  if (!reportRes.ok) {
+    alert(formatErrorPayload(report));
+    return;
+  }
+  const reviews = Array.isArray(report.patch_reviews) ? report.patch_reviews : [];
+  if (!reviews.length) {
+    alert("暂无可审核补丁");
+    return;
+  }
+  const suggested = reviews.find((item) => item.publish_blocking) || reviews[0];
+  const reviewId = window.prompt("补丁 ID", suggested.review_id || "");
+  if (!reviewId) return;
+  const decision = window.prompt("决策：approve / reject / needs_revision / clear", "approve");
+  if (!decision) return;
+  const comment = window.prompt("备注（可留空）", "") || "";
+  const r = await fetch(`/api/jobs/${jid}/repair-patch-review/${encodeURIComponent(reviewId.trim())}`, {
+    method: "POST",
+    headers: authHeaders(true),
+    body: JSON.stringify({ decision: decision.trim(), comment }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatErrorPayload(data));
+    return;
+  }
+  taskMap.value = { ...taskMap.value, [jid]: data };
+  await loadMyJobs();
+  alert("已更新补丁审核");
+}
+
 async function confirmRepairPublish(jid) {
   const job = taskMap.value[jid] || {};
+  const blockingReviews = Number(job.repair_patch_review_blocking_count || 0);
+  if (blockingReviews > 0) {
+    alert(`仍有 ${blockingReviews} 个补丁未通过审核，请先处理补丁审核。`);
+    return;
+  }
   const openIssues = Number(job.repair_publish_open_issue_count || 0);
   const confirmText = openIssues > 0
     ? `当前仍有 ${openIssues} 个开放合并问题。确认后会生成修复发布稿，但原始译文仍会保留。是否继续？`
@@ -757,8 +795,17 @@ onUnmounted(() => {
                 <button
                   v-if="taskMap[tid].status === 'done'"
                   type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].repair_patch_review_ready"
+                  @click="reviewRepairPatch(tid)"
+                >
+                  审核补丁
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done'"
+                  type="button"
                   class="btn"
-                  :disabled="!taskMap[tid].repair_publish_report_ready || taskMap[tid].repair_published_full_ready"
+                  :disabled="!taskMap[tid].repair_publish_report_ready || taskMap[tid].repair_published_full_ready || Number(taskMap[tid].repair_patch_review_blocking_count || 0) > 0"
                   @click="confirmRepairPublish(tid)"
                 >
                   确认修复稿

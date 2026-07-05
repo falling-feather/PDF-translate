@@ -33,6 +33,7 @@ from pdf_translate.qa.chunk_boundary import build_chunk_boundary_qa, build_chunk
 from pdf_translate.qa.metrics import build_experiment_metrics
 from pdf_translate.qa.ocr_candidates import build_ocr_candidate_qa, write_ocr_candidate_qa
 from pdf_translate.qa.repair import (
+    apply_repair_patch_review_decision,
     build_repair_plan,
     build_repair_patch_review,
     build_repair_requests,
@@ -1149,9 +1150,37 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(patch_review["patch_reviews"][0]["human_decision"], "")
             self.assertEqual(patch_review["patch_reviews"][0]["default_decision"], "approve_candidate")
             self.assertEqual(patch_review["patch_reviews"][0]["merge_target"]["table_index"], 0)
+            rejected_review = apply_repair_patch_review_decision(
+                json.loads(json.dumps(patch_review)),
+                "pr0000",
+                decision="reject",
+                reviewer="tester",
+                comment="cell value still looks wrong",
+                reviewed_at="2026-07-05T00:00:00+00:00",
+            )
+            self.assertEqual(rejected_review["summary"]["human_reviewed_count"], 1)
+            self.assertEqual(rejected_review["summary"]["human_rejected_count"], 1)
+            self.assertEqual(rejected_review["summary"]["publish_blocking_count"], 1)
+            self.assertEqual(
+                rejected_review["summary"]["effective_decision_counts"]["reject_candidate"],
+                1,
+            )
             repaired_chunk = (root / "repaired_chunks" / "c0000.md").read_text(encoding="utf-8")
             self.assertIn("| BERT | 91.2% | p<0.05 |", repaired_chunk)
             self.assertTrue((root / "repaired_full.md").is_file())
+            blocked_publish = build_repair_publish(
+                merge,
+                confirm=True,
+                source_full_path=root / "repaired_full.md",
+                published_full_path=root / "blocked_published_full.md",
+                original_full_path=chunk_dir / "c0000.md",
+                repair_patch_review=rejected_review,
+            )
+            self.assertTrue(blocked_publish["summary"]["confirmed"])
+            self.assertFalse(blocked_publish["summary"]["published"])
+            self.assertEqual(blocked_publish["summary"]["publish_status"], "blocked_patch_review")
+            self.assertEqual(blocked_publish["summary"]["patch_review_blocking_count"], 1)
+            self.assertFalse((root / "blocked_published_full.md").exists())
             draft_publish = build_repair_publish(
                 merge,
                 source_full_path=root / "repaired_full.md",
