@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { authHeaders, clearSession, getUsername } from "../auth";
+import TableMergedCellReviewModal from "../components/TableMergedCellReviewModal.vue";
 
 const router = useRouter();
 const tab = ref("settings");
@@ -13,6 +14,7 @@ const users = ref([]);
 const jobs = ref([]);
 const reconcile = ref(null);
 const reconciling = ref(false);
+const tableReviewJobId = ref("");
 
 const auditExpanded = ref({});
 
@@ -358,36 +360,12 @@ async function adminReviewRepairPatch(job) {
 }
 
 async function adminReviewTableMergedCell(job) {
-  const reportRes = await fetch(`/api/jobs/${job.job_id}/table-merged-cell-review`, { headers: authHeaders() });
-  const report = await reportRes.json().catch(() => ({}));
-  if (!reportRes.ok) {
-    alert(formatAdminError(report));
-    return;
-  }
-  const reviews = Array.isArray(report.candidate_reviews) ? report.candidate_reviews : [];
-  if (!reviews.length) {
-    alert("暂无可审核表格合并候选");
-    return;
-  }
-  const suggested = reviews.find((item) => item.confirmation_status === "pending_review") || reviews[0];
-  const reviewId = window.prompt("表格合并候选 ID", suggested.review_id || "");
-  if (!reviewId) return;
-  const decision = window.prompt("决策：confirm / reject / needs_revision / clear", "confirm");
-  if (!decision) return;
-  const comment = window.prompt("备注（可留空）", "") || "";
-  const r = await fetch(`/api/jobs/${job.job_id}/table-merged-cell-review/${encodeURIComponent(reviewId.trim())}`, {
-    method: "POST",
-    headers: authHeaders(true),
-    body: JSON.stringify({ decision: decision.trim(), comment }),
-  });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    alert(formatAdminError(data));
-    return;
-  }
+  tableReviewJobId.value = job.job_id;
+}
+
+async function onTableReviewUpdated() {
   await loadJobs();
   await loadAudit();
-  alert("已更新表格合并候选审核");
 }
 
 async function adminConfirmTableStructurePublish(job) {
@@ -675,6 +653,13 @@ onMounted(() => {
         </table>
       </div>
     </section>
+    <TableMergedCellReviewModal
+      v-if="tableReviewJobId"
+      :job-id="tableReviewJobId"
+      title="表格合并候选审核"
+      @updated="onTableReviewUpdated"
+      @close="tableReviewJobId = ''"
+    />
   </div>
 </template>
 

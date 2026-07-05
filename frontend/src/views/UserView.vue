@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { authHeaders, clearSession, getUsername } from "../auth";
+import TableMergedCellReviewModal from "../components/TableMergedCellReviewModal.vue";
 
 const router = useRouter();
 const displayName = computed(() => getUsername());
@@ -40,6 +41,7 @@ const taskMap = ref({});
 const pollTimer = ref(null);
 
 const showSupportModal = ref(false);
+const tableReviewJobId = ref("");
 const pageNow = ref(Date.now());
 let footerTimer = null;
 
@@ -420,36 +422,14 @@ async function reviewRepairPatch(jid) {
 }
 
 async function reviewTableMergedCell(jid) {
-  const reportRes = await fetch(`/api/jobs/${jid}/table-merged-cell-review`, { headers: authHeaders() });
-  const report = await reportRes.json().catch(() => ({}));
-  if (!reportRes.ok) {
-    alert(formatErrorPayload(report));
-    return;
+  tableReviewJobId.value = jid;
+}
+
+async function onTableReviewUpdated(job) {
+  if (job?.job_id) {
+    taskMap.value = { ...taskMap.value, [job.job_id]: job };
   }
-  const reviews = Array.isArray(report.candidate_reviews) ? report.candidate_reviews : [];
-  if (!reviews.length) {
-    alert("暂无可审核表格合并候选");
-    return;
-  }
-  const suggested = reviews.find((item) => item.confirmation_status === "pending_review") || reviews[0];
-  const reviewId = window.prompt("表格合并候选 ID", suggested.review_id || "");
-  if (!reviewId) return;
-  const decision = window.prompt("决策：confirm / reject / needs_revision / clear", "confirm");
-  if (!decision) return;
-  const comment = window.prompt("备注（可留空）", "") || "";
-  const r = await fetch(`/api/jobs/${jid}/table-merged-cell-review/${encodeURIComponent(reviewId.trim())}`, {
-    method: "POST",
-    headers: authHeaders(true),
-    body: JSON.stringify({ decision: decision.trim(), comment }),
-  });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    alert(formatErrorPayload(data));
-    return;
-  }
-  taskMap.value = { ...taskMap.value, [jid]: data };
   await loadMyJobs();
-  alert("已更新表格合并候选审核");
 }
 
 async function confirmTableStructurePublish(jid) {
@@ -1039,6 +1019,12 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
+    <TableMergedCellReviewModal
+      v-if="tableReviewJobId"
+      :job-id="tableReviewJobId"
+      @updated="onTableReviewUpdated"
+      @close="tableReviewJobId = ''"
+    />
   </div>
 </template>
 
