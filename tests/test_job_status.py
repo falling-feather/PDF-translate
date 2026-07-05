@@ -203,6 +203,25 @@ class JobStatusSnapshotTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        (out / "table_merged_cell_review.md").write_text("# 表格确认", encoding="utf-8")
+        (out / "table_merged_cell_review.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "table-merged-cell-review-v1",
+                    "summary": {
+                        "candidate_review_count": 4,
+                        "review_required_count": 2,
+                        "pending_review_count": 1,
+                        "visual_supported_count": 1,
+                        "human_reviewed_count": 2,
+                        "human_confirmed_count": 1,
+                        "rejected_count": 1,
+                        "needs_revision_count": 1,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         (out / "repair_publish.md").write_text("# 发布确认", encoding="utf-8")
         (out / "published_full.md").write_text("published translation", encoding="utf-8")
         (out / "repair_publish.json").write_text(
@@ -231,6 +250,16 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(merged[0]["repair_patch_review_count"], 3)
         self.assertEqual(merged[0]["repair_patch_review_required_count"], 1)
         self.assertEqual(merged[0]["repair_patch_review_blocking_count"], 1)
+        self.assertTrue(merged[0]["table_merged_cell_review_ready"])
+        self.assertGreater(merged[0]["table_merged_cell_review_bytes"], 0)
+        self.assertEqual(merged[0]["table_merged_cell_review_count"], 4)
+        self.assertEqual(merged[0]["table_merged_cell_review_required_count"], 2)
+        self.assertEqual(merged[0]["table_merged_cell_review_pending_count"], 1)
+        self.assertEqual(merged[0]["table_merged_cell_review_visual_supported_count"], 1)
+        self.assertEqual(merged[0]["table_merged_cell_review_human_reviewed_count"], 2)
+        self.assertEqual(merged[0]["table_merged_cell_review_human_confirmed_count"], 1)
+        self.assertEqual(merged[0]["table_merged_cell_review_rejected_count"], 1)
+        self.assertEqual(merged[0]["table_merged_cell_review_needs_revision_count"], 1)
         self.assertTrue(merged[0]["repair_publish_confirmed"])
         self.assertTrue(merged[0]["repair_publish_published"])
         self.assertEqual(merged[0]["repair_publish_status"], "published_with_warnings")
@@ -240,6 +269,7 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertGreater(merged[0]["repair_published_full_bytes"], 0)
         self.assertIn("repair_publish_open_issues", merged[0]["artifact_warnings"])
         self.assertIn("repair_patch_review_blocking_items", merged[0]["artifact_warnings"])
+        self.assertIn("table_merged_cell_review_required_items", merged[0]["artifact_warnings"])
 
     def test_confirm_repair_publish_for_completed_job_writes_publish_copy(self) -> None:
         root = self._case_root("repair-publish-confirm")
@@ -379,6 +409,7 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(merged[0]["translated_pdf_bytes"], 0)
         self.assertFalse(merged[0]["repair_publish_report_ready"])
         self.assertFalse(merged[0]["repair_patch_review_ready"])
+        self.assertFalse(merged[0]["table_merged_cell_review_ready"])
         self.assertFalse(merged[0]["repair_published_full_ready"])
         self.assertFalse(merged[0]["bundle_zip_ready"])
 
@@ -424,6 +455,7 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(merged[0]["translated_pdf_bytes"], 0)
         self.assertFalse(merged[0]["repair_publish_report_ready"])
         self.assertEqual(merged[0]["repair_publish_open_issue_count"], 0)
+        self.assertFalse(merged[0]["table_merged_cell_review_ready"])
         self.assertFalse(merged[0]["repair_published_full_ready"])
         self.assertNotIn("status", merged[0])
 

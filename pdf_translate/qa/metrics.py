@@ -266,6 +266,12 @@ def build_experiment_metrics(
     table_merged_cell_review_rejected_count = _as_int(
         table_merged_cell_review_summary.get("rejected_count")
     )
+    table_merged_cell_review_human_reviewed_count = _as_int(
+        table_merged_cell_review_summary.get("human_reviewed_count")
+    )
+    table_merged_cell_review_needs_revision_count = _as_int(
+        table_merged_cell_review_summary.get("needs_revision_count")
+    )
     table_merged_cell_review_confirmation_status_counts = _counter_dict(
         table_merged_cell_review_summary.get("confirmation_status_counts")
     )
@@ -762,6 +768,12 @@ def build_experiment_metrics(
                 table_merged_cell_review_human_confirmed_count
             ),
             "table_merged_cell_review_rejected_count": table_merged_cell_review_rejected_count,
+            "table_merged_cell_review_human_reviewed_count": (
+                table_merged_cell_review_human_reviewed_count
+            ),
+            "table_merged_cell_review_needs_revision_count": (
+                table_merged_cell_review_needs_revision_count
+            ),
             "table_caption_linked_count": table_caption_linked_count,
             "table_footnote_linked_count": table_footnote_linked_count,
             "table_footnote_binding_count": table_footnote_binding_count,
@@ -1063,6 +1075,10 @@ def build_experiment_metrics(
             ),
             "table_merged_cell_review_rejected_rate": _rate(
                 table_merged_cell_review_rejected_count,
+                table_merged_cell_review_count,
+            ),
+            "table_merged_cell_review_human_reviewed_rate": _rate(
+                table_merged_cell_review_human_reviewed_count,
                 table_merged_cell_review_count,
             ),
             "table_numeric_cell_rate": _rate(table_numeric_cell_count, table_cell_count),

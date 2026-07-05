@@ -19,6 +19,10 @@ from pdf_translate.qa.repair import (
     write_repair_patch_review_decision,
     write_repair_publish,
 )
+from pdf_translate.qa.table_reconstruction import (
+    write_table_merged_cell_review,
+    write_table_merged_cell_review_decision,
+)
 
 from pdf_translate.server.auth_deps import Principal, bearer_principal, mint_token, require_admin
 from pdf_translate.server import database
@@ -62,6 +66,21 @@ def _read_or_create_repair_patch_review(out_dir: Path, repair_merge: dict[str, A
             invalid_message="局部修复补丁审核报告无法解析",
         )
     return write_repair_patch_review(repair_merge, json_path, md_path)
+
+
+def _read_or_create_table_merged_cell_review(
+    out_dir: Path,
+    table_reconstruction: dict[str, Any],
+) -> dict[str, Any]:
+    json_path = out_dir / "table_merged_cell_review.json"
+    md_path = out_dir / "table_merged_cell_review.md"
+    if json_path.is_file() and json_path.stat().st_size > 0:
+        return _read_json_artifact(
+            json_path,
+            missing_message="表格合并候选确认清单尚未生成",
+            invalid_message="表格合并候选确认清单无法解析",
+        )
+    return write_table_merged_cell_review(table_reconstruction, json_path, md_path)
 
 
 def _confirm_repair_publish_for_record(rec: JobRecord) -> dict[str, Any]:
@@ -607,6 +626,94 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             headers={"Content-Disposition": cd},
         )
 
+    @api.get("/jobs/{job_id}/download/table-merged-cell-review.md")
+    def download_table_merged_cell_review(
+        job_id: str,
+        p: Principal = Depends(bearer_principal),
+    ) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "table_merged_cell_review.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "表格合并候选确认清单尚未生成")
+        ascii_fallback = "table_merged_cell_review.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_table_merged_cell_review.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
+    @api.get("/jobs/{job_id}/table-merged-cell-review")
+    def get_table_merged_cell_review(job_id: str, p: Principal = Depends(bearer_principal)) -> dict:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        out_dir = rec.work_dir / "output"
+        table_reconstruction = _read_json_artifact(
+            out_dir / "table_reconstruction.json",
+            missing_message="表格重建报告尚未生成",
+            invalid_message="表格重建报告无法解析",
+        )
+        return _read_or_create_table_merged_cell_review(out_dir, table_reconstruction)
+
+    @api.post("/jobs/{job_id}/table-merged-cell-review/{review_id}")
+    def update_table_merged_cell_review(
+        job_id: str,
+        review_id: str,
+        request: Request,
+        payload: dict[str, Any] = Body(...),
+        p: Principal = Depends(bearer_principal),
+    ) -> dict:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        if rec.status != "done":
+            raise HTTPException(409, "任务尚未完成，暂不能审核表格合并候选")
+        out_dir = rec.work_dir / "output"
+        table_reconstruction = _read_json_artifact(
+            out_dir / "table_reconstruction.json",
+            missing_message="表格重建报告尚未生成",
+            invalid_message="表格重建报告无法解析",
+        )
+        _read_or_create_table_merged_cell_review(out_dir, table_reconstruction)
+        try:
+            report = write_table_merged_cell_review_decision(
+                out_dir / "table_merged_cell_review.json",
+                out_dir / "table_merged_cell_review.md",
+                review_id,
+                decision=payload.get("decision"),
+                reviewer=p.username,
+                comment=payload.get("comment") or "",
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(404, f"表格合并候选审核项不存在：{review_id}") from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "表格合并候选确认清单尚未生成") from exc
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        app_registry.update(job_id, message="已更新表格合并候选审核")
+        database.log_audit(
+            action="job_table_merged_cell_review_update",
+            ip=client_ip(request),
+            user_id=p.user_id,
+            username=p.username,
+            job_id=job_id,
+            detail={
+                "review_id": review_id,
+                "decision": payload.get("decision"),
+                "review_required_count": summary.get("review_required_count"),
+                "human_reviewed_count": summary.get("human_reviewed_count"),
+            },
+        )
+        updated = app_registry.get(job_id) or rec
+        d = _job_dict(updated)
+        d["table_merged_cell_review_summary"] = summary
+        return d
+
     @api.get("/jobs/{job_id}/repair-patch-review")
     def get_repair_patch_review(job_id: str, p: Principal = Depends(bearer_principal)) -> dict:
         rec = app_registry.get(job_id)
@@ -878,6 +985,15 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             if not p.is_file() or p.stat().st_size == 0:
                 raise HTTPException(404, "局部修复补丁审核清单尚未生成")
             return FileResponse(p, filename="repair_patch_review.md", media_type="text/markdown; charset=utf-8")
+        if kind == "table_merged_cell_review":
+            p = root / "output" / "table_merged_cell_review.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "表格合并候选确认清单尚未生成")
+            return FileResponse(
+                p,
+                filename="table_merged_cell_review.md",
+                media_type="text/markdown; charset=utf-8",
+            )
         if kind == "repair_published_full":
             p = root / "output" / "published_full.md"
             if not p.is_file() or p.stat().st_size == 0:
@@ -897,7 +1013,10 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             ascii_fb = "bundle.zip"
             cd = f'attachment; filename="{ascii_fb}"; filename*=UTF-8\'\'{quote(zip_disp)}'
             return Response(content=data, media_type="application/zip", headers={"Content-Disposition": cd})
-        raise HTTPException(400, "kind 必须是 input / output_md / output_pdf / repair_publish / repair_patch_review / repair_published_full / bundle_zip")
+        raise HTTPException(
+            400,
+            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_patch_review / table_merged_cell_review / repair_published_full / bundle_zip",
+        )
 
     api.include_router(admin)
     return api

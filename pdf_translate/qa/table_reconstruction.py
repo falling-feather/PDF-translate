@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1469,6 +1470,47 @@ def _candidate_review_default_decision(candidate: dict[str, Any]) -> str:
     return "needs_visual_review"
 
 
+def normalize_table_merged_cell_review_human_decision(decision: Any) -> str:
+    value = str(decision or "").strip().lower()
+    aliases = {
+        "": "",
+        "clear": "",
+        "pending": "",
+        "confirm": "confirm",
+        "confirmed": "confirm",
+        "approve": "confirm",
+        "approved": "confirm",
+        "accept": "confirm",
+        "accepted": "confirm",
+        "reject": "reject",
+        "rejected": "reject",
+        "deny": "reject",
+        "denied": "reject",
+        "needs_revision": "needs_revision",
+        "needs_changes": "needs_revision",
+        "revise": "needs_revision",
+        "manual_review_required": "needs_revision",
+    }
+    if value not in aliases:
+        allowed = "confirm / reject / needs_revision / clear"
+        raise ValueError(f"human_decision must be one of: {allowed}")
+    return aliases[value]
+
+
+def _effective_table_merged_cell_confirmation_status(review: dict[str, Any]) -> str:
+    try:
+        human_decision = normalize_table_merged_cell_review_human_decision(review.get("human_decision"))
+    except ValueError:
+        return "needs_revision"
+    if human_decision == "confirm":
+        return "human_confirmed"
+    if human_decision == "reject":
+        return "rejected"
+    if human_decision == "needs_revision":
+        return "needs_revision"
+    return _candidate_review_confirmation_status(review)
+
+
 def _candidate_review_item(
     candidate: dict[str, Any],
     *,
@@ -1524,25 +1566,24 @@ def _candidate_review_item(
     }
 
 
-def build_table_merged_cell_review(table_reconstruction: dict[str, Any] | None) -> dict[str, Any]:
-    """Build a human review checklist for merged-cell candidates."""
-    if not isinstance(table_reconstruction, dict):
-        table_reconstruction = {}
-    reviews: list[dict[str, Any]] = []
-    tables = table_reconstruction.get("tables") if isinstance(table_reconstruction.get("tables"), list) else []
-    for table in tables:
-        if not isinstance(table, dict):
-            continue
-        for candidate in table.get("merged_cell_candidates") or []:
-            if not isinstance(candidate, dict):
-                continue
-            reviews.append(
-                _candidate_review_item(
-                    candidate,
-                    table=table,
-                    index=len(reviews),
-                )
+def _refresh_table_merged_cell_review_summary(report: dict[str, Any]) -> dict[str, Any]:
+    reviews = [
+        review
+        for review in report.get("candidate_reviews") or []
+        if isinstance(review, dict)
+    ]
+    for review in reviews:
+        try:
+            human_decision = normalize_table_merged_cell_review_human_decision(
+                review.get("human_decision")
             )
+        except ValueError:
+            human_decision = "needs_revision"
+        review["human_decision"] = human_decision
+        review["confirmation_status"] = _effective_table_merged_cell_confirmation_status(review)
+        evidence = review.get("bbox_evidence") if isinstance(review.get("bbox_evidence"), dict) else {}
+        if not review.get("bbox_evidence_status"):
+            review["bbox_evidence_status"] = str(evidence.get("status") or "missing")
 
     confirmation_status_counts = _count_values(
         [str(item.get("confirmation_status") or "pending_review") for item in reviews]
@@ -1565,8 +1606,14 @@ def build_table_merged_cell_review(table_reconstruction: dict[str, Any] | None) 
     review_required_count = sum(
         1
         for item in reviews
-        if item.get("confirmation_status") == "pending_review"
-        or str(item.get("default_decision") or "").startswith("needs_")
+        if (
+            normalize_table_merged_cell_review_human_decision(item.get("human_decision"))
+            not in {"confirm", "reject"}
+        )
+        and (
+            item.get("confirmation_status") in {"pending_review", "needs_revision"}
+            or str(item.get("default_decision") or "").startswith("needs_")
+        )
     )
     visual_supported_count = candidate_status_counts.get("visually_supported", 0)
     estimated_only_count = sum(
@@ -1581,31 +1628,60 @@ def build_table_merged_cell_review(table_reconstruction: dict[str, Any] | None) 
         if item.get("visual_evidence_level") in ("", "none")
         or item.get("bbox_evidence_status") in ("", "missing")
     )
-    human_confirmed_count = confirmation_status_counts.get("human_confirmed", 0)
-    rejected_count = confirmation_status_counts.get("rejected", 0)
-    pending_review_count = confirmation_status_counts.get("pending_review", 0)
-    return {
+    human_reviewed_count = sum(
+        1
+        for item in reviews
+        if normalize_table_merged_cell_review_human_decision(item.get("human_decision"))
+        in {"confirm", "reject", "needs_revision"}
+    )
+    report["summary"] = {
+        "candidate_review_count": len(reviews),
+        "review_required_count": review_required_count,
+        "pending_review_count": confirmation_status_counts.get("pending_review", 0),
+        "needs_revision_count": confirmation_status_counts.get("needs_revision", 0),
+        "visual_supported_count": visual_supported_count,
+        "estimated_only_count": estimated_only_count,
+        "missing_evidence_count": missing_evidence_count,
+        "human_reviewed_count": human_reviewed_count,
+        "human_confirmed_count": confirmation_status_counts.get("human_confirmed", 0),
+        "rejected_count": confirmation_status_counts.get("rejected", 0),
+        "confirmation_status_counts": confirmation_status_counts,
+        "default_decision_counts": default_decision_counts,
+        "human_decision_counts": human_decision_counts,
+        "candidate_status_counts": candidate_status_counts,
+        "visual_evidence_counts": visual_evidence_counts,
+        "bbox_evidence_counts": bbox_evidence_counts,
+    }
+    return report
+
+
+def build_table_merged_cell_review(table_reconstruction: dict[str, Any] | None) -> dict[str, Any]:
+    """Build a human review checklist for merged-cell candidates."""
+    if not isinstance(table_reconstruction, dict):
+        table_reconstruction = {}
+    reviews: list[dict[str, Any]] = []
+    tables = table_reconstruction.get("tables") if isinstance(table_reconstruction.get("tables"), list) else []
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        for candidate in table.get("merged_cell_candidates") or []:
+            if not isinstance(candidate, dict):
+                continue
+            reviews.append(
+                _candidate_review_item(
+                    candidate,
+                    table=table,
+                    index=len(reviews),
+                )
+            )
+
+    report = {
         "schema_version": MERGED_CELL_REVIEW_SCHEMA_VERSION,
         "doc_id": str(table_reconstruction.get("doc_id") or ""),
         "source_schema_version": str(table_reconstruction.get("schema_version") or ""),
-        "summary": {
-            "candidate_review_count": len(reviews),
-            "review_required_count": review_required_count,
-            "pending_review_count": pending_review_count,
-            "visual_supported_count": visual_supported_count,
-            "estimated_only_count": estimated_only_count,
-            "missing_evidence_count": missing_evidence_count,
-            "human_confirmed_count": human_confirmed_count,
-            "rejected_count": rejected_count,
-            "confirmation_status_counts": confirmation_status_counts,
-            "default_decision_counts": default_decision_counts,
-            "human_decision_counts": human_decision_counts,
-            "candidate_status_counts": candidate_status_counts,
-            "visual_evidence_counts": visual_evidence_counts,
-            "bbox_evidence_counts": bbox_evidence_counts,
-        },
         "candidate_reviews": reviews,
     }
+    return _refresh_table_merged_cell_review_summary(report)
 
 
 def _markdown_cell(value: Any) -> str:
@@ -1624,8 +1700,10 @@ def table_merged_cell_review_to_markdown(report: dict[str, Any]) -> str:
         f"- 视觉支持候选：{int(summary.get('visual_supported_count') or 0)}",
         f"- 仅估算证据：{int(summary.get('estimated_only_count') or 0)}",
         f"- 缺少视觉证据：{int(summary.get('missing_evidence_count') or 0)}",
+        f"- 已人工复核：{int(summary.get('human_reviewed_count') or 0)}",
         f"- 已人工确认：{int(summary.get('human_confirmed_count') or 0)}",
         f"- 已拒绝：{int(summary.get('rejected_count') or 0)}",
+        f"- 需修改/复查：{int(summary.get('needs_revision_count') or 0)}",
         "",
         "> 说明：本清单只用于人工确认合并单元格候选。视觉支持不等于人工确认，估算 bbox 也不能作为正式合并依据。",
         "",
@@ -1637,8 +1715,8 @@ def table_merged_cell_review_to_markdown(report: dict[str, Any]) -> str:
 
     lines.extend(
         [
-            "| review_id | 页码 | 表格 | 锚点 | 跨度 | 状态 | 证据 | 默认决策 | 文本 | 人工决策 |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| review_id | 页码 | 表格 | 锚点 | 跨度 | 状态 | 证据 | 默认决策 | 文本 | 人工决策 | 备注 |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for item in reviews:
@@ -1659,6 +1737,7 @@ def table_merged_cell_review_to_markdown(report: dict[str, Any]) -> str:
                     _markdown_cell(item.get("default_decision")),
                     _markdown_cell(_clip(str(item.get("text") or ""), 80)),
                     _markdown_cell(item.get("human_decision") or "pending"),
+                    _markdown_cell(item.get("human_comment")),
                 ]
             )
             + " |"
@@ -1678,6 +1757,69 @@ def write_table_merged_cell_review(
         markdown_path.parent.mkdir(parents=True, exist_ok=True)
         markdown_path.write_text(table_merged_cell_review_to_markdown(review), encoding="utf-8")
     return review
+
+
+def apply_table_merged_cell_review_decision(
+    report: dict[str, Any],
+    review_id: str,
+    *,
+    decision: Any,
+    reviewer: str = "",
+    comment: str = "",
+    reviewed_at: str | None = None,
+) -> dict[str, Any]:
+    normalized = normalize_table_merged_cell_review_human_decision(decision)
+    target_id = str(review_id or "").strip()
+    if not target_id:
+        raise KeyError("review_id is required")
+    reviews = report.get("candidate_reviews") if isinstance(report.get("candidate_reviews"), list) else []
+    for review in reviews:
+        if not isinstance(review, dict) or str(review.get("review_id") or "") != target_id:
+            continue
+        review["human_decision"] = normalized
+        if normalized:
+            review["human_comment"] = str(comment or "").strip()
+            review["reviewed_by"] = str(reviewer or "").strip()
+            review["reviewed_at"] = reviewed_at or datetime.now(timezone.utc).isoformat()
+        else:
+            review["human_comment"] = ""
+            review["reviewed_by"] = ""
+            review["reviewed_at"] = ""
+        return _refresh_table_merged_cell_review_summary(report)
+    raise KeyError(target_id)
+
+
+def write_table_merged_cell_review_decision(
+    json_path: Path,
+    markdown_path: Path,
+    review_id: str,
+    *,
+    decision: Any,
+    reviewer: str = "",
+    comment: str = "",
+    reviewed_at: str | None = None,
+) -> dict[str, Any]:
+    if not json_path.is_file() or json_path.stat().st_size == 0:
+        raise FileNotFoundError(json_path)
+    try:
+        report = json.loads(json_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("table merged cell review report is invalid") from exc
+    if not isinstance(report, dict):
+        raise ValueError("table merged cell review report is invalid")
+    updated = apply_table_merged_cell_review_decision(
+        report,
+        review_id,
+        decision=decision,
+        reviewer=reviewer,
+        comment=comment,
+        reviewed_at=reviewed_at,
+    )
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(table_merged_cell_review_to_markdown(updated), encoding="utf-8")
+    return updated
 
 
 def _chunk_block_ids(chunk: TextChunk) -> set[str]:

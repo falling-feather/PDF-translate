@@ -382,6 +382,19 @@ class JobRegistry:
         return summary, None
 
     @staticmethod
+    def _table_merged_cell_review_summary(path: Path) -> tuple[dict[str, Any], str | None]:
+        if not path.is_file():
+            return {}, None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}, "table_merged_cell_review_invalid"
+        summary = raw.get("summary")
+        if not isinstance(summary, dict):
+            return {}, "table_merged_cell_review_summary_missing"
+        return summary, None
+
+    @staticmethod
     def _as_int(value: Any) -> int:
         if isinstance(value, bool):
             return int(value)
@@ -403,6 +416,9 @@ class JobRegistry:
         repair_patch_review_json = output_dir / "repair_patch_review.json"
         repair_patch_review_md = output_dir / "repair_patch_review.md"
         repair_published_full = output_dir / "published_full.md"
+        table_reconstruction_json = output_dir / "table_reconstruction.json"
+        table_merged_cell_review_json = output_dir / "table_merged_cell_review.json"
+        table_merged_cell_review_md = output_dir / "table_merged_cell_review.md"
         input_bytes = self._file_size(input_pdf)
         translated_bytes = self._file_size(translated_md)
         pdf_bytes = self._file_size(translated_pdf)
@@ -412,8 +428,13 @@ class JobRegistry:
         repair_patch_review_json_bytes = self._file_size(repair_patch_review_json)
         repair_patch_review_md_bytes = self._file_size(repair_patch_review_md)
         repair_published_full_bytes = self._file_size(repair_published_full)
+        table_merged_cell_review_json_bytes = self._file_size(table_merged_cell_review_json)
+        table_merged_cell_review_md_bytes = self._file_size(table_merged_cell_review_md)
         repair_summary, repair_warning = self._repair_publish_summary(repair_publish_json)
         patch_review_summary, patch_review_warning = self._repair_patch_review_summary(repair_patch_review_json)
+        table_review_summary, table_review_warning = self._table_merged_cell_review_summary(
+            table_merged_cell_review_json
+        )
 
         warnings: list[str] = []
         if not rec.work_dir.is_dir():
@@ -432,6 +453,15 @@ class JobRegistry:
             warnings.append(repair_warning)
         if patch_review_warning:
             warnings.append(patch_review_warning)
+        if table_review_warning:
+            warnings.append(table_review_warning)
+        if (
+            rec.status == "done"
+            and table_reconstruction_json.is_file()
+            and table_merged_cell_review_json_bytes <= 0
+            and table_merged_cell_review_md_bytes <= 0
+        ):
+            warnings.append("table_merged_cell_review_missing_for_done")
 
         repair_publish_confirmed = bool(repair_summary.get("confirmed"))
         repair_publish_published = bool(repair_summary.get("published"))
@@ -443,10 +473,28 @@ class JobRegistry:
         repair_patch_review_blocking_count = self._as_int(patch_review_summary.get("publish_blocking_count"))
         repair_patch_review_human_reviewed_count = self._as_int(patch_review_summary.get("human_reviewed_count"))
         repair_patch_review_effective_safe_count = self._as_int(patch_review_summary.get("effective_safe_count"))
+        table_merged_cell_review_count = self._as_int(table_review_summary.get("candidate_review_count"))
+        table_merged_cell_review_required_count = self._as_int(table_review_summary.get("review_required_count"))
+        table_merged_cell_review_pending_count = self._as_int(table_review_summary.get("pending_review_count"))
+        table_merged_cell_review_visual_supported_count = self._as_int(
+            table_review_summary.get("visual_supported_count")
+        )
+        table_merged_cell_review_human_reviewed_count = self._as_int(
+            table_review_summary.get("human_reviewed_count")
+        )
+        table_merged_cell_review_human_confirmed_count = self._as_int(
+            table_review_summary.get("human_confirmed_count")
+        )
+        table_merged_cell_review_rejected_count = self._as_int(table_review_summary.get("rejected_count"))
+        table_merged_cell_review_needs_revision_count = self._as_int(
+            table_review_summary.get("needs_revision_count")
+        )
         if repair_publish_open_issue_count > 0:
             warnings.append("repair_publish_open_issues")
         if repair_patch_review_blocking_count > 0:
             warnings.append("repair_patch_review_blocking_items")
+        if table_merged_cell_review_required_count > 0:
+            warnings.append("table_merged_cell_review_required_items")
         if repair_publish_confirmed and not repair_publish_published:
             warnings.append("repair_publish_requested_not_published")
         if repair_publish_published and repair_published_full_bytes <= 0:
@@ -492,6 +540,21 @@ class JobRegistry:
             "repair_patch_review_blocking_count": repair_patch_review_blocking_count,
             "repair_patch_review_human_reviewed_count": repair_patch_review_human_reviewed_count,
             "repair_patch_review_effective_safe_count": repair_patch_review_effective_safe_count,
+            "table_merged_cell_review_ready": (
+                table_merged_cell_review_json_bytes > 0 or table_merged_cell_review_md_bytes > 0
+            ),
+            "table_merged_cell_review_bytes": max(
+                table_merged_cell_review_json_bytes,
+                table_merged_cell_review_md_bytes,
+            ),
+            "table_merged_cell_review_count": table_merged_cell_review_count,
+            "table_merged_cell_review_required_count": table_merged_cell_review_required_count,
+            "table_merged_cell_review_pending_count": table_merged_cell_review_pending_count,
+            "table_merged_cell_review_visual_supported_count": table_merged_cell_review_visual_supported_count,
+            "table_merged_cell_review_human_reviewed_count": table_merged_cell_review_human_reviewed_count,
+            "table_merged_cell_review_human_confirmed_count": table_merged_cell_review_human_confirmed_count,
+            "table_merged_cell_review_rejected_count": table_merged_cell_review_rejected_count,
+            "table_merged_cell_review_needs_revision_count": table_merged_cell_review_needs_revision_count,
             "repair_publish_confirmed": repair_publish_confirmed,
             "repair_publish_published": repair_publish_published,
             "repair_publish_status": repair_publish_status,
@@ -651,6 +714,16 @@ class JobRegistry:
                 "repair_patch_review_blocking_count": 0,
                 "repair_patch_review_human_reviewed_count": 0,
                 "repair_patch_review_effective_safe_count": 0,
+                "table_merged_cell_review_ready": False,
+                "table_merged_cell_review_bytes": 0,
+                "table_merged_cell_review_count": 0,
+                "table_merged_cell_review_required_count": 0,
+                "table_merged_cell_review_pending_count": 0,
+                "table_merged_cell_review_visual_supported_count": 0,
+                "table_merged_cell_review_human_reviewed_count": 0,
+                "table_merged_cell_review_human_confirmed_count": 0,
+                "table_merged_cell_review_rejected_count": 0,
+                "table_merged_cell_review_needs_revision_count": 0,
                 "repair_publish_confirmed": False,
                 "repair_publish_published": False,
                 "repair_publish_status": "",

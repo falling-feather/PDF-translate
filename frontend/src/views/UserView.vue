@@ -165,6 +165,7 @@ function artifactSummary(j) {
   if (j.partial_output_ready) ready.push("译文 MD");
   if (j.translated_pdf_ready) ready.push("译文 PDF");
   if (j.bilingual_html_ready) ready.push("双语 HTML");
+  if (j.table_merged_cell_review_ready) ready.push("表格确认");
   if (j.repair_patch_review_ready) ready.push("补丁审核");
   if (j.repair_publish_report_ready) ready.push("修复报告");
   if (j.repair_published_full_ready) ready.push("修复发布稿");
@@ -415,6 +416,39 @@ async function reviewRepairPatch(jid) {
   taskMap.value = { ...taskMap.value, [jid]: data };
   await loadMyJobs();
   alert("已更新补丁审核");
+}
+
+async function reviewTableMergedCell(jid) {
+  const reportRes = await fetch(`/api/jobs/${jid}/table-merged-cell-review`, { headers: authHeaders() });
+  const report = await reportRes.json().catch(() => ({}));
+  if (!reportRes.ok) {
+    alert(formatErrorPayload(report));
+    return;
+  }
+  const reviews = Array.isArray(report.candidate_reviews) ? report.candidate_reviews : [];
+  if (!reviews.length) {
+    alert("暂无可审核表格合并候选");
+    return;
+  }
+  const suggested = reviews.find((item) => item.confirmation_status === "pending_review") || reviews[0];
+  const reviewId = window.prompt("表格合并候选 ID", suggested.review_id || "");
+  if (!reviewId) return;
+  const decision = window.prompt("决策：confirm / reject / needs_revision / clear", "confirm");
+  if (!decision) return;
+  const comment = window.prompt("备注（可留空）", "") || "";
+  const r = await fetch(`/api/jobs/${jid}/table-merged-cell-review/${encodeURIComponent(reviewId.trim())}`, {
+    method: "POST",
+    headers: authHeaders(true),
+    body: JSON.stringify({ decision: decision.trim(), comment }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatErrorPayload(data));
+    return;
+  }
+  taskMap.value = { ...taskMap.value, [jid]: data };
+  await loadMyJobs();
+  alert("已更新表格合并候选审核");
 }
 
 async function confirmRepairPublish(jid) {
@@ -791,6 +825,24 @@ onUnmounted(() => {
                   @click="downloadFrom(`/api/jobs/${tid}/download/repair-patch-review.md`, `${tid}_repair_patch_review.md`)"
                 >
                   补丁审核
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].table_merged_cell_review_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/table-merged-cell-review.md`, `${tid}_table_merged_cell_review.md`)"
+                >
+                  表格确认
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].table_merged_cell_review_ready"
+                  @click="reviewTableMergedCell(tid)"
+                >
+                  审核表格
                 </button>
                 <button
                   v-if="taskMap[tid].status === 'done'"

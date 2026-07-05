@@ -44,11 +44,13 @@ from pdf_translate.qa.repair import (
 )
 from pdf_translate.qa.structure import build_structure_qa
 from pdf_translate.qa.table_reconstruction import (
+    apply_table_merged_cell_review_decision,
     build_structure_hints_manifest,
     build_table_merged_cell_review,
     build_table_reconstruction_report,
     build_table_translation_hints,
     table_merged_cell_review_to_markdown,
+    write_table_merged_cell_review_decision,
 )
 from pdf_translate.qa.translation import build_translation_qa, translation_qa_to_markdown
 from pdf_translate.pipeline import init_workdir, run_split, run_translate
@@ -1025,6 +1027,61 @@ class StructureIRTests(unittest.TestCase):
         self.assertIn("tmc-0001-p1-b0000-r0c0", markdown)
         self.assertIn("needs_human_confirmation", markdown)
         self.assertIn("视觉支持不等于人工确认", markdown)
+
+        updated = apply_table_merged_cell_review_decision(
+            review,
+            "tmc-0001-p1-b0000-r0c0",
+            decision="confirm",
+            reviewer="mentor",
+            comment="bbox matches header span",
+            reviewed_at="2026-07-06T00:00:00+00:00",
+        )
+        first = updated["candidate_reviews"][0]
+        self.assertEqual(first["human_decision"], "confirm")
+        self.assertEqual(first["confirmation_status"], "human_confirmed")
+        self.assertEqual(first["reviewed_by"], "mentor")
+        self.assertEqual(updated["summary"]["review_required_count"], 1)
+        self.assertEqual(updated["summary"]["pending_review_count"], 1)
+        self.assertEqual(updated["summary"]["human_reviewed_count"], 3)
+        self.assertEqual(updated["summary"]["human_confirmed_count"], 2)
+        self.assertIn("bbox matches header span", table_merged_cell_review_to_markdown(updated))
+
+        cleared = apply_table_merged_cell_review_decision(
+            updated,
+            "tmc-0001-p1-b0000-r0c0",
+            decision="clear",
+            reviewer="mentor",
+        )
+        self.assertEqual(cleared["candidate_reviews"][0]["human_decision"], "")
+        self.assertEqual(cleared["candidate_reviews"][0]["confirmation_status"], "pending_review")
+        self.assertEqual(cleared["summary"]["review_required_count"], 2)
+
+        root = Path.cwd() / "test-output" / "table-merged-cell-review-decision"
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True)
+        try:
+            json_path = root / "table_merged_cell_review.json"
+            md_path = root / "table_merged_cell_review.md"
+            json_path.write_text(json.dumps(cleared, ensure_ascii=False, indent=2), encoding="utf-8")
+            md_path.write_text(table_merged_cell_review_to_markdown(cleared), encoding="utf-8")
+            persisted = write_table_merged_cell_review_decision(
+                json_path,
+                md_path,
+                "tmc-0002-p1-b0000-r1c0",
+                decision="needs_revision",
+                reviewer="mentor",
+                comment="needs another crop",
+                reviewed_at="2026-07-06T00:05:00+00:00",
+            )
+            self.assertEqual(persisted["summary"]["needs_revision_count"], 1)
+            self.assertEqual(persisted["summary"]["review_required_count"], 2)
+            self.assertIn("needs another crop", md_path.read_text(encoding="utf-8"))
+            stored = json.loads(json_path.read_text(encoding="utf-8"))
+            self.assertEqual(stored["candidate_reviews"][1]["human_decision"], "needs_revision")
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
 
     def test_table_reconstruction_builds_continued_table_groups(self) -> None:
         page1_table = BlockIR(
@@ -4075,6 +4132,8 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["table_merged_cell_review_missing_evidence_count"], 1)
         self.assertEqual(metrics["quality"]["table_merged_cell_review_human_confirmed_count"], 0)
         self.assertEqual(metrics["quality"]["table_merged_cell_review_rejected_count"], 0)
+        self.assertEqual(metrics["quality"]["table_merged_cell_review_human_reviewed_count"], 0)
+        self.assertEqual(metrics["quality"]["table_merged_cell_review_needs_revision_count"], 0)
         self.assertEqual(metrics["quality"]["table_significance_token_count"], 2)
         self.assertEqual(metrics["quality"]["table_footnote_binding_count"], 2)
         self.assertEqual(metrics["quality"]["table_footnote_cell_binding_count"], 1)
@@ -4103,6 +4162,7 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["table_merged_cell_review_required_rate"], 1.0)
         self.assertEqual(metrics["rates"]["table_merged_cell_review_visual_supported_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_merged_cell_review_human_confirmed_rate"], 0.0)
+        self.assertEqual(metrics["rates"]["table_merged_cell_review_human_reviewed_rate"], 0.0)
         self.assertEqual(metrics["rates"]["continued_table_reconstruction_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_chain_merge_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_chain_reject_rate"], 0.5)
