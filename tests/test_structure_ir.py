@@ -40,6 +40,7 @@ from pdf_translate.qa.repair import (
     build_repair_results,
     build_repair_merge,
     build_repair_publish,
+    build_repair_rollback,
     build_repair_validation,
 )
 from pdf_translate.qa.structure import build_structure_qa
@@ -1814,6 +1815,42 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(confirmed_publish["summary"]["rollback_available"])
             published_text = (root / "published_full.md").read_text(encoding="utf-8")
             self.assertIn("| BERT | 91.2% | p<0.05 |", published_text)
+            draft_rollback = build_repair_rollback(
+                confirmed_publish,
+                original_full_path=chunk_dir / "c0000.md",
+                published_full_path=root / "published_full.md",
+                rollback_full_path=root / "rollback_full.md",
+            )
+            self.assertEqual(draft_rollback["schema_version"], "repair-rollback-v1")
+            self.assertTrue(draft_rollback["summary"]["rollback_available"])
+            self.assertFalse(draft_rollback["summary"]["rollback_applied"])
+            self.assertEqual(draft_rollback["summary"]["rollback_status"], "pending_confirmation")
+            self.assertFalse((root / "rollback_full.md").exists())
+            confirmed_rollback = build_repair_rollback(
+                confirmed_publish,
+                confirm=True,
+                original_full_path=chunk_dir / "c0000.md",
+                published_full_path=root / "published_full.md",
+                rollback_full_path=root / "rollback_full.md",
+            )
+            self.assertTrue(confirmed_rollback["summary"]["confirmed"])
+            self.assertTrue(confirmed_rollback["summary"]["rollback_applied"])
+            self.assertEqual(confirmed_rollback["summary"]["rollback_status"], "rolled_back")
+            self.assertTrue(confirmed_rollback["summary"]["rollback_matches_original"])
+            self.assertEqual(
+                (root / "rollback_full.md").read_text(encoding="utf-8"),
+                (chunk_dir / "c0000.md").read_text(encoding="utf-8"),
+            )
+            self.assertEqual((root / "published_full.md").read_text(encoding="utf-8"), published_text)
+            blocked_rollback = build_repair_rollback(
+                draft_publish,
+                confirm=True,
+                original_full_path=chunk_dir / "c0000.md",
+                published_full_path=root / "not_published_full.md",
+                rollback_full_path=root / "blocked_rollback_full.md",
+            )
+            self.assertEqual(blocked_rollback["summary"]["rollback_status"], "blocked_unpublished")
+            self.assertFalse((root / "blocked_rollback_full.md").exists())
         finally:
             if root.exists():
                 shutil.rmtree(root)
@@ -4433,6 +4470,16 @@ class StructureIRTests(unittest.TestCase):
                     "open_merge_issue_count": 1,
                 },
             },
+            repair_rollback={
+                "schema_version": "repair-rollback-v1",
+                "summary": {
+                    "rollback_available": True,
+                    "confirmed": True,
+                    "rollback_applied": True,
+                    "rollback_status": "rolled_back",
+                    "rollback_matches_original": True,
+                },
+            },
             translated_pdf_report={
                 "schema_version": "translated-pdf-report-v1",
                 "summary": {
@@ -4591,6 +4638,12 @@ class StructureIRTests(unittest.TestCase):
         self.assertTrue(metrics["quality"]["repair_publish_confirmed"])
         self.assertTrue(metrics["quality"]["repair_publish_published"])
         self.assertEqual(metrics["quality"]["repair_publish_open_issue_count"], 1)
+        self.assertTrue(metrics["quality"]["repair_rollback_available"])
+        self.assertTrue(metrics["quality"]["repair_rollback_confirmed"])
+        self.assertTrue(metrics["quality"]["repair_rollback_applied"])
+        self.assertTrue(metrics["quality"]["repair_rollback_matches_original"])
+        self.assertEqual(metrics["rates"]["repair_rollback_success_rate"], 1.0)
+        self.assertEqual(metrics["breakdowns"]["repair_rollback_status_counts"]["rolled_back"], 1)
         self.assertEqual(metrics["quality"]["post_repair_issue_count"], 3)
         self.assertEqual(metrics["quality"]["post_repair_issue_delta"], 1)
         self.assertEqual(metrics["quality"]["post_repair_table_cell_token_error_count"], 1)
@@ -4933,6 +4986,8 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["evidence_files"]["repair_merge"], "output/repair_merge.json")
         self.assertEqual(metrics["evidence_files"]["repair_publish"], "output/repair_publish.json")
         self.assertEqual(metrics["evidence_files"]["repair_published_full"], "output/published_full.md")
+        self.assertEqual(metrics["evidence_files"]["repair_rollback"], "output/repair_rollback.json")
+        self.assertEqual(metrics["evidence_files"]["repair_rollback_full"], "output/rollback_full.md")
         self.assertEqual(metrics["evidence_files"]["repair_merge_qa"], "output/repair_merge_qa.json")
         self.assertEqual(metrics["evidence_files"]["run_metrics"], "output/run_metrics.json")
         self.assertEqual(metrics["evidence_files"]["run_log"], "output/run_log.jsonl")
@@ -5846,10 +5901,13 @@ class StructureIRTests(unittest.TestCase):
             repair_patch_review_md_path = work_dir / "output" / "repair_patch_review.md"
             repair_publish_path = work_dir / "output" / "repair_publish.json"
             repair_publish_md_path = work_dir / "output" / "repair_publish.md"
+            repair_rollback_path = work_dir / "output" / "repair_rollback.json"
+            repair_rollback_md_path = work_dir / "output" / "repair_rollback.md"
             repair_merge_qa_path = work_dir / "output" / "repair_merge_qa.json"
             repair_merge_qa_md_path = work_dir / "output" / "repair_merge_qa.md"
             repaired_full_path = work_dir / "output" / "repaired_full.md"
             published_full_path = work_dir / "output" / "published_full.md"
+            rollback_full_path = work_dir / "output" / "rollback_full.md"
             metrics_path = work_dir / "output" / "experiment_metrics.json"
             run_metrics_path = work_dir / "output" / "run_metrics.json"
             run_log_path = work_dir / "output" / "run_log.jsonl"
@@ -5896,10 +5954,13 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(repair_patch_review_md_path.is_file())
             self.assertTrue(repair_publish_path.is_file())
             self.assertTrue(repair_publish_md_path.is_file())
+            self.assertTrue(repair_rollback_path.is_file())
+            self.assertTrue(repair_rollback_md_path.is_file())
             self.assertTrue(repair_merge_qa_path.is_file())
             self.assertTrue(repair_merge_qa_md_path.is_file())
             self.assertTrue(repaired_full_path.is_file())
             self.assertFalse(published_full_path.exists())
+            self.assertFalse(rollback_full_path.exists())
             self.assertTrue(metrics_path.is_file())
             self.assertTrue(run_metrics_path.is_file())
             self.assertTrue(run_log_path.is_file())
@@ -5933,6 +5994,7 @@ class StructureIRTests(unittest.TestCase):
             repair_merge = json.loads(repair_merge_path.read_text(encoding="utf-8"))
             repair_patch_review = json.loads(repair_patch_review_path.read_text(encoding="utf-8"))
             repair_publish = json.loads(repair_publish_path.read_text(encoding="utf-8"))
+            repair_rollback = json.loads(repair_rollback_path.read_text(encoding="utf-8"))
             repair_merge_qa = json.loads(repair_merge_qa_path.read_text(encoding="utf-8"))
             metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
             run_metrics = json.loads(run_metrics_path.read_text(encoding="utf-8"))
@@ -6065,6 +6127,10 @@ class StructureIRTests(unittest.TestCase):
             self.assertFalse(repair_publish["summary"]["confirmed"])
             self.assertFalse(repair_publish["summary"]["published"])
             self.assertEqual(repair_publish["summary"]["publish_status"], "pending_confirmation")
+            self.assertEqual(repair_rollback["schema_version"], "repair-rollback-v1")
+            self.assertFalse(repair_rollback["summary"]["confirmed"])
+            self.assertFalse(repair_rollback["summary"]["rollback_applied"])
+            self.assertEqual(repair_rollback["summary"]["rollback_status"], "not_ready")
             self.assertEqual(repair_merge_qa["schema_version"], "translation-qa-v1")
             self.assertEqual(run_metrics["schema_version"], "run-metrics-v1")
             self.assertEqual(run_metrics["pipeline_variant"], "structure")
@@ -6078,6 +6144,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("table_structure_publish", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("repair_patch_review", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("repair_publish", run_metrics["summary"]["stage_elapsed_ms"])
+            self.assertIn("repair_rollback", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("translated_pdf", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertTrue(any(event["event_type"] == "chunk_translation" for event in run_log_lines))
             self.assertEqual(cost_estimate["schema_version"], "cost-estimate-v1")
@@ -6266,9 +6333,12 @@ class StructureIRTests(unittest.TestCase):
                 "repair_patch_review.md",
                 "repair_publish.json",
                 "repair_publish.md",
+                "repair_rollback.json",
+                "repair_rollback.md",
                 "repair_merge_qa.json",
                 "repair_merge_qa.md",
                 "published_full.md",
+                "rollback_full.md",
                 "experiment_metrics.json",
                 "run_metrics.json",
                 "cost_estimate.json",
@@ -6291,6 +6361,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/repair_patch_review.md", rels)
             self.assertIn("output/repair_publish.json", rels)
             self.assertIn("output/repair_publish.md", rels)
+            self.assertIn("output/repair_rollback.json", rels)
+            self.assertIn("output/repair_rollback.md", rels)
             self.assertIn("output/repair_merge_qa.json", rels)
             self.assertIn("output/repairs/rq0000.md", rels)
             self.assertIn("output/repaired_chunks/c0000.md", rels)
@@ -6307,6 +6379,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/document_ir_promoted.json", rels)
             self.assertIn("output/repaired_full.md", rels)
             self.assertIn("output/published_full.md", rels)
+            self.assertIn("output/rollback_full.md", rels)
             self.assertIn("output/translated_full.pdf", rels)
             self.assertIn("output/translated_pdf_report.json", rels)
             self.assertIn("output/bilingual.html", rels)
@@ -6337,8 +6410,11 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(map_bundle_arcname("output/repair_patch_review.md"), "质量/局部修复补丁审核.md")
             self.assertEqual(map_bundle_arcname("output/repair_publish.json"), "质量/局部修复发布确认.json")
             self.assertEqual(map_bundle_arcname("output/repair_publish.md"), "质量/局部修复发布确认.md")
+            self.assertEqual(map_bundle_arcname("output/repair_rollback.json"), "质量/局部修复回滚演练.json")
+            self.assertEqual(map_bundle_arcname("output/repair_rollback.md"), "质量/局部修复回滚演练.md")
             self.assertEqual(map_bundle_arcname("output/repair_merge_qa.md"), "质量/局部修复后QA.md")
             self.assertEqual(map_bundle_arcname("output/published_full.md"), "译文/人工确认修复发布稿.md")
+            self.assertEqual(map_bundle_arcname("output/rollback_full.md"), "译文/局部修复回滚演练稿.md")
             self.assertEqual(map_bundle_arcname("output/repairs/rq0000.md"), "质量/局部修复片段/rq0000.md")
             self.assertEqual(map_bundle_arcname("output/repaired_chunks/c0000.md"), "译文/局部修复分块/c0000.md")
             self.assertEqual(

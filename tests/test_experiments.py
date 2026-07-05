@@ -279,6 +279,12 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("repair_publish_open_issue_count", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("repair_publish_rate", loaded["records"][0]["metrics"]["rates"])
             self.assertIn("repair_publish_status_counts", loaded["records"][0]["metrics"]["breakdowns"])
+            self.assertIn("repair_rollback_available", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("repair_rollback_confirmed", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("repair_rollback_applied", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("repair_rollback_matches_original", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("repair_rollback_success_rate", loaded["records"][0]["metrics"]["rates"])
+            self.assertIn("repair_rollback_status_counts", loaded["records"][0]["metrics"]["breakdowns"])
             self.assertIn("ocr_structured_table_candidate_count", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("ocr_structured_table_gate_review_count", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("ocr_structured_table_promotion_count", loaded["records"][0]["metrics"]["quality"])
@@ -305,6 +311,7 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("repair_merge_strategy_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("repair_patch_review_default_decision_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("repair_publish_status_counts", loaded["aggregates"][0]["breakdowns"])
+            self.assertIn("repair_rollback_status_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("table_chain_reject_reason_category_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("ocr_candidate_structured_table_gate_issue_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("ocr_candidate_structured_formula_gate_issue_counts", loaded["aggregates"][0]["breakdowns"])
@@ -314,12 +321,18 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("rates.ocr_structured_formula_promotion_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.repair_patch_review_required_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.repair_publish_rate", loaded["comparisons"][0]["deltas"])
+            self.assertIn("rates.repair_rollback_success_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("total_elapsed_ms", loaded["records"][0]["metrics"]["performance"])
             self.assertIn("runs/sample-table/page/output/experiment_metrics.json", summary_json.read_text(encoding="utf-8"))
             self.assertIn("translated_pdf", loaded["records"][0]["files"])
             self.assertIn("runs/sample-table/page/output/translated_full.pdf", summary_json.read_text(encoding="utf-8"))
             self.assertIn("repair_publish", loaded["records"][0]["files"])
             self.assertIn("runs/sample-table/page/output/repair_publish.json", summary_json.read_text(encoding="utf-8"))
+            self.assertIn("repair_rollback", loaded["records"][0]["files"])
+            self.assertIn(
+                "runs/sample-table/page/output/repair_rollback.json",
+                summary_json.read_text(encoding="utf-8"),
+            )
             self.assertIn("repair_patch_review", loaded["records"][0]["files"])
             self.assertIn(
                 "runs/sample-table/page/output/repair_patch_review.json",
@@ -365,6 +378,14 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("repair_publish_status_counts", review_text)
             self.assertIn("repair_publish_report", review_text)
             self.assertIn("repair_published_full", review_text)
+            self.assertIn("repair_rollback_available", review_text)
+            self.assertIn("repair_rollback_confirmed", review_text)
+            self.assertIn("repair_rollback_applied", review_text)
+            self.assertIn("repair_rollback_matches_original", review_text)
+            self.assertIn("repair_rollback_success_rate", review_text)
+            self.assertIn("repair_rollback_status_counts", review_text)
+            self.assertIn("repair_rollback_report", review_text)
+            self.assertIn("repair_rollback_full", review_text)
             self.assertIn("translated_pdf", review_text)
             self.assertIn("table-heavy", review_text)
             self.assertIn("sample-table", review_text)
@@ -388,6 +409,9 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("repair_publish_confirmed", review_rows[0])
             self.assertIn("repair_publish_report", review_rows[0])
             self.assertTrue(review_rows[0]["repair_publish_report"].endswith("output/repair_publish.json"))
+            self.assertIn("repair_rollback_available", review_rows[0])
+            self.assertIn("repair_rollback_report", review_rows[0])
+            self.assertTrue(review_rows[0]["repair_rollback_report"].endswith("output/repair_rollback.json"))
             review_rows[0].update(
                 {
                     "human_score": "4.5",
@@ -424,6 +448,14 @@ class BatchExperimentTests(unittest.TestCase):
                     "repair_publish_open_issue_count": "2",
                     "repair_publish_rate": "0",
                     "repair_publish_status_counts": "pending_confirmation:1",
+                    "repair_rollback_available": "是",
+                    "repair_rollback_confirmed": "是",
+                    "repair_rollback_applied": "是",
+                    "repair_rollback_matches_original": "是",
+                    "repair_rollback_success_rate": "1",
+                    "repair_rollback_status_counts": "rolled_back:1",
+                    "repair_rollback_report": "runs/sample-table/page/output/repair_rollback.json",
+                    "repair_rollback_full": "runs/sample-table/page/output/rollback_full.md",
                 }
             )
             for field in [
@@ -435,6 +467,14 @@ class BatchExperimentTests(unittest.TestCase):
                 "repair_patch_review_required_rate",
                 "repair_patch_review_default_decision_counts",
                 "repair_patch_review_risk_counts",
+                "repair_rollback_available",
+                "repair_rollback_confirmed",
+                "repair_rollback_applied",
+                "repair_rollback_matches_original",
+                "repair_rollback_success_rate",
+                "repair_rollback_status_counts",
+                "repair_rollback_report",
+                "repair_rollback_full",
             ]:
                 review_rows[1][field] = ""
             with review_csv.open("w", encoding="utf-8-sig", newline="") as review_file:
@@ -490,6 +530,13 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertEqual(evidence["repair_publish_summary"]["published_count_total"], 0)
             self.assertEqual(evidence["repair_publish_summary"]["open_issue_count_total"], 2)
             self.assertEqual(evidence["repair_publish_summary"]["status_counts"]["pending_confirmation"], 2)
+            self.assertEqual(evidence["repair_rollback_summary"]["row_count"], 1)
+            self.assertEqual(evidence["repair_rollback_summary"]["available_count_total"], 1)
+            self.assertEqual(evidence["repair_rollback_summary"]["confirmed_count_total"], 1)
+            self.assertEqual(evidence["repair_rollback_summary"]["applied_count_total"], 1)
+            self.assertEqual(evidence["repair_rollback_summary"]["matches_original_count_total"], 1)
+            self.assertEqual(evidence["repair_rollback_summary"]["success_rate"]["average"], 1.0)
+            self.assertEqual(evidence["repair_rollback_summary"]["status_counts"]["rolled_back"], 1)
             self.assertEqual(evidence["repair_patch_review_summary"]["patch_count_total"], 3)
             self.assertEqual(evidence["repair_patch_review_summary"]["safe_count_total"], 2)
             self.assertEqual(evidence["repair_patch_review_summary"]["required_count_total"], 1)
@@ -515,6 +562,24 @@ class BatchExperimentTests(unittest.TestCase):
                     "output/repair_publish.json"
                 )
             )
+            self.assertEqual(evidence["evidence_candidates"][0]["repair_rollback"]["available"], True)
+            self.assertEqual(evidence["evidence_candidates"][0]["repair_rollback"]["applied"], True)
+            self.assertEqual(evidence["evidence_candidates"][0]["repair_rollback"]["matches_original"], True)
+            self.assertEqual(evidence["evidence_candidates"][0]["repair_rollback"]["success_rate"], 1.0)
+            self.assertEqual(
+                evidence["evidence_candidates"][0]["repair_rollback"]["status_counts"]["rolled_back"],
+                1,
+            )
+            self.assertTrue(
+                evidence["evidence_candidates"][0]["repair_rollback"]["report_file"].endswith(
+                    "output/repair_rollback.json"
+                )
+            )
+            self.assertTrue(
+                evidence["evidence_candidates"][0]["repair_rollback"]["rollback_full_file"].endswith(
+                    "output/rollback_full.md"
+                )
+            )
             self.assertEqual(evidence["evidence_candidates"][0]["reviewer"], "导师")
             self.assertIn("translated_pdf", evidence["evidence_candidates"][0]["files"])
             evidence_text = evidence_md.read_text(encoding="utf-8")
@@ -525,6 +590,7 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("approve_candidate:2", evidence_text)
             self.assertIn("开放合并问题总数：2", evidence_text)
             self.assertIn("pending_confirmation:2", evidence_text)
+            self.assertIn("rolled_back:1", evidence_text)
         finally:
             if root.exists():
                 shutil.rmtree(root)

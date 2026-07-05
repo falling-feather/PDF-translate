@@ -174,6 +174,8 @@ function artifactReadySummary(job) {
   if (job.repair_patch_review_ready) ready.push("补丁审核");
   if (job.repair_publish_report_ready) ready.push("修复报告");
   if (job.repair_published_full_ready) ready.push("修复稿");
+  if (job.repair_rollback_report_ready) ready.push("回滚报告");
+  if (job.repair_rollback_full_ready) ready.push("回滚稿");
   if (job.bundle_zip_ready) ready.push("ZIP");
   return ready.length ? `可用：${ready.join(" / ")}` : "暂无可下载产物";
 }
@@ -414,6 +416,26 @@ async function adminConfirmRepairPublish(job) {
   alert("已生成修复发布稿");
 }
 
+async function adminConfirmRepairRollback(job) {
+  if (!job.repair_published_full_ready) {
+    alert("修复发布稿尚未生成，暂不能执行回滚演练。");
+    return;
+  }
+  if (!window.confirm("确认生成回滚演练稿？这会复制原始译文为 rollback_full.md，不会覆盖修复发布稿。")) return;
+  const r = await fetch(`/api/jobs/${job.job_id}/repair-rollback/confirm`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatAdminError(data));
+    return;
+  }
+  await loadJobs();
+  await loadAudit();
+  alert("已生成回滚演练稿");
+}
+
 onMounted(() => {
   loadSettings();
   loadAudit();
@@ -640,12 +662,15 @@ onMounted(() => {
                 <button type="button" class="linkish" :disabled="!j.partial_output_ready" @click="adminDownload(j.job_id, 'output_md', 'translated.md')">MD</button>
                 <button type="button" class="linkish" :disabled="!j.translated_pdf_ready" @click="adminDownload(j.job_id, 'output_pdf', 'translated.pdf')">译PDF</button>
                 <button type="button" class="linkish" :disabled="!j.repair_publish_report_ready" @click="adminDownload(j.job_id, 'repair_publish', 'repair_publish.md')">修复报告</button>
+                <button type="button" class="linkish" :disabled="!j.repair_rollback_report_ready" @click="adminDownload(j.job_id, 'repair_rollback', 'repair_rollback.md')">回滚报告</button>
                 <button type="button" class="linkish" :disabled="!j.repair_patch_review_ready" @click="adminDownload(j.job_id, 'repair_patch_review', 'repair_patch_review.md')">补丁审核</button>
                 <button type="button" class="linkish" :disabled="!j.table_merged_cell_review_ready" @click="adminDownload(j.job_id, 'table_merged_cell_review', 'table_merged_cell_review.md')">表格确认</button>
                 <button type="button" class="linkish" :disabled="!j.table_structure_publish_ready" @click="adminDownload(j.job_id, 'table_structure_publish', 'table_structure_publish.md')">表格发布</button>
                 <button type="button" class="linkish" :disabled="!j.table_reconstruction_confirmed_ready" @click="adminDownload(j.job_id, 'table_reconstruction_confirmed', 'table_reconstruction_confirmed.json')">表格副本</button>
                 <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.repair_publish_report_ready || j.repair_published_full_ready" @click="adminConfirmRepairPublish(j)">确认修复</button>
                 <button type="button" class="linkish" :disabled="!j.repair_published_full_ready" @click="adminDownload(j.job_id, 'repair_published_full', 'published_full.md')">修复稿</button>
+                <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.repair_published_full_ready || j.repair_rollback_full_ready" @click="adminConfirmRepairRollback(j)">回滚演练</button>
+                <button type="button" class="linkish" :disabled="!j.repair_rollback_full_ready" @click="adminDownload(j.job_id, 'repair_rollback_full', 'rollback_full.md')">回滚稿</button>
                 <button type="button" class="linkish" :disabled="!j.bundle_zip_ready" @click="adminDownload(j.job_id, 'bundle_zip', j.job_id + '.zip')">ZIP</button>
               </td>
             </tr>

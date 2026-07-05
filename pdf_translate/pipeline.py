@@ -31,6 +31,7 @@ from pdf_translate.qa.repair import (
     write_repair_results,
     write_repair_merge,
     write_repair_publish,
+    write_repair_rollback,
     write_repair_validation,
 )
 from pdf_translate.qa.structure import write_structure_qa
@@ -253,6 +254,7 @@ def run_translate(
     execute_repair_requests: bool = False,
     max_repair_requests: int | None = None,
     publish_repairs: bool = False,
+    rollback_repairs: bool = False,
     ocr_results_path: Path | None = None,
     execute_ocr: bool = False,
     ocr_engine: str = "tesseract_cli",
@@ -552,6 +554,16 @@ def run_translate(
                 original_full_path=out_dir / "translated_full.md",
                 repair_patch_review=repair_patch_review,
             )
+        with run_metrics.stage("repair_rollback", confirmed=rollback_repairs):
+            repair_rollback = write_repair_rollback(
+                repair_publish,
+                out_dir / "repair_rollback.json",
+                out_dir / "repair_rollback.md",
+                confirm=rollback_repairs,
+                original_full_path=out_dir / "translated_full.md",
+                published_full_path=out_dir / "published_full.md",
+                rollback_full_path=out_dir / "rollback_full.md",
+            )
         with run_metrics.stage("bilingual_html"):
             write_bilingual_html(
                 chunks,
@@ -619,6 +631,7 @@ def run_translate(
             repair_patch_review=repair_patch_review,
             repair_merge_qa=repair_merge_qa,
             repair_publish=repair_publish,
+            repair_rollback=repair_rollback,
             translated_pdf_report=translated_pdf_report,
             run_metrics=run_metrics_summary,
             cost_estimate=cost_estimate,

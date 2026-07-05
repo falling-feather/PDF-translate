@@ -172,6 +172,8 @@ function artifactSummary(j) {
   if (j.repair_patch_review_ready) ready.push("补丁审核");
   if (j.repair_publish_report_ready) ready.push("修复报告");
   if (j.repair_published_full_ready) ready.push("修复发布稿");
+  if (j.repair_rollback_report_ready) ready.push("回滚报告");
+  if (j.repair_rollback_full_ready) ready.push("回滚演练稿");
   if (j.bundle_zip_ready) ready.push("资料包 ZIP");
   return ready.length ? `可下载：${ready.join(" / ")}` : "";
 }
@@ -478,6 +480,27 @@ async function confirmRepairPublish(jid) {
   taskMap.value = { ...taskMap.value, [jid]: data };
   await loadMyJobs();
   alert("已生成修复发布稿");
+}
+
+async function confirmRepairRollback(jid) {
+  const job = taskMap.value[jid] || {};
+  if (!job.repair_published_full_ready) {
+    alert("修复发布稿尚未生成，暂不能执行回滚演练。");
+    return;
+  }
+  if (!window.confirm("确认生成回滚演练稿？这会复制原始译文为 rollback_full.md，不会覆盖修复发布稿。")) return;
+  const r = await fetch(`/api/jobs/${jid}/repair-rollback/confirm`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatErrorPayload(data));
+    return;
+  }
+  taskMap.value = { ...taskMap.value, [jid]: data };
+  await loadMyJobs();
+  alert("已生成回滚演练稿");
 }
 
 function filenameFromContentDisposition(cd) {
@@ -824,6 +847,15 @@ onUnmounted(() => {
                   v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
                   type="button"
                   class="btn linkish"
+                  :disabled="!taskMap[tid].repair_rollback_report_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/repair-rollback.md`, `${tid}_repair_rollback.md`)"
+                >
+                  回滚报告
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
                   :disabled="!taskMap[tid].repair_patch_review_ready"
                   @click="downloadFrom(`/api/jobs/${tid}/download/repair-patch-review.md`, `${tid}_repair_patch_review.md`)"
                 >
@@ -900,6 +932,24 @@ onUnmounted(() => {
                   @click="downloadFrom(`/api/jobs/${tid}/download/published-full.md`, `${tid}_published_full.md`)"
                 >
                   修复发布稿
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done'"
+                  type="button"
+                  class="btn"
+                  :disabled="!taskMap[tid].repair_published_full_ready || taskMap[tid].repair_rollback_full_ready"
+                  @click="confirmRepairRollback(tid)"
+                >
+                  回滚演练
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].repair_rollback_full_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/rollback-full.md`, `${tid}_rollback_full.md`)"
+                >
+                  回滚演练稿
                 </button>
                 <button
                   v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"

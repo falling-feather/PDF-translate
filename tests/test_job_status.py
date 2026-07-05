@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from pdf_translate.cli import app
 from pdf_translate.server.routes_web import (
     _confirm_repair_publish_for_record,
+    _confirm_repair_rollback_for_record,
     _confirm_table_structure_publish_for_record,
     _render_table_merged_cell_review_preview_for_record,
 )
@@ -229,6 +230,8 @@ class JobStatusSnapshotTests(unittest.TestCase):
         )
         (out / "repair_publish.md").write_text("# 发布确认", encoding="utf-8")
         (out / "published_full.md").write_text("published translation", encoding="utf-8")
+        (out / "repair_rollback.md").write_text("# 回滚演练", encoding="utf-8")
+        (out / "rollback_full.md").write_text("translated", encoding="utf-8")
         (out / "repair_publish.json").write_text(
             json.dumps(
                 {
@@ -239,6 +242,21 @@ class JobStatusSnapshotTests(unittest.TestCase):
                         "publish_status": "published_with_warnings",
                         "open_merge_issue_count": 2,
                         "rollback_available": True,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (out / "repair_rollback.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "repair-rollback-v1",
+                    "summary": {
+                        "rollback_available": True,
+                        "confirmed": True,
+                        "rollback_applied": True,
+                        "rollback_status": "rolled_back",
+                        "rollback_matches_original": True,
                     },
                 }
             ),
@@ -271,6 +289,8 @@ class JobStatusSnapshotTests(unittest.TestCase):
 
         self.assertTrue(merged[0]["repair_publish_report_ready"])
         self.assertGreater(merged[0]["repair_publish_report_bytes"], 0)
+        self.assertTrue(merged[0]["repair_rollback_report_ready"])
+        self.assertGreater(merged[0]["repair_rollback_report_bytes"], 0)
         self.assertTrue(merged[0]["repair_patch_review_ready"])
         self.assertGreater(merged[0]["repair_patch_review_bytes"], 0)
         self.assertEqual(merged[0]["repair_patch_review_count"], 3)
@@ -301,8 +321,15 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(merged[0]["repair_publish_status"], "published_with_warnings")
         self.assertEqual(merged[0]["repair_publish_open_issue_count"], 2)
         self.assertTrue(merged[0]["repair_publish_rollback_available"])
+        self.assertTrue(merged[0]["repair_rollback_available"])
+        self.assertTrue(merged[0]["repair_rollback_confirmed"])
+        self.assertTrue(merged[0]["repair_rollback_applied"])
+        self.assertEqual(merged[0]["repair_rollback_status"], "rolled_back")
+        self.assertTrue(merged[0]["repair_rollback_matches_original"])
         self.assertTrue(merged[0]["repair_published_full_ready"])
         self.assertGreater(merged[0]["repair_published_full_bytes"], 0)
+        self.assertTrue(merged[0]["repair_rollback_full_ready"])
+        self.assertGreater(merged[0]["repair_rollback_full_bytes"], 0)
         self.assertIn("repair_publish_open_issues", merged[0]["artifact_warnings"])
         self.assertIn("repair_patch_review_blocking_items", merged[0]["artifact_warnings"])
         self.assertIn("table_merged_cell_review_required_items", merged[0]["artifact_warnings"])
@@ -347,6 +374,47 @@ class JobStatusSnapshotTests(unittest.TestCase):
         merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
         self.assertTrue(merged[0]["repair_publish_published"])
         self.assertTrue(merged[0]["repair_published_full_ready"])
+
+    def test_confirm_repair_rollback_for_completed_job_writes_rollback_copy(self) -> None:
+        root = self._case_root("repair-rollback-confirm")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        out = rec.work_dir / "output"
+        out.mkdir()
+        (out / "translated_full.md").write_text("original translation", encoding="utf-8")
+        (out / "published_full.md").write_text("published translation", encoding="utf-8")
+        (out / "repair_publish.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "repair-publish-v1",
+                    "summary": {
+                        "confirmed": True,
+                        "published": True,
+                        "publish_status": "published",
+                        "original_full_path": (out / "translated_full.md").as_posix(),
+                        "published_full_path": (out / "published_full.md").as_posix(),
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        registry.update(rec.job_id, status="done", phase="done")
+
+        report = _confirm_repair_rollback_for_record(rec)
+
+        self.assertTrue((out / "repair_rollback.json").is_file())
+        self.assertTrue((out / "repair_rollback.md").is_file())
+        self.assertTrue((out / "rollback_full.md").is_file())
+        self.assertEqual((out / "rollback_full.md").read_text(encoding="utf-8"), "original translation")
+        self.assertEqual((out / "published_full.md").read_text(encoding="utf-8"), "published translation")
+        self.assertTrue(report["summary"]["confirmed"])
+        self.assertTrue(report["summary"]["rollback_applied"])
+        self.assertTrue(report["summary"]["rollback_matches_original"])
+        self.assertEqual(report["summary"]["rollback_status"], "rolled_back")
+        merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
+        self.assertTrue(merged[0]["repair_rollback_applied"])
+        self.assertTrue(merged[0]["repair_rollback_full_ready"])
 
     def test_confirm_repair_publish_respects_existing_patch_review_gate(self) -> None:
         root = self._case_root("repair-publish-patch-review-gate")

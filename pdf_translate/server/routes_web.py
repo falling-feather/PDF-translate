@@ -21,6 +21,7 @@ from pdf_translate.qa.repair import (
     write_repair_patch_review,
     write_repair_patch_review_decision,
     write_repair_publish,
+    write_repair_rollback,
 )
 from pdf_translate.qa.table_reconstruction import (
     load_preferred_table_reconstruction,
@@ -224,6 +225,30 @@ def _confirm_repair_publish_for_record(rec: JobRecord) -> dict[str, Any]:
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
     if not summary.get("published"):
         raise HTTPException(409, str(summary.get("reason") or "修复发布稿未生成"))
+    return report
+
+
+def _confirm_repair_rollback_for_record(rec: JobRecord) -> dict[str, Any]:
+    if rec.status != "done":
+        raise HTTPException(409, "任务尚未完成，不能确认回滚演练")
+    out_dir = rec.work_dir / "output"
+    repair_publish = _read_json_artifact(
+        out_dir / "repair_publish.json",
+        missing_message="局部修复发布确认报告尚未生成",
+        invalid_message="局部修复发布确认报告无法解析",
+    )
+    report = write_repair_rollback(
+        repair_publish,
+        out_dir / "repair_rollback.json",
+        out_dir / "repair_rollback.md",
+        confirm=True,
+        original_full_path=out_dir / "translated_full.md",
+        published_full_path=out_dir / "published_full.md",
+        rollback_full_path=out_dir / "rollback_full.md",
+    )
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    if not summary.get("rollback_applied"):
+        raise HTTPException(409, str(summary.get("reason") or "回滚演练副本未生成"))
     return report
 
 
@@ -848,6 +873,23 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             headers={"Content-Disposition": cd},
         )
 
+    @api.get("/jobs/{job_id}/download/repair-rollback.md")
+    def download_repair_rollback(job_id: str, p: Principal = Depends(bearer_principal)) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "repair_rollback.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "局部修复回滚演练报告尚未生成")
+        ascii_fallback = "repair_rollback.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_repair_rollback.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
     @api.get("/jobs/{job_id}/download/repair-patch-review.md")
     def download_repair_patch_review(job_id: str, p: Principal = Depends(bearer_principal)) -> FileResponse:
         rec = app_registry.get(job_id)
@@ -1236,6 +1278,23 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             headers={"Content-Disposition": cd},
         )
 
+    @api.get("/jobs/{job_id}/download/rollback-full.md")
+    def download_rollback_full(job_id: str, p: Principal = Depends(bearer_principal)) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "rollback_full.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "局部修复回滚演练稿尚未生成")
+        ascii_fallback = "rollback_full.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_rollback_full.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
     @api.post("/jobs/{job_id}/repair-publish/confirm")
     def confirm_repair_publish(
         job_id: str,
@@ -1264,6 +1323,35 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         updated = app_registry.get(job_id) or rec
         d = _job_dict(updated)
         d["repair_publish_summary"] = summary
+        return d
+
+    @api.post("/jobs/{job_id}/repair-rollback/confirm")
+    def confirm_repair_rollback(
+        job_id: str,
+        request: Request,
+        p: Principal = Depends(bearer_principal),
+    ) -> dict:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        report = _confirm_repair_rollback_for_record(rec)
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        app_registry.update(job_id, message="已生成局部修复回滚演练稿")
+        database.log_audit(
+            action="job_repair_rollback_confirm",
+            ip=client_ip(request),
+            user_id=p.user_id,
+            username=p.username,
+            job_id=job_id,
+            detail={
+                "rollback_status": summary.get("rollback_status"),
+                "rollback_full_path": summary.get("rollback_full_path"),
+                "rollback_matches_original": summary.get("rollback_matches_original"),
+            },
+        )
+        updated = app_registry.get(job_id) or rec
+        d = _job_dict(updated)
+        d["repair_rollback_summary"] = summary
         return d
 
     @api.get("/jobs/{job_id}/download/bundle.zip")
@@ -1417,6 +1505,11 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             if not p.is_file() or p.stat().st_size == 0:
                 raise HTTPException(404, "局部修复发布确认报告尚未生成")
             return FileResponse(p, filename="repair_publish.md", media_type="text/markdown; charset=utf-8")
+        if kind == "repair_rollback":
+            p = root / "output" / "repair_rollback.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "局部修复回滚演练报告尚未生成")
+            return FileResponse(p, filename="repair_rollback.md", media_type="text/markdown; charset=utf-8")
         if kind == "repair_patch_review":
             p = root / "output" / "repair_patch_review.md"
             if not p.is_file() or p.stat().st_size == 0:
@@ -1454,6 +1547,11 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             if not p.is_file() or p.stat().st_size == 0:
                 raise HTTPException(404, "人工确认修复发布稿尚未生成")
             return FileResponse(p, filename="published_full.md", media_type="text/markdown; charset=utf-8")
+        if kind == "repair_rollback_full":
+            p = root / "output" / "rollback_full.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "局部修复回滚演练稿尚未生成")
+            return FileResponse(p, filename="rollback_full.md", media_type="text/markdown; charset=utf-8")
         if kind == "bundle_zip":
             if rec.status not in ("done", "cancelled"):
                 raise HTTPException(409, "任务未完成或未终止")
@@ -1470,7 +1568,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             return Response(content=data, media_type="application/zip", headers={"Content-Disposition": cd})
         raise HTTPException(
             400,
-            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / repair_published_full / bundle_zip",
+            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / repair_published_full / repair_rollback_full / bundle_zip",
         )
 
     api.include_router(admin)

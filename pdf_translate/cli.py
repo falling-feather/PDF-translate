@@ -105,6 +105,11 @@ def cmd_translate(
         "--publish-repairs",
         help="人工确认后把已验证修复合并稿复制为发布副本 published_full.md；不覆盖原译文",
     ),
+    rollback_repairs: bool = typer.Option(
+        False,
+        "--rollback-repairs",
+        help="人工确认后生成 rollback_full.md 回滚演练副本；不覆盖发布稿",
+    ),
     chunk_strategy: str = typer.Option(
         "page",
         "--chunk-strategy",
@@ -140,6 +145,7 @@ def cmd_translate(
         execute_repair_requests=execute_repairs,
         max_repair_requests=max_repair_requests,
         publish_repairs=publish_repairs,
+        rollback_repairs=rollback_repairs,
         ocr_results_path=ocr_results,
         execute_ocr=execute_ocr,
         ocr_engine=ocr_engine,
@@ -239,6 +245,11 @@ def cmd_run(
         "--publish-repairs",
         help="人工确认后把已验证修复合并稿复制为发布副本 published_full.md；不覆盖原译文",
     ),
+    rollback_repairs: bool = typer.Option(
+        False,
+        "--rollback-repairs",
+        help="人工确认后生成 rollback_full.md 回滚演练副本；不覆盖发布稿",
+    ),
     chunk_strategy: str = typer.Option(
         "page",
         "--chunk-strategy",
@@ -277,6 +288,7 @@ def cmd_run(
         execute_repair_requests=execute_repairs,
         max_repair_requests=max_repair_requests,
         publish_repairs=publish_repairs,
+        rollback_repairs=rollback_repairs,
         ocr_results_path=ocr_results,
         execute_ocr=execute_ocr,
         ocr_engine=ocr_engine,

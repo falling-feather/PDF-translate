@@ -122,6 +122,10 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "repair_publish_confirmed",
         "repair_publish_published",
         "repair_publish_open_issue_count",
+        "repair_rollback_available",
+        "repair_rollback_confirmed",
+        "repair_rollback_applied",
+        "repair_rollback_matches_original",
         "post_repair_issue_count",
     ],
     "rates": [
@@ -176,6 +180,7 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "repair_patch_review_safe_rate",
         "repair_patch_review_required_rate",
         "repair_publish_rate",
+        "repair_rollback_success_rate",
         "post_repair_issue_reduction_rate",
     ],
     "performance": [
@@ -214,6 +219,7 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "repair_patch_review_default_decision_counts",
         "repair_patch_review_risk_counts",
         "repair_publish_status_counts",
+        "repair_rollback_status_counts",
     ],
 }
 
@@ -234,6 +240,7 @@ COMPARISON_FIELDS = [
     ("rates", "ocr_structured_formula_promotion_rate"),
     ("rates", "repair_patch_review_required_rate"),
     ("rates", "repair_publish_rate"),
+    ("rates", "repair_rollback_success_rate"),
     ("performance", "total_elapsed_ms"),
     ("performance", "translation_request_count"),
     ("performance", "estimated_total_cost"),
@@ -1080,9 +1087,12 @@ def _record_paths(work_dir: Path, output_dir: Path) -> dict[str, str]:
         "repair_patch_review_md": work_dir / "output" / "repair_patch_review.md",
         "repair_publish": work_dir / "output" / "repair_publish.json",
         "repair_publish_md": work_dir / "output" / "repair_publish.md",
+        "repair_rollback": work_dir / "output" / "repair_rollback.json",
+        "repair_rollback_md": work_dir / "output" / "repair_rollback.md",
     }
     optional_files = {
         "repair_published_full": work_dir / "output" / "published_full.md",
+        "repair_rollback_full": work_dir / "output" / "rollback_full.md",
     }
     result: dict[str, str] = {}
     for key, path in files.items():
@@ -1364,6 +1374,14 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
         "repair_publish_status_counts",
         "repair_publish_report",
         "repair_published_full",
+        "repair_rollback_available",
+        "repair_rollback_confirmed",
+        "repair_rollback_applied",
+        "repair_rollback_matches_original",
+        "repair_rollback_success_rate",
+        "repair_rollback_status_counts",
+        "repair_rollback_report",
+        "repair_rollback_full",
         "split_boundary_rate",
         "protected_boundary_rate",
         "total_elapsed_ms",
@@ -1504,6 +1522,16 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
                     ),
                     "repair_publish_report": files.get("repair_publish", ""),
                     "repair_published_full": files.get("repair_published_full", ""),
+                    "repair_rollback_available": quality.get("repair_rollback_available", ""),
+                    "repair_rollback_confirmed": quality.get("repair_rollback_confirmed", ""),
+                    "repair_rollback_applied": quality.get("repair_rollback_applied", ""),
+                    "repair_rollback_matches_original": quality.get("repair_rollback_matches_original", ""),
+                    "repair_rollback_success_rate": rates.get("repair_rollback_success_rate", ""),
+                    "repair_rollback_status_counts": _format_counter(
+                        breakdowns.get("repair_rollback_status_counts", {})
+                    ),
+                    "repair_rollback_report": files.get("repair_rollback", ""),
+                    "repair_rollback_full": files.get("repair_rollback_full", ""),
                     "split_boundary_rate": rates.get("split_boundary_rate", ""),
                     "protected_boundary_rate": rates.get("protected_boundary_rate", ""),
                     "total_elapsed_ms": performance.get("total_elapsed_ms", ""),
@@ -1667,6 +1695,9 @@ def _selected_record_metrics(record: dict[str, Any]) -> dict[str, Any]:
         "repair_publish_published": quality.get("repair_publish_published"),
         "repair_publish_open_issue_count": quality.get("repair_publish_open_issue_count"),
         "repair_publish_rate": rates.get("repair_publish_rate"),
+        "repair_rollback_available": quality.get("repair_rollback_available"),
+        "repair_rollback_applied": quality.get("repair_rollback_applied"),
+        "repair_rollback_success_rate": rates.get("repair_rollback_success_rate"),
         "repair_patch_review_count": quality.get("repair_patch_review_count"),
         "repair_patch_review_required_count": quality.get("repair_patch_review_required_count"),
         "repair_patch_review_blocking_count": quality.get("repair_patch_review_blocking_count"),
@@ -1784,6 +1815,18 @@ def build_batch_experiment_evidence(
                     "published_full_file": _review_text(row.get("repair_published_full"))
                     or str(files.get("repair_published_full", "")),
                 },
+                "repair_rollback": {
+                    "available": _review_bool(row.get("repair_rollback_available")),
+                    "confirmed": _review_bool(row.get("repair_rollback_confirmed")),
+                    "applied": _review_bool(row.get("repair_rollback_applied")),
+                    "matches_original": _review_bool(row.get("repair_rollback_matches_original")),
+                    "success_rate": _review_number(row.get("repair_rollback_success_rate")),
+                    "status_counts": _parse_counter_text(row.get("repair_rollback_status_counts")),
+                    "report_file": _review_text(row.get("repair_rollback_report"))
+                    or str(files.get("repair_rollback", "")),
+                    "rollback_full_file": _review_text(row.get("repair_rollback_full"))
+                    or str(files.get("repair_rollback_full", "")),
+                },
                 "repair_patch_review": {
                     "patch_count": _review_number(row.get("repair_patch_review_count")),
                     "safe_count": _review_number(row.get("repair_patch_review_safe_count")),
@@ -1831,6 +1874,16 @@ def build_batch_experiment_evidence(
         or _review_number(row.get("repair_publish_open_issue_count")) is not None
         or _review_number(row.get("repair_publish_rate")) is not None
         or _review_text(row.get("repair_publish_status_counts"))
+    ]
+    repair_rollback_rows = [
+        row
+        for row in review_rows
+        if _review_bool(row.get("repair_rollback_available")) is not None
+        or _review_bool(row.get("repair_rollback_confirmed")) is not None
+        or _review_bool(row.get("repair_rollback_applied")) is not None
+        or _review_bool(row.get("repair_rollback_matches_original")) is not None
+        or _review_number(row.get("repair_rollback_success_rate")) is not None
+        or _review_text(row.get("repair_rollback_status_counts"))
     ]
     repair_patch_review_rows = [
         row
@@ -1912,6 +1965,15 @@ def build_batch_experiment_evidence(
             "open_issue_count_total": _review_sum(review_rows, "repair_publish_open_issue_count"),
             "publish_rate": _score_average(repair_publish_rows, "repair_publish_rate"),
             "status_counts": _merge_counter_texts(review_rows, "repair_publish_status_counts"),
+        },
+        "repair_rollback_summary": {
+            "row_count": len(repair_rollback_rows),
+            "available_count_total": _review_bool_count(review_rows, "repair_rollback_available"),
+            "confirmed_count_total": _review_bool_count(review_rows, "repair_rollback_confirmed"),
+            "applied_count_total": _review_bool_count(review_rows, "repair_rollback_applied"),
+            "matches_original_count_total": _review_bool_count(review_rows, "repair_rollback_matches_original"),
+            "success_rate": _score_average(repair_rollback_rows, "repair_rollback_success_rate"),
+            "status_counts": _merge_counter_texts(review_rows, "repair_rollback_status_counts"),
         },
         "repair_patch_review_summary": {
             "row_count": len(repair_patch_review_rows),
@@ -1996,6 +2058,7 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
     ocr_summary = evidence.get("ocr_structured_table_gate_summary", {})
     formula_ocr_summary = evidence.get("ocr_structured_formula_gate_summary", {})
     repair_summary = evidence.get("repair_publish_summary", {})
+    rollback_summary = evidence.get("repair_rollback_summary", {})
     patch_review_summary = evidence.get("repair_patch_review_summary", {})
     lines.extend(
         [
@@ -2022,6 +2085,11 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
             f"- 开放合并问题总数：{repair_summary.get('open_issue_count_total', 0)}",
             f"- 发布率均值：{_format_number((repair_summary.get('publish_rate') or {}).get('average', 0))}",
             f"- 发布状态分布：{_format_counter(repair_summary.get('status_counts'))}",
+            f"- 可回滚记录数：{rollback_summary.get('available_count_total', 0)}",
+            f"- 已执行回滚演练：{rollback_summary.get('applied_count_total', 0)}",
+            f"- 回滚副本匹配原始译文：{rollback_summary.get('matches_original_count_total', 0)}",
+            f"- 回滚演练成功率均值：{_format_number((rollback_summary.get('success_rate') or {}).get('average', 0))}",
+            f"- 回滚状态分布：{_format_counter(rollback_summary.get('status_counts'))}",
             f"- 补丁审核记录行数：{patch_review_summary.get('row_count', 0)}",
             f"- 补丁总数：{patch_review_summary.get('patch_count_total', 0)}",
             f"- 需要人工复核补丁数：{patch_review_summary.get('required_count_total', 0)}",

@@ -369,6 +369,19 @@ class JobRegistry:
         return summary, None
 
     @staticmethod
+    def _repair_rollback_summary(path: Path) -> tuple[dict[str, Any], str | None]:
+        if not path.is_file():
+            return {}, None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}, "repair_rollback_report_invalid"
+        summary = raw.get("summary")
+        if not isinstance(summary, dict):
+            return {}, "repair_rollback_summary_missing"
+        return summary, None
+
+    @staticmethod
     def _repair_patch_review_summary(path: Path) -> tuple[dict[str, Any], str | None]:
         if not path.is_file():
             return {}, None
@@ -426,9 +439,12 @@ class JobRegistry:
         bilingual_html = output_dir / "bilingual.html"
         repair_publish_json = output_dir / "repair_publish.json"
         repair_publish_md = output_dir / "repair_publish.md"
+        repair_rollback_json = output_dir / "repair_rollback.json"
+        repair_rollback_md = output_dir / "repair_rollback.md"
         repair_patch_review_json = output_dir / "repair_patch_review.json"
         repair_patch_review_md = output_dir / "repair_patch_review.md"
         repair_published_full = output_dir / "published_full.md"
+        repair_rollback_full = output_dir / "rollback_full.md"
         table_reconstruction_json = output_dir / "table_reconstruction.json"
         table_merged_cell_review_json = output_dir / "table_merged_cell_review.json"
         table_merged_cell_review_md = output_dir / "table_merged_cell_review.md"
@@ -441,15 +457,19 @@ class JobRegistry:
         html_bytes = self._file_size(bilingual_html)
         repair_publish_json_bytes = self._file_size(repair_publish_json)
         repair_publish_md_bytes = self._file_size(repair_publish_md)
+        repair_rollback_json_bytes = self._file_size(repair_rollback_json)
+        repair_rollback_md_bytes = self._file_size(repair_rollback_md)
         repair_patch_review_json_bytes = self._file_size(repair_patch_review_json)
         repair_patch_review_md_bytes = self._file_size(repair_patch_review_md)
         repair_published_full_bytes = self._file_size(repair_published_full)
+        repair_rollback_full_bytes = self._file_size(repair_rollback_full)
         table_merged_cell_review_json_bytes = self._file_size(table_merged_cell_review_json)
         table_merged_cell_review_md_bytes = self._file_size(table_merged_cell_review_md)
         table_structure_publish_json_bytes = self._file_size(table_structure_publish_json)
         table_structure_publish_md_bytes = self._file_size(table_structure_publish_md)
         table_reconstruction_confirmed_bytes = self._file_size(table_reconstruction_confirmed_json)
         repair_summary, repair_warning = self._repair_publish_summary(repair_publish_json)
+        repair_rollback_summary, repair_rollback_warning = self._repair_rollback_summary(repair_rollback_json)
         patch_review_summary, patch_review_warning = self._repair_patch_review_summary(repair_patch_review_json)
         table_review_summary, table_review_warning = self._table_merged_cell_review_summary(
             table_merged_cell_review_json
@@ -473,6 +493,8 @@ class JobRegistry:
             warnings.append("repair_publish_report_missing_for_done")
         if repair_warning:
             warnings.append(repair_warning)
+        if repair_rollback_warning:
+            warnings.append(repair_rollback_warning)
         if patch_review_warning:
             warnings.append(patch_review_warning)
         if table_review_warning:
@@ -492,6 +514,11 @@ class JobRegistry:
         repair_publish_status = str(repair_summary.get("publish_status") or "")
         repair_publish_open_issue_count = self._as_int(repair_summary.get("open_merge_issue_count"))
         repair_publish_rollback_available = bool(repair_summary.get("rollback_available"))
+        repair_rollback_available = bool(repair_rollback_summary.get("rollback_available"))
+        repair_rollback_confirmed = bool(repair_rollback_summary.get("confirmed"))
+        repair_rollback_applied = bool(repair_rollback_summary.get("rollback_applied"))
+        repair_rollback_status = str(repair_rollback_summary.get("rollback_status") or "")
+        repair_rollback_matches_original = bool(repair_rollback_summary.get("rollback_matches_original"))
         repair_patch_review_count = self._as_int(patch_review_summary.get("patch_count"))
         repair_patch_review_required_count = self._as_int(patch_review_summary.get("review_required_count"))
         repair_patch_review_blocking_count = self._as_int(patch_review_summary.get("publish_blocking_count"))
@@ -542,6 +569,10 @@ class JobRegistry:
             warnings.append("repair_publish_requested_not_published")
         if repair_publish_published and repair_published_full_bytes <= 0:
             warnings.append("repair_published_full_missing")
+        if repair_rollback_confirmed and not repair_rollback_applied:
+            warnings.append("repair_rollback_requested_not_applied")
+        if repair_rollback_applied and repair_rollback_full_bytes <= 0:
+            warnings.append("repair_rollback_full_missing")
 
         severe = {
             "work_dir_missing",
@@ -576,6 +607,8 @@ class JobRegistry:
             "bilingual_html_bytes": html_bytes,
             "repair_publish_report_ready": repair_publish_json_bytes > 0 or repair_publish_md_bytes > 0,
             "repair_publish_report_bytes": max(repair_publish_json_bytes, repair_publish_md_bytes),
+            "repair_rollback_report_ready": repair_rollback_json_bytes > 0 or repair_rollback_md_bytes > 0,
+            "repair_rollback_report_bytes": max(repair_rollback_json_bytes, repair_rollback_md_bytes),
             "repair_patch_review_ready": repair_patch_review_json_bytes > 0 or repair_patch_review_md_bytes > 0,
             "repair_patch_review_bytes": max(repair_patch_review_json_bytes, repair_patch_review_md_bytes),
             "repair_patch_review_count": repair_patch_review_count,
@@ -621,8 +654,15 @@ class JobRegistry:
             "repair_publish_status": repair_publish_status,
             "repair_publish_open_issue_count": repair_publish_open_issue_count,
             "repair_publish_rollback_available": repair_publish_rollback_available,
+            "repair_rollback_available": repair_rollback_available,
+            "repair_rollback_confirmed": repair_rollback_confirmed,
+            "repair_rollback_applied": repair_rollback_applied,
+            "repair_rollback_status": repair_rollback_status,
+            "repair_rollback_matches_original": repair_rollback_matches_original,
             "repair_published_full_ready": repair_published_full_bytes > 0,
             "repair_published_full_bytes": repair_published_full_bytes,
+            "repair_rollback_full_ready": repair_rollback_full_bytes > 0,
+            "repair_rollback_full_bytes": repair_rollback_full_bytes,
             "bundle_zip_ready": rec.status in ("done", "cancelled") and translated_bytes > 0,
         }
 
@@ -768,6 +808,8 @@ class JobRegistry:
                 "bilingual_html_bytes": 0,
                 "repair_publish_report_ready": False,
                 "repair_publish_report_bytes": 0,
+                "repair_rollback_report_ready": False,
+                "repair_rollback_report_bytes": 0,
                 "repair_patch_review_ready": False,
                 "repair_patch_review_bytes": 0,
                 "repair_patch_review_count": 0,
@@ -803,8 +845,15 @@ class JobRegistry:
                 "repair_publish_status": "",
                 "repair_publish_open_issue_count": 0,
                 "repair_publish_rollback_available": False,
+                "repair_rollback_available": False,
+                "repair_rollback_confirmed": False,
+                "repair_rollback_applied": False,
+                "repair_rollback_status": "",
+                "repair_rollback_matches_original": False,
                 "repair_published_full_ready": False,
                 "repair_published_full_bytes": 0,
+                "repair_rollback_full_ready": False,
+                "repair_rollback_full_bytes": 0,
                 "bundle_zip_ready": False,
             }
         pub = rec.to_public()
