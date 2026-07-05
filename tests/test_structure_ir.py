@@ -5100,6 +5100,97 @@ class StructureIRTests(unittest.TestCase):
             if parent.is_dir() and not any(parent.iterdir()):
                 shutil.rmtree(parent)
 
+    def test_bilingual_html_applies_confirmed_table_structure_patches(self) -> None:
+        root = Path.cwd() / "test-output" / "bilingual-html-table-patches"
+        if root.exists():
+            shutil.rmtree(root)
+        chunk_dir = root / "chunks"
+        chunk_dir.mkdir(parents=True)
+        try:
+            chunk = TextChunk(
+                chunk_id="c0000",
+                pages_0based=[0],
+                text="Source paragraph without a markdown table.",
+                link_count=0,
+                image_count=0,
+            )
+            chunk.block_ids = ["p1-b0000"]
+            (chunk_dir / "c0000.md").write_text(
+                "| Dataset group | Covered metric | Score |\n"
+                "| --- | --- | --- |\n"
+                "| A | Accuracy | 91.2 |\n",
+                encoding="utf-8",
+            )
+            reconstruction = {
+                "schema_version": "table-reconstruction-v1",
+                "confirmation_schema_version": "table-structure-publish-v1",
+                "tables": [
+                    {
+                        "table_id": "p1-b0000",
+                        "block_id": "p1-b0000",
+                        "page_no": 1,
+                        "confirmed_merged_cell_candidates": [
+                            {"span_type": "colspan", "candidate_status": "human_confirmed"}
+                        ],
+                        "structure_patches": [
+                            {
+                                "patch_id": "tsp-0001-p1-b0000-r0c0",
+                                "patch_type": "merged_cell_span",
+                                "operation": "apply_confirmed_merged_cell_span",
+                                "applied": True,
+                                "table_id": "p1-b0000",
+                                "anchor_cell": {"row_index": 0, "column_index": 0},
+                                "span": {
+                                    "span_type": "colspan",
+                                    "row_span": 1,
+                                    "column_span": 2,
+                                },
+                                "covered_cells": [{"row_index": 0, "column_index": 1}],
+                            }
+                        ],
+                    }
+                ],
+            }
+
+            confirmed = effective_table_reconstruction_view(reconstruction)
+            confirmed_html_path = root / "confirmed.html"
+            write_bilingual_html(
+                [chunk],
+                chunk_dir,
+                confirmed_html_path,
+                table_reconstruction=confirmed,
+                title="Confirmed table patches",
+            )
+            confirmed_html = confirmed_html_path.read_text(encoding="utf-8")
+            self.assertIn('class="structure-patched"', confirmed_html)
+            self.assertIn('colspan="2"', confirmed_html)
+            self.assertIn('data-structure-patch-id="tsp-0001-p1-b0000-r0c0"', confirmed_html)
+            self.assertNotIn("<th>Covered metric</th>", confirmed_html)
+
+            source_view = effective_table_reconstruction_view(
+                {
+                    **reconstruction,
+                    "confirmation_schema_version": "",
+                }
+            )
+            source_html_path = root / "source.html"
+            write_bilingual_html(
+                [chunk],
+                chunk_dir,
+                source_html_path,
+                table_reconstruction=source_view,
+                title="Source table patches",
+            )
+            source_html = source_html_path.read_text(encoding="utf-8")
+            self.assertNotIn('colspan="2"', source_html)
+            self.assertIn("<th>Covered metric</th>", source_html)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
     def test_translated_pdf_exporter_writes_readable_pdf_and_report(self) -> None:
         root = Path.cwd() / "test-output" / "translated-pdf-exporter"
         if root.exists():

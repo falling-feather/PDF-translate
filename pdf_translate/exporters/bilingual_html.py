@@ -19,7 +19,142 @@ def _chunk_translation_text(chunk_dir: Path, chunk_id: str) -> str:
     return finalize_merged_translation_markdown(body).strip()
 
 
-def _table_block(lines: list[str]) -> str | None:
+def _chunk_block_ids(chunk: TextChunk) -> set[str]:
+    return {str(block_id) for block_id in getattr(chunk, "block_ids", []) if str(block_id)}
+
+
+def _chunk_pages_1based(chunk: TextChunk) -> list[int]:
+    return [page + 1 for page in chunk.pages_0based]
+
+
+def _table_reconstruction_is_confirmed(table_reconstruction: dict[str, Any] | None) -> bool:
+    if not isinstance(table_reconstruction, dict):
+        return False
+    summary = table_reconstruction.get("summary") if isinstance(table_reconstruction.get("summary"), dict) else {}
+    return bool(table_reconstruction.get("confirmation_schema_version")) or (
+        str(summary.get("table_structure_source") or "") == "confirmed"
+    )
+
+
+def _table_matches_chunk(table: dict[str, Any], chunk: TextChunk, block_ids: set[str]) -> bool:
+    table_id = str(table.get("block_id") or table.get("table_id") or "")
+    if block_ids:
+        return table_id in block_ids
+    pages = set(_chunk_pages_1based(chunk))
+    try:
+        page_no = int(table.get("page_no") or 0)
+    except (TypeError, ValueError):
+        page_no = 0
+    return page_no in pages
+
+
+def _tables_for_chunk(chunk: TextChunk, table_reconstruction: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not _table_reconstruction_is_confirmed(table_reconstruction):
+        return []
+    tables = [
+        table
+        for table in (table_reconstruction or {}).get("tables") or []
+        if isinstance(table, dict)
+    ]
+    block_ids = _chunk_block_ids(chunk)
+    return [table for table in tables if _table_matches_chunk(table, chunk, block_ids)]
+
+
+def _safe_positive_int(value: Any, default: int = 1) -> int:
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(default, out)
+
+
+def _safe_zero_int(value: Any) -> int | None:
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out >= 0 else None
+
+
+def _table_patch_maps(
+    rows: list[list[str]],
+    patches: list[dict[str, Any]],
+) -> tuple[dict[tuple[int, int], dict[str, Any]], set[tuple[int, int]]]:
+    anchors: dict[tuple[int, int], dict[str, Any]] = {}
+    covered: set[tuple[int, int]] = set()
+    row_count = len(rows)
+    for patch in patches:
+        if not isinstance(patch, dict) or patch.get("applied") is False:
+            continue
+        anchor = patch.get("anchor_cell") if isinstance(patch.get("anchor_cell"), dict) else {}
+        row_index = _safe_zero_int(anchor.get("row_index"))
+        column_index = _safe_zero_int(anchor.get("column_index"))
+        if row_index is None or column_index is None:
+            continue
+        if row_index >= row_count or column_index >= len(rows[row_index]):
+            continue
+        span = patch.get("span") if isinstance(patch.get("span"), dict) else {}
+        row_span = min(_safe_positive_int(span.get("row_span")), row_count - row_index)
+        column_span = min(_safe_positive_int(span.get("column_span")), len(rows[row_index]) - column_index)
+        if row_span <= 1 and column_span <= 1:
+            continue
+        anchors[(row_index, column_index)] = {
+            "row_span": row_span,
+            "column_span": column_span,
+            "patch_id": str(patch.get("patch_id") or ""),
+        }
+        for row_offset in range(row_span):
+            current_row = row_index + row_offset
+            if current_row >= row_count:
+                continue
+            for col_offset in range(column_span):
+                current_col = column_index + col_offset
+                if current_col >= len(rows[current_row]) or (current_row, current_col) == (row_index, column_index):
+                    continue
+                covered.add((current_row, current_col))
+        for cell in patch.get("covered_cells") or []:
+            if not isinstance(cell, dict):
+                continue
+            covered_row = _safe_zero_int(cell.get("row_index"))
+            covered_col = _safe_zero_int(cell.get("column_index"))
+            if covered_row is None or covered_col is None:
+                continue
+            if covered_row < row_count and covered_col < len(rows[covered_row]):
+                covered.add((covered_row, covered_col))
+    return anchors, covered
+
+
+def _span_attrs(span: dict[str, Any] | None) -> str:
+    if not span:
+        return ""
+    attrs = []
+    if int(span.get("column_span") or 1) > 1:
+        attrs.append(f' colspan="{int(span["column_span"])}"')
+    if int(span.get("row_span") or 1) > 1:
+        attrs.append(f' rowspan="{int(span["row_span"])}"')
+    patch_id = str(span.get("patch_id") or "")
+    if patch_id:
+        attrs.append(f' data-structure-patch-id="{escape(patch_id)}"')
+    return "".join(attrs)
+
+
+def _render_table_cells(
+    cells: list[str],
+    row_index: int,
+    tag: str,
+    anchors: dict[tuple[int, int], dict[str, Any]],
+    covered: set[tuple[int, int]],
+) -> list[str]:
+    rendered = []
+    for column_index, cell in enumerate(cells):
+        if (row_index, column_index) in covered:
+            continue
+        attrs = _span_attrs(anchors.get((row_index, column_index)))
+        rendered.append(f"<{tag}{attrs}>{cell}</{tag}>")
+    return rendered
+
+
+def _table_block(lines: list[str], table_context: dict[str, Any] | None = None) -> str | None:
     if not lines or not all(line.strip().startswith("|") and line.strip().endswith("|") for line in lines):
         return None
     rows = [[escape(cell.strip()) for cell in line.strip().strip("|").split("|")] for line in lines]
@@ -30,30 +165,46 @@ def _table_block(lines: list[str]) -> str | None:
     ]
     if not data_rows:
         return None
+    patches = [
+        patch
+        for patch in (table_context or {}).get("structure_patches") or []
+        if isinstance(patch, dict)
+    ]
+    anchors, covered = _table_patch_maps(data_rows, patches)
     head = data_rows[0]
     body = data_rows[1:]
-    parts = ["<table>", "<thead><tr>"]
-    parts.extend(f"<th>{cell}</th>" for cell in head)
+    table_attrs = (
+        f' class="structure-patched" data-structure-patch-count="{len(anchors)}"'
+        if anchors
+        else ""
+    )
+    parts = [f"<table{table_attrs}>", "<thead><tr>"]
+    parts.extend(_render_table_cells(head, 0, "th", anchors, covered))
     parts.extend(["</tr></thead>", "<tbody>"])
-    for row in body:
+    for body_index, row in enumerate(body, start=1):
         parts.append("<tr>")
-        parts.extend(f"<td>{cell}</td>" for cell in row)
+        parts.extend(_render_table_cells(row, body_index, "td", anchors, covered))
         parts.append("</tr>")
     parts.extend(["</tbody>", "</table>"])
     return "".join(parts)
 
 
-def _render_markdownish(text: str) -> str:
+def _render_markdownish(text: str, table_contexts: list[dict[str, Any]] | None = None) -> str:
     blocks: list[str] = []
     current: list[str] = []
+    table_index = 0
 
     def flush() -> None:
-        nonlocal current
+        nonlocal current, table_index
         if not current:
             return
-        table = _table_block(current)
+        table_context = None
+        if table_contexts and table_index < len(table_contexts):
+            table_context = table_contexts[table_index]
+        table = _table_block(current, table_context=table_context)
         if table:
             blocks.append(table)
+            table_index += 1
         else:
             body = "<br>".join(escape(line) for line in current)
             blocks.append(f"<p>{body}</p>")
@@ -147,6 +298,7 @@ def build_bilingual_html(
     *,
     qa_report: dict[str, Any] | None = None,
     repair_plan: dict[str, Any] | None = None,
+    table_reconstruction: dict[str, Any] | None = None,
     title: str = "双语对照译文",
 ) -> str:
     issues_by_chunk = _qa_issues_by_chunk(qa_report)
@@ -160,6 +312,7 @@ def build_bilingual_html(
         pages = [p + 1 for p in chunk.pages_0based]
         page_text = f"{pages[0]}-{pages[-1]}" if pages else "-"
         translation = _chunk_translation_text(chunk_dir, chunk.chunk_id)
+        table_contexts = _tables_for_chunk(chunk, table_reconstruction)
         issues = issues_by_chunk.get(chunk.chunk_id, [])
         repairs = repairs_by_chunk.get(chunk.chunk_id, [])
         issue_badges = _badges(issues, label_key="type", class_prefix="issue")
@@ -181,7 +334,7 @@ def build_bilingual_html(
     </article>
     <article>
       <h3>译文</h3>
-      {_render_markdownish(translation)}
+      {_render_markdownish(translation, table_contexts=table_contexts)}
     </article>
   </div>
   <details>
@@ -270,6 +423,8 @@ def build_bilingual_html(
     table {{ width: 100%; border-collapse: collapse; margin: 10px 0 14px; font-size: 14px; }}
     th, td {{ border: 1px solid var(--line); padding: 6px 8px; vertical-align: top; }}
     th {{ background: #f3f6f8; text-align: left; }}
+    table.structure-patched {{ border-color: #99d6ce; }}
+    [data-structure-patch-id] {{ background: #e9f7f4; box-shadow: inset 3px 0 0 var(--accent); }}
     details {{ border-top: 1px solid var(--line); padding: 12px 18px 16px; }}
     summary {{ cursor: pointer; color: var(--accent); font-weight: 600; }}
     .details-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 12px; }}
@@ -307,6 +462,7 @@ def write_bilingual_html(
     *,
     qa_report: dict[str, Any] | None = None,
     repair_plan: dict[str, Any] | None = None,
+    table_reconstruction: dict[str, Any] | None = None,
     title: str = "双语对照译文",
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -316,6 +472,7 @@ def write_bilingual_html(
             chunk_dir,
             qa_report=qa_report,
             repair_plan=repair_plan,
+            table_reconstruction=table_reconstruction,
             title=title,
         ),
         encoding="utf-8",

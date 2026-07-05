@@ -559,6 +559,7 @@ def run_translate(
                 out_dir / "bilingual.html",
                 qa_report=qa_report,
                 repair_plan=repair_plan,
+                table_reconstruction=downstream_table_reconstruction,
                 title=f"{main_pdf.stem} 双语对照译文",
             )
         with run_metrics.stage("translated_pdf"):
