@@ -1935,6 +1935,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(candidate["structured_cells"][3]["text"], "91.2")
         self.assertEqual(candidate["cell_bboxes"][3]["row"], 1)
         self.assertEqual(candidate["merged_cell_candidates"][0]["reason"], "visual_header_span")
+        self.assertEqual(candidate["merged_cell_candidates"][0]["span_type"], "colspan")
+        self.assertEqual(candidate["merged_cell_candidates"][0]["column_span"], 2)
+        self.assertEqual(candidate["merged_cell_candidates"][0]["covered_cells"][0]["column_index"], 1)
         self.assertEqual(candidate["table_footnotes"][0]["marker"], "*")
 
         candidate_qa = build_ocr_candidate_qa(built["augmented_document_ir"], built)
@@ -2084,6 +2087,114 @@ class StructureIRTests(unittest.TestCase):
         promoted_chunks = build_structure_chunks(promoted_doc_ir)
         self.assertIn("| Metric | Accuracy |", promoted_chunks[0].text)
         self.assertIn("| A | 91.2 |", promoted_chunks[0].text)
+
+    def test_table_ocr_plain_text_infers_merged_cell_candidates(self) -> None:
+        doc_ir = DocumentIR(
+            doc_id="plain-text-table-ocr-merged-candidates",
+            source_pdf="plain-text-table-ocr-merged-candidates.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text="Dataset metrics\nModel Acc F1\nA 91 88",
+                    image_count=1,
+                    warnings=["low_text_image_heavy_page", "table_like_content"],
+                    meta={"text_char_count": 35, "text_area_ratio": 0.02, "image_area_ratio": 0.5},
+                    blocks=[
+                        BlockIR(
+                            "p1-b0000",
+                            1,
+                            "table",
+                            "Dataset metrics\nModel Acc F1\nA 91 88",
+                            (60, 520, 520, 640),
+                            0,
+                            locked_tokens=["91", "88"],
+                            meta={"table": {"row_count": 3, "column_count": 3, "confidence": "medium"}},
+                        ),
+                    ],
+                )
+            ],
+        )
+        route = {
+            "schema_version": "vision-route-v1",
+            "doc_id": doc_ir.doc_id,
+            "summary": {},
+            "pages": [
+                {
+                    "page_no": 1,
+                    "action": "local_ocr",
+                    "risk_level": "high",
+                    "risk_score": 0.82,
+                    "reasons": ["possible_image_table"],
+                    "evidence": {
+                        "page_preview_path": "vision_pages/page-0001.png",
+                        "region_crops": [
+                            {
+                                "block_id": "p1-b0000",
+                                "block_type": "table",
+                                "crop_path": "vision_crops/page-0001/p1-b0000-table.png",
+                                "bbox": [60, 520, 520, 640],
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+        manifest = build_ocr_task_manifest(doc_ir, route)
+        table_task = manifest["tasks"][0]
+        results = build_ocr_results_payload(
+            manifest,
+            {
+                "schema_version": "ocr-results-v1",
+                "results": [
+                    {
+                        "task_id": table_task["task_id"],
+                        "status": "succeeded",
+                        "text": "| Dataset metrics |\n| Model | Acc | F1 |\n| A | 91 | 88 |",
+                        "confidence": 0.92,
+                        "engine": "plain_text_table_ocr",
+                        "language": "en",
+                        "bbox": [60, 520, 520, 640],
+                    }
+                ],
+            },
+        )
+
+        built = build_ocr_writeback(doc_ir, manifest, results)
+        candidate = built["augmented_document_ir"]["pages"][0]["blocks"][0]["meta"]["ocr_candidates"][0]
+        self.assertEqual(candidate["structured_cells"][0]["text"], "Dataset metrics")
+        self.assertEqual(candidate["structured_cells"][1]["text"], "")
+        self.assertEqual(candidate["structured_cells"][8]["text"], "88")
+        self.assertIn("merged_cell_candidates_inferred_from_text", candidate["warnings"])
+        self.assertEqual(built["summary"]["structured_result_item_counts"]["merged_cell_candidates"], 1)
+        merged = candidate["merged_cell_candidates"][0]
+        self.assertEqual(merged["type"], "colspan")
+        self.assertEqual(merged["span_type"], "colspan")
+        self.assertEqual(merged["row"], 0)
+        self.assertEqual(merged["row_index"], 0)
+        self.assertEqual(merged["col"], 0)
+        self.assertEqual(merged["column_span"], 3)
+        self.assertEqual(merged["cols"], [0, 1, 2])
+        self.assertEqual(merged["reason"], "single_cell_ragged_row")
+        self.assertEqual(
+            [(cell["row_index"], cell["column_index"]) for cell in merged["covered_cells"]],
+            [(0, 1), (0, 2)],
+        )
+
+        candidate_qa = build_ocr_candidate_qa(built["augmented_document_ir"], built)
+        self.assertEqual(candidate_qa["summary"]["promotable_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["merged_cell_candidates_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["result_merged_cell_candidate_count"], 1)
+        self.assertEqual(candidate_qa["summary"]["structured_table_gate_passed_count"], 1)
+        self.assertEqual(candidate_qa["candidates"][0]["status"], "candidate")
+
+        promotion = build_ocr_candidate_promotion(built["augmented_document_ir"], candidate_qa)
+        self.assertEqual(promotion["summary"]["structured_table_promotion_count"], 1)
+        self.assertEqual(promotion["promotions"][0]["merged_cell_candidates"][0]["reason"], "single_cell_ragged_row")
+        promoted_table = promotion["promoted_document_ir"]["pages"][0]["blocks"][0]["meta"]["table"]
+        self.assertEqual(promoted_table["rows"][0], ["Dataset metrics", "", ""])
+        self.assertEqual(promoted_table["merged_cell_candidates"][0]["source"], "local_text_table_parser")
 
     def test_formula_ocr_writeback_preserves_structure_context(self) -> None:
         doc_ir = DocumentIR(

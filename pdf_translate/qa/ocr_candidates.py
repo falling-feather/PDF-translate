@@ -32,6 +32,7 @@ STRUCTURED_FORMULA_NOT_APPLICABLE = "not_applicable"
 TRACE_ONLY_WARNINGS = {
     "structured_table_inferred_from_text",
     "cell_bboxes_estimated_from_region",
+    "merged_cell_candidates_inferred_from_text",
 }
 
 

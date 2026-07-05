@@ -22,6 +22,7 @@ STRUCTURED_RESULT_FIELDS = (
     "equation_labels",
     "formula_confidence",
 )
+NUMBER_RE = re.compile(r"\b\d+(?:[.,]\d+)?%?")
 
 
 def _json_copy(value: Any) -> Any:
@@ -90,6 +91,23 @@ def _as_float(value: Any) -> float:
     return 0.0
 
 
+def _nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        parsed = int(value)
+        return parsed if parsed >= 0 else None
+    if isinstance(value, str):
+        try:
+            parsed = int(float(value.strip()))
+        except ValueError:
+            return None
+        return parsed if parsed >= 0 else None
+    return None
+
+
 def _normalized_bbox(value: Any) -> list[float]:
     if not isinstance(value, (list, tuple)):
         return []
@@ -125,10 +143,92 @@ def _structured_payload(value: Any) -> Any | None:
     return None
 
 
+def _normalised_covered_cells(value: Any) -> list[dict[str, int]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, int]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        row = _nonnegative_int(item.get("row_index", item.get("row")))
+        col = _nonnegative_int(item.get("column_index", item.get("col", item.get("column"))))
+        if row is None or col is None:
+            continue
+        out.append({"row": row, "col": col, "row_index": row, "column_index": col})
+    return out
+
+
+def _normalise_merged_cell_candidate(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    out = _json_copy(value)
+    span_type = str(out.get("span_type") or out.get("type") or "").strip()
+    if span_type:
+        out.setdefault("span_type", span_type)
+        out.setdefault("type", span_type)
+
+    rows = out.get("rows") if isinstance(out.get("rows"), list) else []
+    cols = out.get("cols") if isinstance(out.get("cols"), list) else []
+    row_index = _nonnegative_int(out.get("row_index", out.get("row")))
+    if row_index is None and rows:
+        row_index = _nonnegative_int(rows[0])
+    column_index = _nonnegative_int(out.get("column_index", out.get("col", out.get("column"))))
+    if column_index is None and cols:
+        column_index = _nonnegative_int(cols[0])
+    if row_index is not None:
+        out.setdefault("row", row_index)
+        out.setdefault("row_index", row_index)
+    if column_index is not None:
+        out.setdefault("col", column_index)
+        out.setdefault("column_index", column_index)
+
+    row_span = _positive_int(out.get("row_span"))
+    column_span = _positive_int(out.get("column_span"))
+    normalised_rows = [_nonnegative_int(item) for item in rows]
+    normalised_rows = [item for item in normalised_rows if item is not None]
+    normalised_cols = [_nonnegative_int(item) for item in cols]
+    normalised_cols = [item for item in normalised_cols if item is not None]
+    if row_span <= 0 and row_index is not None and normalised_rows:
+        row_span = max(normalised_rows) - row_index + 1
+    if column_span <= 0 and column_index is not None and normalised_cols:
+        column_span = max(normalised_cols) - column_index + 1
+    if row_span <= 0:
+        row_span = 1
+    if column_span <= 0:
+        column_span = 1
+    out.setdefault("row_span", row_span)
+    out.setdefault("column_span", column_span)
+
+    covered_cells = _normalised_covered_cells(out.get("covered_cells"))
+    if not covered_cells and row_index is not None and column_index is not None:
+        if span_type == "colspan" and column_span > 1:
+            covered_cells = [
+                _covered_cell(row_index, col_index)
+                for col_index in range(column_index + 1, column_index + column_span)
+            ]
+        elif span_type == "rowspan" and row_span > 1:
+            covered_cells = [
+                _covered_cell(row_index + offset, column_index)
+                for offset in range(1, row_span)
+            ]
+    if covered_cells:
+        out["covered_cells"] = covered_cells
+    return out
+
+
+def _normalise_merged_cell_candidates(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_normalise_merged_cell_candidate(item) for item in value]
+    return _normalise_merged_cell_candidate(value)
+
+
 def _structured_result_fields(source: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key in STRUCTURED_RESULT_FIELDS:
-        value = _structured_payload(source.get(key))
+        raw_value = source.get(key)
+        if key == "merged_cell_candidates":
+            raw_value = _normalise_merged_cell_candidates(raw_value)
+        value = _structured_payload(raw_value)
         if value is not None:
             out[key] = value
     return out
@@ -150,15 +250,12 @@ def _pipe_table_rows(text: str) -> list[list[str]]:
         if "|" not in line:
             continue
         parts = [part.strip() for part in line.strip("|").split("|")]
-        if len(parts) < 2:
+        if not parts:
             continue
         if all(part and set(part) <= {"-", ":", " "} for part in parts):
             continue
         rows.append(parts)
-    if len(rows) < 2:
-        return []
-    width = max(len(row) for row in rows)
-    return [row + [""] * (width - len(row)) for row in rows]
+    return rows if len(rows) >= 2 else []
 
 
 def _whitespace_table_rows(text: str, expected_columns: int) -> list[list[str]]:
@@ -197,6 +294,170 @@ def _positive_int(value: Any) -> int:
     return 0
 
 
+def _normalise_rows(rows: list[list[str]], column_count: int) -> list[list[str]]:
+    if column_count <= 0:
+        column_count = max((len(row) for row in rows), default=0)
+    return [row + [""] * max(0, column_count - len(row)) for row in rows]
+
+
+def _table_rows_from_text(text: str, expected_columns: int) -> tuple[list[list[str]], list[list[str]]]:
+    raw_rows = _pipe_table_rows(text)
+    if not raw_rows:
+        raw_rows = _whitespace_table_rows(text, expected_columns)
+    if not raw_rows:
+        return [], []
+    column_count = max(expected_columns, max((len(row) for row in raw_rows), default=0))
+    return raw_rows, _normalise_rows(raw_rows, column_count)
+
+
+def _covered_cell(row_index: int, column_index: int) -> dict[str, int]:
+    return {
+        "row": row_index,
+        "col": column_index,
+        "row_index": row_index,
+        "column_index": column_index,
+    }
+
+
+def _merged_cell_candidate(
+    *,
+    span_type: str,
+    row_index: int,
+    column_index: int,
+    row_span: int,
+    column_span: int,
+    text: str,
+    reason: str,
+    confidence: str,
+    covered_cells: list[dict[str, int]],
+) -> dict[str, Any]:
+    candidate: dict[str, Any] = {
+        "type": span_type,
+        "span_type": span_type,
+        "row": row_index,
+        "col": column_index,
+        "row_index": row_index,
+        "column_index": column_index,
+        "row_span": row_span,
+        "column_span": column_span,
+        "text": text,
+        "reason": reason,
+        "confidence": confidence,
+        "covered_cells": covered_cells,
+        "source": "local_text_table_parser",
+    }
+    if span_type == "colspan":
+        candidate["cols"] = list(range(column_index, column_index + column_span))
+    if span_type == "rowspan":
+        candidate["rows"] = list(range(row_index, row_index + row_span))
+    return candidate
+
+
+def _merged_cell_candidates_from_rows(rows: list[list[str]], column_count: int) -> list[dict[str, Any]]:
+    if column_count < 2 or not rows:
+        return []
+    normalised = _normalise_rows(rows, column_count)
+    candidates: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+
+    def add(candidate: dict[str, Any]) -> None:
+        covered = tuple(
+            (cell["row_index"], cell["column_index"])
+            for cell in candidate.get("covered_cells") or []
+        )
+        key = (
+            candidate.get("span_type"),
+            candidate.get("row_index"),
+            candidate.get("column_index"),
+            candidate.get("row_span"),
+            candidate.get("column_span"),
+            candidate.get("reason"),
+            covered,
+        )
+        if key not in seen:
+            seen.add(key)
+            candidates.append(candidate)
+
+    for row_index, row in enumerate(normalised):
+        raw_row = rows[row_index] if row_index < len(rows) else row
+        padded_columns = set(range(max(0, len(raw_row)), column_count))
+        nonempty_columns = [index for index, value in enumerate(row) if str(value).strip()]
+        if len(raw_row) < column_count and nonempty_columns:
+            if len(nonempty_columns) == 1:
+                anchor_column = nonempty_columns[0]
+                confidence = "medium" if row_index == 0 and not NUMBER_RE.search(row[anchor_column]) else "low"
+                add(
+                    _merged_cell_candidate(
+                        span_type="colspan",
+                        row_index=row_index,
+                        column_index=anchor_column,
+                        row_span=1,
+                        column_span=max(1, column_count - anchor_column),
+                        text=row[anchor_column],
+                        reason="single_cell_ragged_row",
+                        confidence=confidence,
+                        covered_cells=[
+                            _covered_cell(row_index, column_index)
+                            for column_index in range(anchor_column + 1, column_count)
+                        ],
+                    )
+                )
+            else:
+                anchor_column = max(nonempty_columns)
+                if anchor_column < column_count - 1:
+                    add(
+                        _merged_cell_candidate(
+                            span_type="colspan",
+                            row_index=row_index,
+                            column_index=anchor_column,
+                            row_span=1,
+                            column_span=column_count - anchor_column,
+                            text=row[anchor_column],
+                            reason="ragged_row_trailing_span",
+                            confidence="low",
+                            covered_cells=[
+                                _covered_cell(row_index, column_index)
+                                for column_index in range(anchor_column + 1, column_count)
+                            ],
+                        )
+                    )
+
+        for column_index, text in enumerate(row):
+            if column_index in padded_columns or str(text).strip():
+                continue
+            if row_index > 0 and str(normalised[row_index - 1][column_index]).strip():
+                confidence = "medium" if column_index == 0 else "low"
+                add(
+                    _merged_cell_candidate(
+                        span_type="rowspan",
+                        row_index=row_index - 1,
+                        column_index=column_index,
+                        row_span=2,
+                        column_span=1,
+                        text=normalised[row_index - 1][column_index],
+                        reason="empty_cell_below_nonempty_anchor",
+                        confidence=confidence,
+                        covered_cells=[_covered_cell(row_index, column_index)],
+                    )
+                )
+            if column_index > 0 and str(row[column_index - 1]).strip():
+                add(
+                    _merged_cell_candidate(
+                        span_type="colspan",
+                        row_index=row_index,
+                        column_index=column_index - 1,
+                        row_span=1,
+                        column_span=2,
+                        text=row[column_index - 1],
+                        reason="empty_cell_right_of_nonempty_anchor",
+                        confidence="low",
+                        covered_cells=[_covered_cell(row_index, column_index)],
+                    )
+                )
+
+    return candidates
+
+
 def _estimated_cell_bboxes(rows: list[list[str]], bbox: list[float]) -> list[dict[str, Any]]:
     if len(bbox) != 4 or not rows:
         return []
@@ -231,7 +492,7 @@ def _infer_structured_table_from_text(text: str, task: dict[str, Any], bbox: lis
         return {}
     table_context = task.get("table_context") if isinstance(task.get("table_context"), dict) else {}
     expected_columns = _positive_int(table_context.get("column_count"))
-    rows = _pipe_table_rows(text) or _whitespace_table_rows(text, expected_columns)
+    raw_rows, rows = _table_rows_from_text(text, expected_columns)
     if not rows:
         return {}
     column_count = max(len(row) for row in rows)
@@ -255,6 +516,9 @@ def _infer_structured_table_from_text(text: str, task: dict[str, Any], bbox: lis
     cell_bboxes = _estimated_cell_bboxes(rows, bbox)
     if cell_bboxes:
         inferred["cell_bboxes"] = cell_bboxes
+    merged_cell_candidates = _merged_cell_candidates_from_rows(raw_rows, column_count)
+    if merged_cell_candidates:
+        inferred["merged_cell_candidates"] = merged_cell_candidates
     return inferred
 
 
@@ -337,6 +601,8 @@ def _candidate(
             candidate["warnings"].append("structured_table_inferred_from_text")
             if "cell_bboxes" in inferred:
                 candidate["warnings"].append("cell_bboxes_estimated_from_region")
+            if "merged_cell_candidates" in inferred:
+                candidate["warnings"].append("merged_cell_candidates_inferred_from_text")
     return candidate
 
 
