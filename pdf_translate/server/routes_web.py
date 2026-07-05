@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, Response
 from pdf_translate.error_codes import PdfTranslateError, error_info_from_exception, make_error_info
 from pdf_translate.export_filename import suggest_md_download_name, suggest_zip_bundle_name
 from pdf_translate.pipeline_cancel import cancel_flag_path
-from pdf_translate.qa.repair import write_repair_publish
+from pdf_translate.qa.repair import write_repair_patch_review, write_repair_publish
 
 from pdf_translate.server.auth_deps import Principal, bearer_principal, mint_token, require_admin
 from pdf_translate.server import database
@@ -56,6 +56,11 @@ def _confirm_repair_publish_for_record(rec: JobRecord) -> dict[str, Any]:
         out_dir / "repair_merge.json",
         missing_message="局部修复合并报告尚未生成",
         invalid_message="局部修复合并报告无法解析",
+    )
+    write_repair_patch_review(
+        repair_merge,
+        out_dir / "repair_patch_review.json",
+        out_dir / "repair_patch_review.md",
     )
     report = write_repair_publish(
         repair_merge,
@@ -572,6 +577,23 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             headers={"Content-Disposition": cd},
         )
 
+    @api.get("/jobs/{job_id}/download/repair-patch-review.md")
+    def download_repair_patch_review(job_id: str, p: Principal = Depends(bearer_principal)) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "repair_patch_review.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "局部修复补丁审核清单尚未生成")
+        ascii_fallback = "repair_patch_review.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_repair_patch_review.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
     @api.get("/jobs/{job_id}/download/published-full.md")
     def download_published_full(job_id: str, p: Principal = Depends(bearer_principal)) -> FileResponse:
         rec = app_registry.get(job_id)
@@ -770,6 +792,11 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             if not p.is_file() or p.stat().st_size == 0:
                 raise HTTPException(404, "局部修复发布确认报告尚未生成")
             return FileResponse(p, filename="repair_publish.md", media_type="text/markdown; charset=utf-8")
+        if kind == "repair_patch_review":
+            p = root / "output" / "repair_patch_review.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "局部修复补丁审核清单尚未生成")
+            return FileResponse(p, filename="repair_patch_review.md", media_type="text/markdown; charset=utf-8")
         if kind == "repair_published_full":
             p = root / "output" / "published_full.md"
             if not p.is_file() or p.stat().st_size == 0:
@@ -789,7 +816,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             ascii_fb = "bundle.zip"
             cd = f'attachment; filename="{ascii_fb}"; filename*=UTF-8\'\'{quote(zip_disp)}'
             return Response(content=data, media_type="application/zip", headers={"Content-Disposition": cd})
-        raise HTTPException(400, "kind 必须是 input / output_md / output_pdf / repair_publish / repair_published_full / bundle_zip")
+        raise HTTPException(400, "kind 必须是 input / output_md / output_pdf / repair_publish / repair_patch_review / repair_published_full / bundle_zip")
 
     api.include_router(admin)
     return api

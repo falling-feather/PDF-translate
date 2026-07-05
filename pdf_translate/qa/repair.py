@@ -15,6 +15,7 @@ REQUEST_SCHEMA_VERSION = "repair-requests-v1"
 RESULT_SCHEMA_VERSION = "repair-results-v1"
 VALIDATION_SCHEMA_VERSION = "repair-validation-v1"
 MERGE_SCHEMA_VERSION = "repair-merge-v1"
+PATCH_REVIEW_SCHEMA_VERSION = "repair-patch-review-v1"
 PUBLISH_SCHEMA_VERSION = "repair-publish-v1"
 
 _ISSUE_RULES = {
@@ -1286,6 +1287,177 @@ def write_repair_merge(
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
     markdown_path.write_text(repair_merge_to_markdown(report), encoding="utf-8")
+    return report
+
+
+def _patch_review_decision(patch: dict[str, Any]) -> tuple[str, str, str]:
+    status = str(patch.get("status") or "")
+    strategy = str(patch.get("strategy") or "")
+    if status == "applied":
+        if strategy == "replace_markdown_table_by_evidence":
+            return (
+                "approve_candidate",
+                "medium",
+                "候选补丁已通过验证并按 QA 证据定位到目标表格，建议审核后批准。",
+            )
+        return "approve_candidate", "low", "候选补丁已通过验证并自动合并，建议审核后批准。"
+    if status in {"skipped_manual_merge_required", "skipped_chunk_conflict"}:
+        return "manual_review_required", "high", "当前补丁无法安全自动合并，需要人工逐项处理。"
+    if status in {"skipped_validation_not_passed", "skipped_missing_result", "skipped_missing_request"}:
+        return "reject_candidate", "medium", "候选补丁证据不完整或未通过验证，建议拒绝本次补丁。"
+    if status.startswith("skipped_"):
+        return "manual_review_required", "medium", "候选补丁被跳过，需要人工判断是否重新生成或放弃。"
+    return "manual_review_required", "medium", "未知补丁状态，需要人工复核。"
+
+
+def build_repair_patch_review(repair_merge: dict[str, Any]) -> dict[str, Any]:
+    """Build a patch-level review manifest before repaired output is published."""
+    merge_summary = repair_merge.get("summary") if isinstance(repair_merge.get("summary"), dict) else {}
+    reviews: list[dict[str, Any]] = []
+    status_counts: Counter[str] = Counter()
+    decision_counts: Counter[str] = Counter()
+    risk_counts: Counter[str] = Counter()
+    action_counts: Counter[str] = Counter()
+    scope_counts: Counter[str] = Counter()
+    table_patch_count = 0
+
+    for patch in repair_merge.get("patches") or []:
+        if not isinstance(patch, dict):
+            continue
+        decision, risk_level, decision_reason = _patch_review_decision(patch)
+        status = str(patch.get("status") or "")
+        action = str(patch.get("action") or "")
+        scope = str(patch.get("scope") or "")
+        strategy = str(patch.get("strategy") or "")
+        merge_target = patch.get("merge_target") if isinstance(patch.get("merge_target"), dict) else {}
+        if strategy == "replace_markdown_table_by_evidence":
+            table_patch_count += 1
+        status_counts[status] += 1
+        decision_counts[decision] += 1
+        risk_counts[risk_level] += 1
+        if action:
+            action_counts[action] += 1
+        if scope:
+            scope_counts[scope] += 1
+        reviews.append(
+            {
+                "review_id": f"pr{len(reviews):04d}",
+                "request_id": patch.get("request_id") or "",
+                "repair_id": patch.get("repair_id") or "",
+                "chunk_id": patch.get("chunk_id") or "",
+                "pages_1based": patch.get("pages_1based") or [],
+                "priority": patch.get("priority") or "",
+                "issue_type": patch.get("issue_type") or "",
+                "action": action,
+                "scope": scope,
+                "merge_status": status,
+                "merge_strategy": strategy,
+                "risk_level": risk_level,
+                "default_decision": decision,
+                "human_decision": "",
+                "decision_reason": decision_reason,
+                "publish_blocking": decision != "approve_candidate",
+                "reason": patch.get("reason") or "",
+                "merge_target": merge_target,
+                "patched_chunk_path": patch.get("patched_chunk_path") or "",
+                "result_path": patch.get("result_path") or "",
+                "result_excerpt": patch.get("result_excerpt") or "",
+            }
+        )
+
+    patch_count = len(reviews)
+    auto_merge_safe_count = decision_counts.get("approve_candidate", 0)
+    review_required_count = patch_count - auto_merge_safe_count
+    return {
+        "schema_version": PATCH_REVIEW_SCHEMA_VERSION,
+        "summary": {
+            "repair_merge_schema_version": repair_merge.get("schema_version"),
+            "patch_count": patch_count,
+            "auto_merge_safe_count": auto_merge_safe_count,
+            "review_required_count": review_required_count,
+            "publish_blocking_count": review_required_count,
+            "table_patch_review_count": table_patch_count,
+            "applied_count": _safe_nonnegative_int(merge_summary.get("applied_count")) or 0,
+            "manual_merge_required_count": _safe_nonnegative_int(
+                merge_summary.get("manual_merge_required_count")
+            )
+            or 0,
+            "conflict_count": _safe_nonnegative_int(merge_summary.get("conflict_count")) or 0,
+            "status_counts": dict(status_counts),
+            "default_decision_counts": dict(decision_counts),
+            "risk_level_counts": dict(risk_counts),
+            "action_counts": dict(action_counts),
+            "scope_counts": dict(scope_counts),
+        },
+        "patch_reviews": reviews,
+    }
+
+
+def repair_patch_review_to_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    lines = [
+        "# 局部修复补丁审核",
+        "",
+        "| 指标 | 值 |",
+        "| --- | --- |",
+        f"| 补丁总数 | {summary.get('patch_count', 0)} |",
+        f"| 自动合并可审 | {summary.get('auto_merge_safe_count', 0)} |",
+        f"| 仍需人工处理 | {summary.get('review_required_count', 0)} |",
+        f"| 发布阻断项 | {summary.get('publish_blocking_count', 0)} |",
+        f"| 表格定位补丁 | {summary.get('table_patch_review_count', 0)} |",
+        f"| 合并冲突 | {summary.get('conflict_count', 0)} |",
+        "",
+        "## 审核明细",
+        "",
+    ]
+    reviews = report.get("patch_reviews") or []
+    if not reviews:
+        lines.append("当前没有可审核的局部修复补丁。")
+        return "\n".join(lines).rstrip() + "\n"
+
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+        pages = review.get("pages_1based") or []
+        page_text = f"{pages[0]}-{pages[-1]}" if pages else "-"
+        lines.append(
+            f"### {review.get('review_id')} · {review.get('default_decision')} · {review.get('chunk_id')} · 页 {page_text}"
+        )
+        lines.append(f"- 问题：`{review.get('issue_type') or '-'}`，优先级 `{review.get('priority') or '-'}`")
+        lines.append(f"- 动作：`{review.get('action') or '-'}`，范围 `{review.get('scope') or '-'}`")
+        lines.append(f"- 合并状态：`{review.get('merge_status') or '-'}`，策略 `{review.get('merge_strategy') or '-'}`")
+        lines.append(f"- 风险等级：`{review.get('risk_level') or '-'}`")
+        lines.append(f"- 建议：{review.get('decision_reason') or '-'}")
+        merge_target = review.get("merge_target") if isinstance(review.get("merge_target"), dict) else {}
+        if merge_target:
+            table_index = _safe_nonnegative_int(merge_target.get("table_index"))
+            table_text = "-" if table_index is None else str(table_index + 1)
+            lines.append(
+                f"- 目标表格：第 {table_text} 个 Markdown 表格，目标单元格数 {merge_target.get('cell_count', 0)}"
+            )
+        if review.get("reason"):
+            lines.append(f"- 原因：{review.get('reason')}")
+        if review.get("patched_chunk_path"):
+            lines.append(f"- 修复 chunk：`{review.get('patched_chunk_path')}`")
+        if review.get("result_path"):
+            lines.append(f"- 候选片段：`{review.get('result_path')}`")
+        excerpt = str(review.get("result_excerpt") or "").strip()
+        if excerpt:
+            lines.extend(["", "```markdown", _clip_text(excerpt, 600), "```"])
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_repair_patch_review(
+    repair_merge: dict[str, Any],
+    json_path: Path,
+    markdown_path: Path,
+) -> dict[str, Any]:
+    report = build_repair_patch_review(repair_merge)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(repair_patch_review_to_markdown(report), encoding="utf-8")
     return report
 
 

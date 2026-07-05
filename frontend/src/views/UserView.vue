@@ -165,6 +165,7 @@ function artifactSummary(j) {
   if (j.partial_output_ready) ready.push("译文 MD");
   if (j.translated_pdf_ready) ready.push("译文 PDF");
   if (j.bilingual_html_ready) ready.push("双语 HTML");
+  if (j.repair_patch_review_ready) ready.push("补丁审核");
   if (j.repair_publish_report_ready) ready.push("修复报告");
   if (j.repair_published_full_ready) ready.push("修复发布稿");
   if (j.bundle_zip_ready) ready.push("资料包 ZIP");
@@ -743,6 +744,15 @@ onUnmounted(() => {
                   @click="downloadFrom(`/api/jobs/${tid}/download/repair-publish.md`, `${tid}_repair_publish.md`)"
                 >
                   修复报告
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].repair_patch_review_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/repair-patch-review.md`, `${tid}_repair_patch_review.md`)"
+                >
+                  补丁审核
                 </button>
                 <button
                   v-if="taskMap[tid].status === 'done'"

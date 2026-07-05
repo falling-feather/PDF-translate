@@ -266,6 +266,14 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("repair_merge_table_targeted_patch_count", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("repair_merge_table_targeted_patch_rate", loaded["records"][0]["metrics"]["rates"])
             self.assertIn("repair_merge_strategy_counts", loaded["records"][0]["metrics"]["breakdowns"])
+            self.assertIn("repair_patch_review_count", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("repair_patch_review_required_count", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("repair_patch_review_blocking_count", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("repair_patch_review_required_rate", loaded["records"][0]["metrics"]["rates"])
+            self.assertIn(
+                "repair_patch_review_default_decision_counts",
+                loaded["records"][0]["metrics"]["breakdowns"],
+            )
             self.assertIn("repair_publish_confirmed", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("repair_publish_published", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("repair_publish_open_issue_count", loaded["records"][0]["metrics"]["quality"])
@@ -295,6 +303,7 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("structure_hint_merged_cell_candidate_type_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("table_merged_cell_candidate_type_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("repair_merge_strategy_counts", loaded["aggregates"][0]["breakdowns"])
+            self.assertIn("repair_patch_review_default_decision_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("repair_publish_status_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("table_chain_reject_reason_category_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("ocr_candidate_structured_table_gate_issue_counts", loaded["aggregates"][0]["breakdowns"])
@@ -303,6 +312,7 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("rates.ocr_structured_table_promotion_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.ocr_structured_formula_gate_pass_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.ocr_structured_formula_promotion_rate", loaded["comparisons"][0]["deltas"])
+            self.assertIn("rates.repair_patch_review_required_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.repair_publish_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("total_elapsed_ms", loaded["records"][0]["metrics"]["performance"])
             self.assertIn("runs/sample-table/page/output/experiment_metrics.json", summary_json.read_text(encoding="utf-8"))
@@ -310,6 +320,11 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("runs/sample-table/page/output/translated_full.pdf", summary_json.read_text(encoding="utf-8"))
             self.assertIn("repair_publish", loaded["records"][0]["files"])
             self.assertIn("runs/sample-table/page/output/repair_publish.json", summary_json.read_text(encoding="utf-8"))
+            self.assertIn("repair_patch_review", loaded["records"][0]["files"])
+            self.assertIn(
+                "runs/sample-table/page/output/repair_patch_review.json",
+                summary_json.read_text(encoding="utf-8"),
+            )
             summary_text = summary_md.read_text(encoding="utf-8")
             self.assertIn("OCR structured table gate", summary_text)
             self.assertIn("OCR structured formula gate", summary_text)
@@ -340,6 +355,10 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("ocr_structured_formula_gate_pass_rate", review_text)
             self.assertIn("ocr_structured_formula_promotion_rate", review_text)
             self.assertIn("ocr_structured_formula_gate_issues", review_text)
+            self.assertIn("repair_patch_review_count", review_text)
+            self.assertIn("repair_patch_review_required_count", review_text)
+            self.assertIn("repair_patch_review_default_decision_counts", review_text)
+            self.assertIn("repair_patch_review_report", review_text)
             self.assertIn("repair_publish_confirmed", review_text)
             self.assertIn("repair_publish_published", review_text)
             self.assertIn("repair_publish_open_issue_count", review_text)
@@ -363,6 +382,9 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("ocr_structured_table_promotion_rate", review_rows[0])
             self.assertIn("ocr_structured_formula_gate_pass_rate", review_rows[0])
             self.assertIn("ocr_structured_formula_promotion_rate", review_rows[0])
+            self.assertIn("repair_patch_review_count", review_rows[0])
+            self.assertIn("repair_patch_review_report", review_rows[0])
+            self.assertTrue(review_rows[0]["repair_patch_review_report"].endswith("output/repair_patch_review.json"))
             self.assertIn("repair_publish_confirmed", review_rows[0])
             self.assertIn("repair_publish_report", review_rows[0])
             self.assertTrue(review_rows[0]["repair_publish_report"].endswith("output/repair_publish.json"))
@@ -389,6 +411,14 @@ class BatchExperimentTests(unittest.TestCase):
                     "ocr_structured_formula_token_count": "8",
                     "ocr_structured_formula_equation_label_count": "2",
                     "ocr_structured_formula_gate_issues": "structured_formula_missing_equation_labels:1",
+                    "repair_patch_review_count": "3",
+                    "repair_patch_review_safe_count": "2",
+                    "repair_patch_review_required_count": "1",
+                    "repair_patch_review_blocking_count": "1",
+                    "repair_patch_review_safe_rate": "0.667",
+                    "repair_patch_review_required_rate": "0.333",
+                    "repair_patch_review_default_decision_counts": "approve_candidate:2; manual_review_required:1",
+                    "repair_patch_review_risk_counts": "low:2; high:1",
                     "repair_publish_confirmed": "是",
                     "repair_publish_published": "否",
                     "repair_publish_open_issue_count": "2",
@@ -396,6 +426,17 @@ class BatchExperimentTests(unittest.TestCase):
                     "repair_publish_status_counts": "pending_confirmation:1",
                 }
             )
+            for field in [
+                "repair_patch_review_count",
+                "repair_patch_review_safe_count",
+                "repair_patch_review_required_count",
+                "repair_patch_review_blocking_count",
+                "repair_patch_review_safe_rate",
+                "repair_patch_review_required_rate",
+                "repair_patch_review_default_decision_counts",
+                "repair_patch_review_risk_counts",
+            ]:
+                review_rows[1][field] = ""
             with review_csv.open("w", encoding="utf-8-sig", newline="") as review_file:
                 writer = csv.DictWriter(review_file, fieldnames=list(review_rows[0].keys()))
                 writer.writeheader()
@@ -449,9 +490,22 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertEqual(evidence["repair_publish_summary"]["published_count_total"], 0)
             self.assertEqual(evidence["repair_publish_summary"]["open_issue_count_total"], 2)
             self.assertEqual(evidence["repair_publish_summary"]["status_counts"]["pending_confirmation"], 2)
+            self.assertEqual(evidence["repair_patch_review_summary"]["patch_count_total"], 3)
+            self.assertEqual(evidence["repair_patch_review_summary"]["safe_count_total"], 2)
+            self.assertEqual(evidence["repair_patch_review_summary"]["required_count_total"], 1)
+            self.assertEqual(evidence["repair_patch_review_summary"]["blocking_count_total"], 1)
+            self.assertEqual(evidence["repair_patch_review_summary"]["default_decision_counts"]["approve_candidate"], 2)
+            self.assertEqual(evidence["repair_patch_review_summary"]["risk_counts"]["high"], 1)
             self.assertEqual(
                 evidence["evidence_candidates"][0]["ocr"]["structured_formula_candidate_count"],
                 3.0,
+            )
+            self.assertEqual(evidence["evidence_candidates"][0]["repair_patch_review"]["patch_count"], 3.0)
+            self.assertEqual(evidence["evidence_candidates"][0]["repair_patch_review"]["required_count"], 1.0)
+            self.assertTrue(
+                evidence["evidence_candidates"][0]["repair_patch_review"]["report_file"].endswith(
+                    "output/repair_patch_review.json"
+                )
             )
             self.assertEqual(evidence["evidence_candidates"][0]["repair_publish"]["confirmed"], True)
             self.assertEqual(evidence["evidence_candidates"][0]["repair_publish"]["published"], False)
@@ -467,6 +521,8 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("结构化表格与公式 OCR 门禁可作为证据", evidence_text)
             self.assertIn("结构化公式候选总数：3", evidence_text)
             self.assertIn("局部修复发布审核", evidence_text)
+            self.assertIn("补丁审核记录行数：1", evidence_text)
+            self.assertIn("approve_candidate:2", evidence_text)
             self.assertIn("开放合并问题总数：2", evidence_text)
             self.assertIn("pending_confirmation:2", evidence_text)
         finally:

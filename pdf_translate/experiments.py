@@ -114,6 +114,11 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "repair_request_count",
         "repair_merge_applied_count",
         "repair_merge_table_targeted_patch_count",
+        "repair_patch_review_count",
+        "repair_patch_review_safe_count",
+        "repair_patch_review_required_count",
+        "repair_patch_review_blocking_count",
+        "repair_patch_review_table_count",
         "repair_publish_confirmed",
         "repair_publish_published",
         "repair_publish_open_issue_count",
@@ -168,6 +173,8 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "qa_issue_per_chunk",
         "repair_merge_apply_rate",
         "repair_merge_table_targeted_patch_rate",
+        "repair_patch_review_safe_rate",
+        "repair_patch_review_required_rate",
         "repair_publish_rate",
         "post_repair_issue_reduction_rate",
     ],
@@ -204,6 +211,8 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "ocr_candidate_promotion_skip_counts",
         "repair_merge_strategy_counts",
         "repair_merge_applied_strategy_counts",
+        "repair_patch_review_default_decision_counts",
+        "repair_patch_review_risk_counts",
         "repair_publish_status_counts",
     ],
 }
@@ -223,6 +232,7 @@ COMPARISON_FIELDS = [
     ("rates", "ocr_table_cell_bbox_coverage_rate"),
     ("rates", "ocr_structured_formula_gate_pass_rate"),
     ("rates", "ocr_structured_formula_promotion_rate"),
+    ("rates", "repair_patch_review_required_rate"),
     ("rates", "repair_publish_rate"),
     ("performance", "total_elapsed_ms"),
     ("performance", "translation_request_count"),
@@ -1066,6 +1076,8 @@ def _record_paths(work_dir: Path, output_dir: Path) -> dict[str, str]:
         "translated_full": work_dir / "output" / "translated_full.md",
         "translated_pdf": work_dir / "output" / "translated_full.pdf",
         "bilingual_html": work_dir / "output" / "bilingual.html",
+        "repair_patch_review": work_dir / "output" / "repair_patch_review.json",
+        "repair_patch_review_md": work_dir / "output" / "repair_patch_review.md",
         "repair_publish": work_dir / "output" / "repair_publish.json",
         "repair_publish_md": work_dir / "output" / "repair_publish.md",
     }
@@ -1336,6 +1348,15 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
         "ocr_candidate_structured_fields",
         "ocr_structured_table_gate_issues",
         "ocr_structured_formula_gate_issues",
+        "repair_patch_review_count",
+        "repair_patch_review_safe_count",
+        "repair_patch_review_required_count",
+        "repair_patch_review_blocking_count",
+        "repair_patch_review_safe_rate",
+        "repair_patch_review_required_rate",
+        "repair_patch_review_default_decision_counts",
+        "repair_patch_review_risk_counts",
+        "repair_patch_review_report",
         "repair_publish_confirmed",
         "repair_publish_published",
         "repair_publish_open_issue_count",
@@ -1461,6 +1482,19 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
                     "ocr_structured_formula_gate_issues": _format_counter(
                         breakdowns.get("ocr_candidate_structured_formula_gate_issue_counts", {})
                     ),
+                    "repair_patch_review_count": quality.get("repair_patch_review_count", ""),
+                    "repair_patch_review_safe_count": quality.get("repair_patch_review_safe_count", ""),
+                    "repair_patch_review_required_count": quality.get("repair_patch_review_required_count", ""),
+                    "repair_patch_review_blocking_count": quality.get("repair_patch_review_blocking_count", ""),
+                    "repair_patch_review_safe_rate": rates.get("repair_patch_review_safe_rate", ""),
+                    "repair_patch_review_required_rate": rates.get("repair_patch_review_required_rate", ""),
+                    "repair_patch_review_default_decision_counts": _format_counter(
+                        breakdowns.get("repair_patch_review_default_decision_counts", {})
+                    ),
+                    "repair_patch_review_risk_counts": _format_counter(
+                        breakdowns.get("repair_patch_review_risk_counts", {})
+                    ),
+                    "repair_patch_review_report": files.get("repair_patch_review", ""),
                     "repair_publish_confirmed": quality.get("repair_publish_confirmed", ""),
                     "repair_publish_published": quality.get("repair_publish_published", ""),
                     "repair_publish_open_issue_count": quality.get("repair_publish_open_issue_count", ""),
@@ -1633,6 +1667,10 @@ def _selected_record_metrics(record: dict[str, Any]) -> dict[str, Any]:
         "repair_publish_published": quality.get("repair_publish_published"),
         "repair_publish_open_issue_count": quality.get("repair_publish_open_issue_count"),
         "repair_publish_rate": rates.get("repair_publish_rate"),
+        "repair_patch_review_count": quality.get("repair_patch_review_count"),
+        "repair_patch_review_required_count": quality.get("repair_patch_review_required_count"),
+        "repair_patch_review_blocking_count": quality.get("repair_patch_review_blocking_count"),
+        "repair_patch_review_required_rate": rates.get("repair_patch_review_required_rate"),
         "split_boundary_rate": rates.get("split_boundary_rate"),
         "protected_boundary_rate": rates.get("protected_boundary_rate"),
         "total_elapsed_ms": performance.get("total_elapsed_ms"),
@@ -1746,6 +1784,20 @@ def build_batch_experiment_evidence(
                     "published_full_file": _review_text(row.get("repair_published_full"))
                     or str(files.get("repair_published_full", "")),
                 },
+                "repair_patch_review": {
+                    "patch_count": _review_number(row.get("repair_patch_review_count")),
+                    "safe_count": _review_number(row.get("repair_patch_review_safe_count")),
+                    "required_count": _review_number(row.get("repair_patch_review_required_count")),
+                    "blocking_count": _review_number(row.get("repair_patch_review_blocking_count")),
+                    "safe_rate": _review_number(row.get("repair_patch_review_safe_rate")),
+                    "required_rate": _review_number(row.get("repair_patch_review_required_rate")),
+                    "default_decision_counts": _parse_counter_text(
+                        row.get("repair_patch_review_default_decision_counts")
+                    ),
+                    "risk_counts": _parse_counter_text(row.get("repair_patch_review_risk_counts")),
+                    "report_file": _review_text(row.get("repair_patch_review_report"))
+                    or str(files.get("repair_patch_review", "")),
+                },
                 "metrics": _selected_record_metrics(record) if isinstance(record, dict) else {},
                 "files": files if isinstance(files, dict) else {},
             }
@@ -1779,6 +1831,16 @@ def build_batch_experiment_evidence(
         or _review_number(row.get("repair_publish_open_issue_count")) is not None
         or _review_number(row.get("repair_publish_rate")) is not None
         or _review_text(row.get("repair_publish_status_counts"))
+    ]
+    repair_patch_review_rows = [
+        row
+        for row in review_rows
+        if _review_number(row.get("repair_patch_review_count")) is not None
+        or _review_number(row.get("repair_patch_review_required_count")) is not None
+        or _review_number(row.get("repair_patch_review_blocking_count")) is not None
+        or _review_number(row.get("repair_patch_review_required_rate")) is not None
+        or _review_text(row.get("repair_patch_review_default_decision_counts"))
+        or _review_text(row.get("repair_patch_review_risk_counts"))
     ]
 
     return {
@@ -1851,6 +1913,20 @@ def build_batch_experiment_evidence(
             "publish_rate": _score_average(repair_publish_rows, "repair_publish_rate"),
             "status_counts": _merge_counter_texts(review_rows, "repair_publish_status_counts"),
         },
+        "repair_patch_review_summary": {
+            "row_count": len(repair_patch_review_rows),
+            "patch_count_total": _review_sum(review_rows, "repair_patch_review_count"),
+            "safe_count_total": _review_sum(review_rows, "repair_patch_review_safe_count"),
+            "required_count_total": _review_sum(review_rows, "repair_patch_review_required_count"),
+            "blocking_count_total": _review_sum(review_rows, "repair_patch_review_blocking_count"),
+            "safe_rate": _score_average(repair_patch_review_rows, "repair_patch_review_safe_rate"),
+            "required_rate": _score_average(repair_patch_review_rows, "repair_patch_review_required_rate"),
+            "default_decision_counts": _merge_counter_texts(
+                review_rows,
+                "repair_patch_review_default_decision_counts",
+            ),
+            "risk_counts": _merge_counter_texts(review_rows, "repair_patch_review_risk_counts"),
+        },
         "run_failures": run_failures,
         "evidence_candidates": evidence_candidates,
     }
@@ -1920,6 +1996,7 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
     ocr_summary = evidence.get("ocr_structured_table_gate_summary", {})
     formula_ocr_summary = evidence.get("ocr_structured_formula_gate_summary", {})
     repair_summary = evidence.get("repair_publish_summary", {})
+    patch_review_summary = evidence.get("repair_patch_review_summary", {})
     lines.extend(
         [
             "",
@@ -1945,6 +2022,12 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
             f"- 开放合并问题总数：{repair_summary.get('open_issue_count_total', 0)}",
             f"- 发布率均值：{_format_number((repair_summary.get('publish_rate') or {}).get('average', 0))}",
             f"- 发布状态分布：{_format_counter(repair_summary.get('status_counts'))}",
+            f"- 补丁审核记录行数：{patch_review_summary.get('row_count', 0)}",
+            f"- 补丁总数：{patch_review_summary.get('patch_count_total', 0)}",
+            f"- 需要人工复核补丁数：{patch_review_summary.get('required_count_total', 0)}",
+            f"- 阻断发布补丁数：{patch_review_summary.get('blocking_count_total', 0)}",
+            f"- 默认审核结论分布：{_format_counter(patch_review_summary.get('default_decision_counts'))}",
+            f"- 风险分布：{_format_counter(patch_review_summary.get('risk_counts'))}",
             "",
             "## 纳入证据候选",
             "",

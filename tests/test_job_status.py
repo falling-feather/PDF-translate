@@ -188,6 +188,20 @@ class JobStatusSnapshotTests(unittest.TestCase):
         out.mkdir()
         (out / "translated_full.md").write_text("translated", encoding="utf-8")
         (out / "translated_full.pdf").write_bytes(b"%PDF-1.4 translated")
+        (out / "repair_patch_review.md").write_text("# 补丁审核", encoding="utf-8")
+        (out / "repair_patch_review.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "repair-patch-review-v1",
+                    "summary": {
+                        "patch_count": 3,
+                        "review_required_count": 1,
+                        "publish_blocking_count": 1,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         (out / "repair_publish.md").write_text("# 发布确认", encoding="utf-8")
         (out / "published_full.md").write_text("published translation", encoding="utf-8")
         (out / "repair_publish.json").write_text(
@@ -211,6 +225,11 @@ class JobStatusSnapshotTests(unittest.TestCase):
 
         self.assertTrue(merged[0]["repair_publish_report_ready"])
         self.assertGreater(merged[0]["repair_publish_report_bytes"], 0)
+        self.assertTrue(merged[0]["repair_patch_review_ready"])
+        self.assertGreater(merged[0]["repair_patch_review_bytes"], 0)
+        self.assertEqual(merged[0]["repair_patch_review_count"], 3)
+        self.assertEqual(merged[0]["repair_patch_review_required_count"], 1)
+        self.assertEqual(merged[0]["repair_patch_review_blocking_count"], 1)
         self.assertTrue(merged[0]["repair_publish_confirmed"])
         self.assertTrue(merged[0]["repair_publish_published"])
         self.assertEqual(merged[0]["repair_publish_status"], "published_with_warnings")
@@ -219,6 +238,7 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertTrue(merged[0]["repair_published_full_ready"])
         self.assertGreater(merged[0]["repair_published_full_bytes"], 0)
         self.assertIn("repair_publish_open_issues", merged[0]["artifact_warnings"])
+        self.assertIn("repair_patch_review_blocking_items", merged[0]["artifact_warnings"])
 
     def test_confirm_repair_publish_for_completed_job_writes_publish_copy(self) -> None:
         root = self._case_root("repair-publish-confirm")
@@ -250,6 +270,8 @@ class JobStatusSnapshotTests(unittest.TestCase):
 
         report = _confirm_repair_publish_for_record(rec)
 
+        self.assertTrue((out / "repair_patch_review.json").is_file())
+        self.assertTrue((out / "repair_patch_review.md").is_file())
         self.assertTrue((out / "published_full.md").is_file())
         self.assertEqual((out / "published_full.md").read_text(encoding="utf-8"), "repaired translation")
         self.assertTrue(report["summary"]["confirmed"])
@@ -276,6 +298,7 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertFalse(merged[0]["translated_pdf_ready"])
         self.assertEqual(merged[0]["translated_pdf_bytes"], 0)
         self.assertFalse(merged[0]["repair_publish_report_ready"])
+        self.assertFalse(merged[0]["repair_patch_review_ready"])
         self.assertFalse(merged[0]["repair_published_full_ready"])
         self.assertFalse(merged[0]["bundle_zip_ready"])
 

@@ -26,6 +26,7 @@ from pdf_translate.qa.metrics import write_experiment_metrics
 from pdf_translate.qa.ocr_candidates import write_ocr_candidate_qa
 from pdf_translate.qa.repair import (
     write_repair_plan,
+    write_repair_patch_review,
     write_repair_requests,
     write_repair_results,
     write_repair_merge,
@@ -501,6 +502,12 @@ def run_translate(
                 repaired_chunk_dir=out_dir / "repaired_chunks",
                 repaired_full_path=out_dir / "repaired_full.md",
             )
+        with run_metrics.stage("repair_patch_review"):
+            repair_patch_review = write_repair_patch_review(
+                repair_merge,
+                out_dir / "repair_patch_review.json",
+                out_dir / "repair_patch_review.md",
+            )
         with run_metrics.stage("repair_merge_qa"):
             repair_merge_qa = write_translation_qa(
                 chunks,
@@ -583,6 +590,7 @@ def run_translate(
             repair_results=repair_results,
             repair_validation=repair_validation,
             repair_merge=repair_merge,
+            repair_patch_review=repair_patch_review,
             repair_merge_qa=repair_merge_qa,
             repair_publish=repair_publish,
             translated_pdf_report=translated_pdf_report,
