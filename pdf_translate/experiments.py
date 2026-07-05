@@ -204,6 +204,7 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "ocr_candidate_promotion_skip_counts",
         "repair_merge_strategy_counts",
         "repair_merge_applied_strategy_counts",
+        "repair_publish_status_counts",
     ],
 }
 
@@ -1065,9 +1066,22 @@ def _record_paths(work_dir: Path, output_dir: Path) -> dict[str, str]:
         "translated_full": work_dir / "output" / "translated_full.md",
         "translated_pdf": work_dir / "output" / "translated_full.pdf",
         "bilingual_html": work_dir / "output" / "bilingual.html",
+        "repair_publish": work_dir / "output" / "repair_publish.json",
+        "repair_publish_md": work_dir / "output" / "repair_publish.md",
+    }
+    optional_files = {
+        "repair_published_full": work_dir / "output" / "published_full.md",
     }
     result: dict[str, str] = {}
     for key, path in files.items():
+        try:
+            result[key] = str(path.relative_to(output_dir)).replace("\\", "/")
+        except ValueError:
+            result[key] = str(path)
+    for key, path in optional_files.items():
+        if not path.is_file():
+            result[key] = ""
+            continue
         try:
             result[key] = str(path.relative_to(output_dir)).replace("\\", "/")
         except ValueError:
@@ -1322,6 +1336,13 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
         "ocr_candidate_structured_fields",
         "ocr_structured_table_gate_issues",
         "ocr_structured_formula_gate_issues",
+        "repair_publish_confirmed",
+        "repair_publish_published",
+        "repair_publish_open_issue_count",
+        "repair_publish_rate",
+        "repair_publish_status_counts",
+        "repair_publish_report",
+        "repair_published_full",
         "split_boundary_rate",
         "protected_boundary_rate",
         "total_elapsed_ms",
@@ -1440,6 +1461,15 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
                     "ocr_structured_formula_gate_issues": _format_counter(
                         breakdowns.get("ocr_candidate_structured_formula_gate_issue_counts", {})
                     ),
+                    "repair_publish_confirmed": quality.get("repair_publish_confirmed", ""),
+                    "repair_publish_published": quality.get("repair_publish_published", ""),
+                    "repair_publish_open_issue_count": quality.get("repair_publish_open_issue_count", ""),
+                    "repair_publish_rate": rates.get("repair_publish_rate", ""),
+                    "repair_publish_status_counts": _format_counter(
+                        breakdowns.get("repair_publish_status_counts", {})
+                    ),
+                    "repair_publish_report": files.get("repair_publish", ""),
+                    "repair_published_full": files.get("repair_published_full", ""),
                     "split_boundary_rate": rates.get("split_boundary_rate", ""),
                     "protected_boundary_rate": rates.get("protected_boundary_rate", ""),
                     "total_elapsed_ms": performance.get("total_elapsed_ms", ""),
@@ -1470,6 +1500,15 @@ def _review_text(value: Any) -> str:
 def _review_truthy(value: Any) -> bool:
     text = _review_text(value).lower()
     return text in {"1", "true", "yes", "y", "include", "included", "pass", "ok", "是", "纳入", "采纳", "通过"}
+
+
+def _review_bool(value: Any) -> bool | None:
+    text = _review_text(value).lower()
+    if text in {"1", "true", "yes", "y", "pass", "ok", "是", "已确认", "已发布", "通过"}:
+        return True
+    if text in {"0", "false", "no", "n", "fail", "否", "未确认", "未发布", "不通过"}:
+        return False
+    return None
 
 
 def _review_number(value: Any) -> float | None:
@@ -1561,6 +1600,10 @@ def _review_sum(rows: list[dict[str, Any]], field: str) -> int:
     return total
 
 
+def _review_bool_count(rows: list[dict[str, Any]], field: str) -> int:
+    return sum(1 for row in rows if _review_bool(row.get(field)) is True)
+
+
 def _review_record_key(row: dict[str, Any]) -> tuple[str, str]:
     return (_review_text(row.get("sample_id")), _review_text(row.get("variant")))
 
@@ -1586,6 +1629,10 @@ def _selected_record_metrics(record: dict[str, Any]) -> dict[str, Any]:
         "ocr_table_cell_bbox_coverage_rate": rates.get("ocr_table_cell_bbox_coverage_rate"),
         "ocr_structured_formula_gate_pass_rate": rates.get("ocr_structured_formula_gate_pass_rate"),
         "ocr_structured_formula_candidate_count": quality.get("ocr_structured_formula_candidate_count"),
+        "repair_publish_confirmed": quality.get("repair_publish_confirmed"),
+        "repair_publish_published": quality.get("repair_publish_published"),
+        "repair_publish_open_issue_count": quality.get("repair_publish_open_issue_count"),
+        "repair_publish_rate": rates.get("repair_publish_rate"),
         "split_boundary_rate": rates.get("split_boundary_rate"),
         "protected_boundary_rate": rates.get("protected_boundary_rate"),
         "total_elapsed_ms": performance.get("total_elapsed_ms"),
@@ -1688,6 +1735,17 @@ def build_batch_experiment_evidence(
                         row.get("ocr_structured_formula_gate_issues")
                     ),
                 },
+                "repair_publish": {
+                    "confirmed": _review_bool(row.get("repair_publish_confirmed")),
+                    "published": _review_bool(row.get("repair_publish_published")),
+                    "open_issue_count": _review_number(row.get("repair_publish_open_issue_count")),
+                    "publish_rate": _review_number(row.get("repair_publish_rate")),
+                    "status_counts": _parse_counter_text(row.get("repair_publish_status_counts")),
+                    "report_file": _review_text(row.get("repair_publish_report"))
+                    or str(files.get("repair_publish", "")),
+                    "published_full_file": _review_text(row.get("repair_published_full"))
+                    or str(files.get("repair_published_full", "")),
+                },
                 "metrics": _selected_record_metrics(record) if isinstance(record, dict) else {},
                 "files": files if isinstance(files, dict) else {},
             }
@@ -1712,6 +1770,15 @@ def build_batch_experiment_evidence(
         or _review_number(row.get("ocr_structured_formula_token_count")) is not None
         or _review_number(row.get("ocr_structured_formula_equation_label_count")) is not None
         or _review_text(row.get("ocr_structured_formula_gate_issues"))
+    ]
+    repair_publish_rows = [
+        row
+        for row in review_rows
+        if _review_bool(row.get("repair_publish_confirmed")) is not None
+        or _review_bool(row.get("repair_publish_published")) is not None
+        or _review_number(row.get("repair_publish_open_issue_count")) is not None
+        or _review_number(row.get("repair_publish_rate")) is not None
+        or _review_text(row.get("repair_publish_status_counts"))
     ]
 
     return {
@@ -1775,6 +1842,14 @@ def build_batch_experiment_evidence(
             "gate_pass_rate": _score_average(ocr_formula_rows, "ocr_structured_formula_gate_pass_rate"),
             "structure_promotion_rate": _score_average(ocr_formula_rows, "ocr_structured_formula_promotion_rate"),
             "gate_issue_counts": _merge_counter_texts(review_rows, "ocr_structured_formula_gate_issues"),
+        },
+        "repair_publish_summary": {
+            "row_count": len(repair_publish_rows),
+            "confirmed_count_total": _review_bool_count(review_rows, "repair_publish_confirmed"),
+            "published_count_total": _review_bool_count(review_rows, "repair_publish_published"),
+            "open_issue_count_total": _review_sum(review_rows, "repair_publish_open_issue_count"),
+            "publish_rate": _score_average(repair_publish_rows, "repair_publish_rate"),
+            "status_counts": _merge_counter_texts(review_rows, "repair_publish_status_counts"),
         },
         "run_failures": run_failures,
         "evidence_candidates": evidence_candidates,
@@ -1844,6 +1919,7 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
 
     ocr_summary = evidence.get("ocr_structured_table_gate_summary", {})
     formula_ocr_summary = evidence.get("ocr_structured_formula_gate_summary", {})
+    repair_summary = evidence.get("repair_publish_summary", {})
     lines.extend(
         [
             "",
@@ -1861,10 +1937,19 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
             f"- 公式编号回流总数：{formula_ocr_summary.get('structured_formula_equation_label_count_total', 0)}",
             f"- 公式门禁问题分布：{_format_counter(formula_ocr_summary.get('gate_issue_counts'))}",
             "",
+            "## 局部修复发布审核",
+            "",
+            f"- 记录行数：{repair_summary.get('row_count', 0)}",
+            f"- 已请求发布确认：{repair_summary.get('confirmed_count_total', 0)}",
+            f"- 已生成发布稿：{repair_summary.get('published_count_total', 0)}",
+            f"- 开放合并问题总数：{repair_summary.get('open_issue_count_total', 0)}",
+            f"- 发布率均值：{_format_number((repair_summary.get('publish_rate') or {}).get('average', 0))}",
+            f"- 发布状态分布：{_format_counter(repair_summary.get('status_counts'))}",
+            "",
             "## 纳入证据候选",
             "",
-            "| 样本 | 策略 | 类型 | 总分 | 证据说明 | 译文 PDF |",
-            "| --- | --- | --- | --- | --- | --- |",
+            "| 样本 | 策略 | 类型 | 总分 | 修复发布 | 证据说明 | 译文 PDF |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for item in evidence.get("evidence_candidates", []):
@@ -1872,6 +1957,12 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
             continue
         files = item.get("files", {}) if isinstance(item.get("files"), dict) else {}
         scores = item.get("scores", {}) if isinstance(item.get("scores"), dict) else {}
+        repair_publish = item.get("repair_publish", {}) if isinstance(item.get("repair_publish"), dict) else {}
+        repair_status = (
+            "已发布"
+            if repair_publish.get("published") is True
+            else "已请求" if repair_publish.get("confirmed") is True else "待确认"
+        )
         lines.append(
             "| "
             + " | ".join(
@@ -1880,6 +1971,7 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
                     str(item.get("variant", "")),
                     str(item.get("pdf_type", "")),
                     _format_number(scores.get("human_score", "")),
+                    repair_status,
                     str(item.get("patent_evidence_notes", "")),
                     str(files.get("translated_pdf", "")),
                 ]
@@ -1887,7 +1979,7 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
             + " |"
         )
     if not evidence.get("evidence_candidates"):
-        lines.append("|  |  |  |  | 暂无显式纳入专利证据的评分行 |  |")
+        lines.append("|  |  |  |  |  | 暂无显式纳入专利证据的评分行 |  |")
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

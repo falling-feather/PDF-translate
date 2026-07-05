@@ -266,6 +266,11 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("repair_merge_table_targeted_patch_count", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("repair_merge_table_targeted_patch_rate", loaded["records"][0]["metrics"]["rates"])
             self.assertIn("repair_merge_strategy_counts", loaded["records"][0]["metrics"]["breakdowns"])
+            self.assertIn("repair_publish_confirmed", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("repair_publish_published", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("repair_publish_open_issue_count", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("repair_publish_rate", loaded["records"][0]["metrics"]["rates"])
+            self.assertIn("repair_publish_status_counts", loaded["records"][0]["metrics"]["breakdowns"])
             self.assertIn("ocr_structured_table_candidate_count", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("ocr_structured_table_gate_review_count", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("ocr_structured_table_promotion_count", loaded["records"][0]["metrics"]["quality"])
@@ -290,6 +295,7 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("structure_hint_merged_cell_candidate_type_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("table_merged_cell_candidate_type_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("repair_merge_strategy_counts", loaded["aggregates"][0]["breakdowns"])
+            self.assertIn("repair_publish_status_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("table_chain_reject_reason_category_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("ocr_candidate_structured_table_gate_issue_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("ocr_candidate_structured_formula_gate_issue_counts", loaded["aggregates"][0]["breakdowns"])
@@ -297,10 +303,13 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("rates.ocr_structured_table_promotion_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.ocr_structured_formula_gate_pass_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.ocr_structured_formula_promotion_rate", loaded["comparisons"][0]["deltas"])
+            self.assertIn("rates.repair_publish_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("total_elapsed_ms", loaded["records"][0]["metrics"]["performance"])
             self.assertIn("runs/sample-table/page/output/experiment_metrics.json", summary_json.read_text(encoding="utf-8"))
             self.assertIn("translated_pdf", loaded["records"][0]["files"])
             self.assertIn("runs/sample-table/page/output/translated_full.pdf", summary_json.read_text(encoding="utf-8"))
+            self.assertIn("repair_publish", loaded["records"][0]["files"])
+            self.assertIn("runs/sample-table/page/output/repair_publish.json", summary_json.read_text(encoding="utf-8"))
             summary_text = summary_md.read_text(encoding="utf-8")
             self.assertIn("OCR structured table gate", summary_text)
             self.assertIn("OCR structured formula gate", summary_text)
@@ -331,6 +340,12 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("ocr_structured_formula_gate_pass_rate", review_text)
             self.assertIn("ocr_structured_formula_promotion_rate", review_text)
             self.assertIn("ocr_structured_formula_gate_issues", review_text)
+            self.assertIn("repair_publish_confirmed", review_text)
+            self.assertIn("repair_publish_published", review_text)
+            self.assertIn("repair_publish_open_issue_count", review_text)
+            self.assertIn("repair_publish_status_counts", review_text)
+            self.assertIn("repair_publish_report", review_text)
+            self.assertIn("repair_published_full", review_text)
             self.assertIn("translated_pdf", review_text)
             self.assertIn("table-heavy", review_text)
             self.assertIn("sample-table", review_text)
@@ -348,6 +363,9 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("ocr_structured_table_promotion_rate", review_rows[0])
             self.assertIn("ocr_structured_formula_gate_pass_rate", review_rows[0])
             self.assertIn("ocr_structured_formula_promotion_rate", review_rows[0])
+            self.assertIn("repair_publish_confirmed", review_rows[0])
+            self.assertIn("repair_publish_report", review_rows[0])
+            self.assertTrue(review_rows[0]["repair_publish_report"].endswith("output/repair_publish.json"))
             review_rows[0].update(
                 {
                     "human_score": "4.5",
@@ -371,6 +389,11 @@ class BatchExperimentTests(unittest.TestCase):
                     "ocr_structured_formula_token_count": "8",
                     "ocr_structured_formula_equation_label_count": "2",
                     "ocr_structured_formula_gate_issues": "structured_formula_missing_equation_labels:1",
+                    "repair_publish_confirmed": "是",
+                    "repair_publish_published": "否",
+                    "repair_publish_open_issue_count": "2",
+                    "repair_publish_rate": "0",
+                    "repair_publish_status_counts": "pending_confirmation:1",
                 }
             )
             with review_csv.open("w", encoding="utf-8-sig", newline="") as review_file:
@@ -422,15 +445,30 @@ class BatchExperimentTests(unittest.TestCase):
                 evidence["ocr_structured_formula_gate_summary"]["structure_promotion_rate"]["average"],
                 0.1665,
             )
+            self.assertEqual(evidence["repair_publish_summary"]["confirmed_count_total"], 1)
+            self.assertEqual(evidence["repair_publish_summary"]["published_count_total"], 0)
+            self.assertEqual(evidence["repair_publish_summary"]["open_issue_count_total"], 2)
+            self.assertEqual(evidence["repair_publish_summary"]["status_counts"]["pending_confirmation"], 2)
             self.assertEqual(
                 evidence["evidence_candidates"][0]["ocr"]["structured_formula_candidate_count"],
                 3.0,
+            )
+            self.assertEqual(evidence["evidence_candidates"][0]["repair_publish"]["confirmed"], True)
+            self.assertEqual(evidence["evidence_candidates"][0]["repair_publish"]["published"], False)
+            self.assertEqual(evidence["evidence_candidates"][0]["repair_publish"]["open_issue_count"], 2.0)
+            self.assertTrue(
+                evidence["evidence_candidates"][0]["repair_publish"]["report_file"].endswith(
+                    "output/repair_publish.json"
+                )
             )
             self.assertEqual(evidence["evidence_candidates"][0]["reviewer"], "导师")
             self.assertIn("translated_pdf", evidence["evidence_candidates"][0]["files"])
             evidence_text = evidence_md.read_text(encoding="utf-8")
             self.assertIn("结构化表格与公式 OCR 门禁可作为证据", evidence_text)
             self.assertIn("结构化公式候选总数：3", evidence_text)
+            self.assertIn("局部修复发布审核", evidence_text)
+            self.assertIn("开放合并问题总数：2", evidence_text)
+            self.assertIn("pending_confirmation:2", evidence_text)
         finally:
             if root.exists():
                 shutil.rmtree(root)
