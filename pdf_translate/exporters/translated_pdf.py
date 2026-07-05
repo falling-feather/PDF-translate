@@ -218,16 +218,104 @@ def _table_matches_chunk(table: dict[str, Any], chunk: TextChunk, block_ids: set
     if block_ids:
         return table_id in block_ids
     pages = set(_chunk_pages_1based(chunk))
-    return int(table.get("page_no") or 0) in pages
+    try:
+        page_no = int(table.get("page_no") or 0)
+    except (TypeError, ValueError):
+        page_no = 0
+    return page_no in pages
+
+
+def _tables_for_chunk(chunk: TextChunk, table_reconstruction: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(table_reconstruction, dict):
+        return []
+    tables = [table for table in table_reconstruction.get("tables") or [] if isinstance(table, dict)]
+    block_ids = _chunk_block_ids(chunk)
+    return [table for table in tables if _table_matches_chunk(table, chunk, block_ids)]
+
+
+def _renderable_tables_for_chunk(
+    chunk: TextChunk,
+    table_reconstruction: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if _table_reconstruction_source(table_reconstruction) != "confirmed":
+        return []
+    return _tables_for_chunk(chunk, table_reconstruction)
+
+
+def _safe_positive_int(value: Any, default: int = 1) -> int:
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(default, out)
+
+
+def _safe_zero_int(value: Any) -> int | None:
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out >= 0 else None
+
+
+def _table_patch_maps(
+    rows: list[list[str]],
+    patches: list[dict[str, Any]],
+) -> tuple[dict[tuple[int, int], dict[str, Any]], set[tuple[int, int]]]:
+    anchors: dict[tuple[int, int], dict[str, Any]] = {}
+    covered: set[tuple[int, int]] = set()
+    row_count = len(rows)
+    if not row_count:
+        return anchors, covered
+    column_count = max(1, max(len(row) for row in rows))
+    for patch in patches:
+        if not isinstance(patch, dict) or patch.get("applied") is False:
+            continue
+        anchor = patch.get("anchor_cell") if isinstance(patch.get("anchor_cell"), dict) else {}
+        row_index = _safe_zero_int(anchor.get("row_index"))
+        column_index = _safe_zero_int(anchor.get("column_index"))
+        if row_index is None or column_index is None:
+            continue
+        if row_index >= row_count or column_index >= column_count:
+            continue
+        span = patch.get("span") if isinstance(patch.get("span"), dict) else {}
+        row_span = min(_safe_positive_int(span.get("row_span")), row_count - row_index)
+        column_span = min(_safe_positive_int(span.get("column_span")), column_count - column_index)
+        if row_span <= 1 and column_span <= 1:
+            continue
+        if (row_index, column_index) in anchors:
+            continue
+        anchors[(row_index, column_index)] = {
+            "row_span": row_span,
+            "column_span": column_span,
+            "patch_id": str(patch.get("patch_id") or ""),
+        }
+        for row_offset in range(row_span):
+            current_row = row_index + row_offset
+            if current_row >= row_count:
+                continue
+            for col_offset in range(column_span):
+                current_col = column_index + col_offset
+                if current_col >= column_count or (current_row, current_col) == (row_index, column_index):
+                    continue
+                covered.add((current_row, current_col))
+        for cell in patch.get("covered_cells") or []:
+            if not isinstance(cell, dict):
+                continue
+            covered_row = _safe_zero_int(cell.get("row_index"))
+            covered_col = _safe_zero_int(cell.get("column_index"))
+            if covered_row is None or covered_col is None:
+                continue
+            if covered_row < row_count and covered_col < column_count:
+                covered.add((covered_row, covered_col))
+    return anchors, covered
 
 
 def _table_structure_context(chunk: TextChunk, table_reconstruction: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(table_reconstruction, dict):
         table_reconstruction = {}
-    tables = [table for table in table_reconstruction.get("tables") or [] if isinstance(table, dict)]
     groups = [group for group in table_reconstruction.get("continued_table_groups") or [] if isinstance(group, dict)]
-    block_ids = _chunk_block_ids(chunk)
-    selected = [table for table in tables if _table_matches_chunk(table, chunk, block_ids)]
+    selected = _tables_for_chunk(chunk, table_reconstruction)
     table_ids = [
         str(table.get("table_id") or table.get("block_id") or "")
         for table in selected
@@ -414,10 +502,17 @@ class _PdfFlow:
         )
         self.y += 10
 
-    def add_table(self, rows: list[list[str]]) -> None:
+    def add_table(self, rows: list[list[str]], table_context: dict[str, Any] | None = None) -> int:
         if not rows:
-            return
+            return 0
         column_count = max(1, max(len(row) for row in rows))
+        normalized_rows = [row + [""] * (column_count - len(row)) for row in rows]
+        patches = [
+            patch
+            for patch in (table_context or {}).get("structure_patches") or []
+            if isinstance(patch, dict)
+        ]
+        anchors, covered = _table_patch_maps(normalized_rows, patches)
         available = self.content_right - MARGIN_X
         col_width = available / column_count
         fontsize = 8.5 if column_count > 4 else 9.2
@@ -425,26 +520,51 @@ class _PdfFlow:
         pad_x = 4.0
         pad_y = 5.0
         max_row_lines = max(2, int((self.content_bottom - MARGIN_TOP - 12) / leading))
-        self.y += 2
-        for row_index, row in enumerate(rows):
-            normalized = row + [""] * (column_count - len(row))
-            wrapped_cells: list[list[str]] = []
-            for cell in normalized:
-                lines = self.wrap_text(cell, fontsize, max(20.0, col_width - pad_x * 2))
+        wrapped_cells: dict[tuple[int, int], list[str]] = {}
+        row_heights: list[float] = []
+        for row_index, row in enumerate(normalized_rows):
+            row_line_counts: list[int] = []
+            for column_index, cell in enumerate(row):
+                if (row_index, column_index) in covered:
+                    continue
+                span = anchors.get((row_index, column_index), {})
+                column_span = min(int(span.get("column_span") or 1), column_count - column_index)
+                wrap_width = max(20.0, col_width * column_span - pad_x * 2)
+                lines = self.wrap_text(cell, fontsize, wrap_width)
                 if len(lines) > max_row_lines:
                     lines = lines[: max_row_lines - 1] + ["..."]
-                wrapped_cells.append(lines)
-            row_height = max(len(lines) for lines in wrapped_cells) * leading + pad_y * 2
-            self.ensure_space(row_height + 8)
+                wrapped_cells[(row_index, column_index)] = lines
+                row_line_counts.append(max(1, len(lines)))
+            row_heights.append((max(row_line_counts) if row_line_counts else 1) * leading + pad_y * 2)
+        self.y += 2
+        for row_index, row_height in enumerate(row_heights):
+            span_end = row_index + 1
+            for (anchor_row, _anchor_col), span in anchors.items():
+                if anchor_row == row_index:
+                    span_end = max(span_end, row_index + int(span.get("row_span") or 1))
+            span_end = min(span_end, len(row_heights))
+            remaining_height = sum(row_heights[row_index:span_end])
+            self.ensure_space(remaining_height + 8)
             assert self.page is not None
             x = MARGIN_X
             fill = (0.93, 0.96, 0.97) if row_index == 0 else None
-            for lines in wrapped_cells:
-                rect = fitz.Rect(x, self.y, x + col_width, self.y + row_height)
-                self.page.draw_rect(rect, color=(0.70, 0.75, 0.82), fill=fill, width=0.5)
+            column_index = 0
+            while column_index < column_count:
+                if (row_index, column_index) in covered:
+                    x += col_width
+                    column_index += 1
+                    continue
+                span = anchors.get((row_index, column_index), {})
+                column_span = min(int(span.get("column_span") or 1), column_count - column_index)
+                row_span = min(int(span.get("row_span") or 1), len(row_heights) - row_index)
+                cell_width = col_width * column_span
+                cell_height = sum(row_heights[row_index : row_index + row_span])
+                cell_fill = (0.88, 0.97, 0.94) if span else fill
+                rect = fitz.Rect(x, self.y, x + cell_width, self.y + cell_height)
+                self.page.draw_rect(rect, color=(0.70, 0.75, 0.82), fill=cell_fill, width=0.5)
                 ty = self.y + pad_y + fontsize
-                for line in lines:
-                    if ty > self.y + row_height - pad_y:
+                for line in wrapped_cells.get((row_index, column_index), []):
+                    if ty > self.y + cell_height - pad_y:
                         break
                     self.page.insert_text(
                         (x + pad_x, ty),
@@ -454,9 +574,11 @@ class _PdfFlow:
                         color=(0.13, 0.18, 0.25),
                     )
                     ty += leading
-                x += col_width
+                x += cell_width
+                column_index += column_span
             self.y += row_height
         self.y += 8
+        return len(anchors)
 
     def add_box(self, title: str, lines: list[str]) -> None:
         if not lines:
@@ -591,6 +713,7 @@ def build_translated_pdf_report(
                 "table_count": table_count,
                 "qa_issue_count": len(issues_by_chunk.get(chunk.chunk_id, [])),
                 "repair_item_count": len(repairs_by_chunk.get(chunk.chunk_id, [])),
+                "table_structure_patch_rendered_count": 0,
                 "has_structure_context": has_structure_context,
                 **structure_context,
             }
@@ -630,6 +753,7 @@ def build_translated_pdf_report(
             "table_structure_patch_covered_cell_reference_count": (
                 table_structure_patch_covered_cell_reference_count
             ),
+            "table_structure_patch_rendered_count": 0,
             "continued_table_group_reference_count": continued_table_group_reference_count,
             "structural_relation_reference_count": structural_relation_reference_count,
             "page_count": 0,
@@ -695,6 +819,10 @@ def write_translated_pdf(
         translation = _chunk_translation_text(chunk_dir, chunk.chunk_id)
         issues = issues_by_chunk.get(chunk.chunk_id, [])
         repairs = repairs_by_chunk.get(chunk.chunk_id, [])
+        table_contexts = _renderable_tables_for_chunk(chunk, table_reconstruction)
+        table_context_index = 0
+        chunk_report = chunk_reports_by_id.get(chunk.chunk_id, {})
+        rendered_patch_count = 0
 
         flow.add_text(
             f"{chunk.chunk_id} | 页码 {page_text}",
@@ -709,7 +837,7 @@ def write_translated_pdf(
         if repairs:
             note_lines.append("修复: " + "; ".join(_short_item(item, "action", "reason") for item in repairs[:6]))
         flow.add_box("质量提示", note_lines)
-        flow.add_box("Structure context", _structure_context_lines(chunk_reports_by_id.get(chunk.chunk_id, {})))
+        flow.add_box("Structure context", _structure_context_lines(chunk_report))
 
         blocks = _markdown_blocks(translation)
         if not blocks:
@@ -728,9 +856,15 @@ def write_translated_pdf(
                     after=5,
                 )
             elif btype == "table":
-                flow.add_table(block.get("rows") or [])
+                table_context = None
+                if table_context_index < len(table_contexts):
+                    table_context = table_contexts[table_context_index]
+                rendered_patch_count += flow.add_table(block.get("rows") or [], table_context=table_context)
+                table_context_index += 1
             else:
                 flow.add_text(str(block.get("text") or ""), fontsize=10.5, after=7)
+        chunk_report["table_structure_patch_rendered_count"] = rendered_patch_count
+        report["summary"]["table_structure_patch_rendered_count"] += rendered_patch_count
 
     page_count = flow.finalize(path)
     report["summary"]["generated"] = True

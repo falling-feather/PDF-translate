@@ -4251,6 +4251,7 @@ class StructureIRTests(unittest.TestCase):
                     "structural_relation_reference_count": 2,
                     "table_structure_patch_reference_count": 2,
                     "table_structure_patch_covered_cell_reference_count": 3,
+                    "table_structure_patch_rendered_count": 2,
                 },
             },
             run_metrics={
@@ -4402,6 +4403,7 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["translated_pdf_structural_relation_reference_count"], 2)
         self.assertEqual(metrics["quality"]["translated_pdf_table_structure_patch_reference_count"], 2)
         self.assertEqual(metrics["quality"]["translated_pdf_table_structure_patch_covered_cell_reference_count"], 3)
+        self.assertEqual(metrics["quality"]["translated_pdf_table_structure_patch_rendered_count"], 2)
         self.assertEqual(metrics["rates"]["translated_pdf_structure_context_chunk_rate"], 0.5)
         self.assertEqual(metrics["quality"]["table_shape_error_count"], 1)
         self.assertEqual(metrics["quality"]["table_cell_token_error_count"], 2)
@@ -5356,7 +5358,7 @@ class StructureIRTests(unittest.TestCase):
             )
             chunk.block_ids = ["p1-b0000"]
             (chunk_dir / "c0000.md").write_text(
-                "| Header | Value |\n| --- | --- |\n| A | 1 |\n",
+                "| Dataset metrics | Covered metric |\n| --- | --- |\n| A | 1 |\n",
                 encoding="utf-8",
             )
             confirmed = effective_table_reconstruction_view(
@@ -5417,9 +5419,127 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(report["summary"]["table_structure_patch_count"], 1)
             self.assertEqual(report["summary"]["table_structure_patch_reference_count"], 1)
             self.assertEqual(report["summary"]["table_structure_patch_covered_cell_reference_count"], 1)
+            self.assertEqual(report["summary"]["table_structure_patch_rendered_count"], 1)
+            self.assertEqual(report["chunks"][0]["table_structure_patch_rendered_count"], 1)
+            doc = fitz.open(root / "translated_full.pdf")
+            try:
+                text = "\n".join(page.get_text("text") for page in doc)
+            finally:
+                doc.close()
+            self.assertIn("Dataset metrics", text)
+            self.assertNotIn("Covered metric", text)
             saved = json.loads((root / "translated_pdf_report.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["table_reconstruction_source"], "confirmed")
             self.assertEqual(saved["summary"]["table_structure_patch_reference_count"], 1)
+            self.assertEqual(saved["summary"]["table_structure_patch_rendered_count"], 1)
+
+            source_view = effective_table_reconstruction_view(
+                {
+                    "schema_version": "table-reconstruction-v1",
+                    "tables": confirmed["tables"],
+                }
+            )
+            source_report = write_translated_pdf(
+                [chunk],
+                chunk_dir,
+                root / "source_view.pdf",
+                table_reconstruction=source_view,
+                title="Source PDF",
+                report_path=root / "source_translated_pdf_report.json",
+            )
+            self.assertEqual(source_report["table_reconstruction_source"], "source")
+            self.assertEqual(source_report["summary"]["table_structure_patch_rendered_count"], 0)
+            source_doc = fitz.open(root / "source_view.pdf")
+            try:
+                source_text = "\n".join(page.get_text("text") for page in source_doc)
+            finally:
+                source_doc.close()
+            self.assertIn("Covered metric", source_text)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
+    def test_translated_pdf_renders_confirmed_rowspan_patches(self) -> None:
+        root = Path.cwd() / "test-output" / "translated-pdf-rowspan-patch"
+        if root.exists():
+            shutil.rmtree(root)
+        chunk_dir = root / "chunks"
+        chunk_dir.mkdir(parents=True)
+        try:
+            chunk = TextChunk(
+                chunk_id="c0000",
+                pages_0based=[0],
+                text="Table text",
+                link_count=0,
+                image_count=0,
+            )
+            chunk.block_ids = ["p1-b0000"]
+            (chunk_dir / "c0000.md").write_text(
+                "| Group | Metric | Score |\n"
+                "| --- | --- | --- |\n"
+                "| Shared group | Accuracy | 91.2 |\n"
+                "| SHOULD_HIDE | F1 | 88.1 |\n",
+                encoding="utf-8",
+            )
+            confirmed = effective_table_reconstruction_view(
+                {
+                    "schema_version": "table-reconstruction-v1",
+                    "confirmation_schema_version": "table-structure-publish-v1",
+                    "summary": {"confirmed_merged_cell_candidate_count": 1},
+                    "tables": [
+                        {
+                            "table_id": "p1-b0000",
+                            "block_id": "p1-b0000",
+                            "page_no": 1,
+                            "confirmed_merged_cell_candidates": [
+                                {
+                                    "span_type": "rowspan",
+                                    "candidate_status": "human_confirmed",
+                                }
+                            ],
+                            "structure_patches": [
+                                {
+                                    "patch_id": "tsp-0002-p1-b0000-r1c0",
+                                    "patch_type": "merged_cell_span",
+                                    "operation": "apply_confirmed_merged_cell_span",
+                                    "applied": True,
+                                    "table_id": "p1-b0000",
+                                    "anchor_cell": {"row_index": 1, "column_index": 0},
+                                    "span": {
+                                        "span_type": "rowspan",
+                                        "row_span": 2,
+                                        "column_span": 1,
+                                    },
+                                    "covered_cells": [{"row_index": 2, "column_index": 0}],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+
+            report = write_translated_pdf(
+                [chunk],
+                chunk_dir,
+                root / "translated_full.pdf",
+                table_reconstruction=confirmed,
+                title="Rowspan PDF",
+                report_path=root / "translated_pdf_report.json",
+            )
+
+            self.assertEqual(report["summary"]["table_structure_patch_rendered_count"], 1)
+            doc = fitz.open(root / "translated_full.pdf")
+            try:
+                text = "\n".join(page.get_text("text") for page in doc)
+            finally:
+                doc.close()
+            self.assertIn("Shared group", text)
+            self.assertIn("Accuracy", text)
+            self.assertIn("F1", text)
+            self.assertNotIn("SHOULD_HIDE", text)
         finally:
             if root.exists():
                 shutil.rmtree(root)

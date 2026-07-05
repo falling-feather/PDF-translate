@@ -711,6 +711,9 @@ def build_experiment_metrics(
     translated_pdf_table_structure_patch_covered_cell_reference_count = _as_int(
         translated_pdf_summary.get("table_structure_patch_covered_cell_reference_count")
     )
+    translated_pdf_table_structure_patch_rendered_count = _as_int(
+        translated_pdf_summary.get("table_structure_patch_rendered_count")
+    )
     max_english_residual_ratio = _as_float(translation_summary.get("max_english_residual_ratio"))
     total_elapsed_ms = _as_int(run_summary.get("total_elapsed_ms"))
     translation_elapsed_ms = _as_int(run_summary.get("translation_elapsed_ms"))
@@ -1038,6 +1041,9 @@ def build_experiment_metrics(
             ),
             "translated_pdf_table_structure_patch_covered_cell_reference_count": (
                 translated_pdf_table_structure_patch_covered_cell_reference_count
+            ),
+            "translated_pdf_table_structure_patch_rendered_count": (
+                translated_pdf_table_structure_patch_rendered_count
             ),
             "max_english_residual_ratio": max_english_residual_ratio,
         },
