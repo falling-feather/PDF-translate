@@ -44,6 +44,7 @@ from pdf_translate.qa.repair import (
 )
 from pdf_translate.qa.structure import build_structure_qa
 from pdf_translate.qa.table_reconstruction import (
+    apply_table_merged_cell_review_batch_decision,
     apply_table_merged_cell_review_decision,
     build_confirmed_table_reconstruction,
     build_structure_hints_manifest,
@@ -51,8 +52,9 @@ from pdf_translate.qa.table_reconstruction import (
     build_table_reconstruction_report,
     build_table_translation_hints,
     table_merged_cell_review_to_markdown,
-    write_table_structure_publish,
+    write_table_merged_cell_review_batch_decision,
     write_table_merged_cell_review_decision,
+    write_table_structure_publish,
 )
 from pdf_translate.qa.translation import build_translation_qa, translation_qa_to_markdown
 from pdf_translate.pipeline import init_workdir, run_split, run_translate
@@ -1081,6 +1083,111 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("needs another crop", md_path.read_text(encoding="utf-8"))
             stored = json.loads(json_path.read_text(encoding="utf-8"))
             self.assertEqual(stored["candidate_reviews"][1]["human_decision"], "needs_revision")
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+
+    def test_table_merged_cell_review_batch_decision_updates_atomically(self) -> None:
+        review = build_table_merged_cell_review(
+            {
+                "schema_version": "table-reconstruction-v1",
+                "doc_id": "batch-review-doc",
+                "tables": [
+                    {
+                        "table_id": "p1-b0000",
+                        "block_id": "p1-b0000",
+                        "page_no": 1,
+                        "merged_cell_candidates": [
+                            {
+                                "span_type": "colspan",
+                                "row_index": 0,
+                                "column_index": 0,
+                                "row_span": 1,
+                                "column_span": 2,
+                                "text": "Dataset metrics",
+                                "reason": "visual_header_span",
+                                "candidate_status": "visually_supported",
+                                "visual_evidence_level": "visual_span_bbox",
+                                "bbox_evidence": {"status": "span_reported"},
+                            },
+                            {
+                                "span_type": "colspan",
+                                "row_index": 1,
+                                "column_index": 0,
+                                "row_span": 1,
+                                "column_span": 2,
+                                "text": "Ablation",
+                                "reason": "single_cell_ragged_row",
+                                "candidate_status": "candidate",
+                                "visual_evidence_level": "estimated_bbox",
+                                "bbox_evidence": {"status": "estimated"},
+                            },
+                            {
+                                "span_type": "rowspan",
+                                "row_index": 2,
+                                "column_index": 0,
+                                "row_span": 2,
+                                "column_span": 1,
+                                "text": "BERT",
+                                "reason": "empty_cell_span",
+                                "candidate_status": "candidate",
+                                "visual_evidence_level": "none",
+                                "bbox_evidence": {"status": "missing"},
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+
+        with self.assertRaises(KeyError):
+            apply_table_merged_cell_review_batch_decision(
+                review,
+                ["tmc-0001-p1-b0000-r0c0", "missing-review-id"],
+                decision="confirm",
+                reviewer="mentor",
+                reviewed_at="2026-07-06T00:10:00+00:00",
+            )
+        self.assertEqual(review["candidate_reviews"][0]["human_decision"], "")
+
+        updated = apply_table_merged_cell_review_batch_decision(
+            review,
+            ["tmc-0001-p1-b0000-r0c0", "tmc-0002-p1-b0000-r1c0"],
+            decision="confirm",
+            reviewer="mentor",
+            comment="batch visual pass",
+            reviewed_at="2026-07-06T00:11:00+00:00",
+        )
+
+        self.assertEqual(updated["summary"]["human_confirmed_count"], 2)
+        self.assertEqual(updated["summary"]["human_reviewed_count"], 2)
+        self.assertEqual(updated["summary"]["review_required_count"], 1)
+        self.assertEqual(updated["candidate_reviews"][0]["human_comment"], "batch visual pass")
+        self.assertEqual(updated["candidate_reviews"][1]["reviewed_by"], "mentor")
+        self.assertEqual(updated["candidate_reviews"][1]["reviewed_at"], "2026-07-06T00:11:00+00:00")
+
+        root = Path.cwd() / "test-output" / "table-merged-cell-review-batch-decision"
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True)
+        try:
+            json_path = root / "table_merged_cell_review.json"
+            md_path = root / "table_merged_cell_review.md"
+            json_path.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8")
+            md_path.write_text(table_merged_cell_review_to_markdown(updated), encoding="utf-8")
+            persisted = write_table_merged_cell_review_batch_decision(
+                json_path,
+                md_path,
+                ["tmc-0001-p1-b0000-r0c0", "tmc-0002-p1-b0000-r1c0"],
+                decision="clear",
+                reviewer="mentor",
+                reviewed_at="2026-07-06T00:12:00+00:00",
+            )
+            self.assertEqual(persisted["summary"]["human_confirmed_count"], 0)
+            self.assertEqual(persisted["summary"]["review_required_count"], 3)
+            stored = json.loads(json_path.read_text(encoding="utf-8"))
+            self.assertEqual(stored["candidate_reviews"][0]["human_decision"], "")
+            self.assertIn("pending", md_path.read_text(encoding="utf-8"))
         finally:
             if root.exists():
                 shutil.rmtree(root)
