@@ -45,8 +45,10 @@ from pdf_translate.qa.repair import (
 from pdf_translate.qa.structure import build_structure_qa
 from pdf_translate.qa.table_reconstruction import (
     build_structure_hints_manifest,
+    build_table_merged_cell_review,
     build_table_reconstruction_report,
     build_table_translation_hints,
+    table_merged_cell_review_to_markdown,
 )
 from pdf_translate.qa.translation import build_translation_qa, translation_qa_to_markdown
 from pdf_translate.pipeline import init_workdir, run_split, run_translate
@@ -920,6 +922,109 @@ class StructureIRTests(unittest.TestCase):
             ],
             1,
         )
+
+    def test_table_merged_cell_review_summarizes_confirmation_status(self) -> None:
+        review = build_table_merged_cell_review(
+            {
+                "schema_version": "table-reconstruction-v1",
+                "doc_id": "review-doc",
+                "tables": [
+                    {
+                        "table_id": "p1-b0000",
+                        "block_id": "p1-b0000",
+                        "page_no": 1,
+                        "merged_cell_candidates": [
+                            {
+                                "span_type": "colspan",
+                                "row_index": 0,
+                                "column_index": 0,
+                                "row_span": 1,
+                                "column_span": 3,
+                                "text": "Dataset metrics",
+                                "reason": "visual_header_span",
+                                "confidence": "0.94",
+                                "source": "layout_table_ocr",
+                                "candidate_status": "visually_supported",
+                                "visual_evidence_level": "visual_span_bbox",
+                                "bbox_evidence": {"status": "span_reported"},
+                                "covered_cells": [
+                                    {"row_index": 0, "column_index": 1},
+                                    {"row_index": 0, "column_index": 2},
+                                ],
+                            },
+                            {
+                                "span_type": "colspan",
+                                "row_index": 1,
+                                "column_index": 0,
+                                "row_span": 1,
+                                "column_span": 2,
+                                "text": "Ablation",
+                                "reason": "single_cell_ragged_row",
+                                "confidence": "medium",
+                                "source": "local_text_table_parser",
+                                "candidate_status": "candidate",
+                                "visual_evidence_level": "estimated_bbox",
+                                "bbox_evidence": {"status": "estimated"},
+                            },
+                            {
+                                "span_type": "rowspan",
+                                "row_index": 2,
+                                "column_index": 0,
+                                "row_span": 2,
+                                "column_span": 1,
+                                "text": "BERT",
+                                "reason": "manual_review",
+                                "confidence": "high",
+                                "candidate_status": "human_confirmed",
+                                "visual_evidence_level": "manual_verified",
+                                "bbox_evidence": {"status": "manual_verified"},
+                            },
+                            {
+                                "span_type": "colspan",
+                                "row_index": 4,
+                                "column_index": 0,
+                                "row_span": 1,
+                                "column_span": 2,
+                                "text": "noise",
+                                "reason": "manual_review",
+                                "confidence": "low",
+                                "candidate_status": "rejected",
+                                "visual_evidence_level": "none",
+                                "bbox_evidence": {"status": "missing"},
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(review["schema_version"], "table-merged-cell-review-v1")
+        self.assertEqual(review["summary"]["candidate_review_count"], 4)
+        self.assertEqual(review["summary"]["review_required_count"], 2)
+        self.assertEqual(review["summary"]["pending_review_count"], 2)
+        self.assertEqual(review["summary"]["visual_supported_count"], 1)
+        self.assertEqual(review["summary"]["estimated_only_count"], 1)
+        self.assertEqual(review["summary"]["human_confirmed_count"], 1)
+        self.assertEqual(review["summary"]["rejected_count"], 1)
+        self.assertEqual(review["summary"]["default_decision_counts"]["needs_human_confirmation"], 1)
+        self.assertEqual(review["summary"]["default_decision_counts"]["needs_visual_review"], 1)
+        self.assertEqual(review["summary"]["human_decision_counts"]["confirm"], 1)
+        self.assertEqual(review["summary"]["human_decision_counts"]["reject"], 1)
+        self.assertEqual(review["summary"]["human_decision_counts"]["pending"], 2)
+        first = review["candidate_reviews"][0]
+        self.assertEqual(first["review_id"], "tmc-0001-p1-b0000-r0c0")
+        self.assertEqual(first["confirmation_status"], "pending_review")
+        self.assertEqual(first["human_decision"], "")
+        self.assertEqual(first["bbox_evidence_status"], "span_reported")
+        confirmed = review["candidate_reviews"][2]
+        self.assertEqual(confirmed["confirmation_status"], "human_confirmed")
+        self.assertEqual(confirmed["human_decision"], "confirm")
+
+        markdown = table_merged_cell_review_to_markdown(review)
+        self.assertIn("表格合并单元格候选人工确认清单", markdown)
+        self.assertIn("tmc-0001-p1-b0000-r0c0", markdown)
+        self.assertIn("needs_human_confirmation", markdown)
+        self.assertIn("视觉支持不等于人工确认", markdown)
 
     def test_table_reconstruction_builds_continued_table_groups(self) -> None:
         page1_table = BlockIR(
@@ -3496,6 +3601,28 @@ class StructureIRTests(unittest.TestCase):
                     "table_reconstruction_ready_rate": 0.5,
                 },
             },
+            table_merged_cell_review={
+                "schema_version": "table-merged-cell-review-v1",
+                "summary": {
+                    "candidate_review_count": 2,
+                    "review_required_count": 2,
+                    "pending_review_count": 2,
+                    "visual_supported_count": 1,
+                    "estimated_only_count": 1,
+                    "missing_evidence_count": 1,
+                    "human_confirmed_count": 0,
+                    "rejected_count": 0,
+                    "confirmation_status_counts": {"pending_review": 2},
+                    "default_decision_counts": {
+                        "needs_human_confirmation": 1,
+                        "needs_visual_review": 1,
+                    },
+                    "human_decision_counts": {"pending": 2},
+                    "candidate_status_counts": {"visually_supported": 1, "candidate": 1},
+                    "visual_evidence_counts": {"visual_span_bbox": 1, "estimated_bbox": 1},
+                    "bbox_evidence_counts": {"span_reported": 1, "estimated": 1},
+                },
+            },
             ocr_tasks={
                 "schema_version": "ocr-task-manifest-v1",
                 "summary": {
@@ -3940,6 +4067,14 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["table_ragged_table_count"], 1)
         self.assertEqual(metrics["quality"]["table_ragged_row_count"], 1)
         self.assertEqual(metrics["quality"]["table_merged_cell_candidate_count"], 2)
+        self.assertEqual(metrics["quality"]["table_merged_cell_review_count"], 2)
+        self.assertEqual(metrics["quality"]["table_merged_cell_review_required_count"], 2)
+        self.assertEqual(metrics["quality"]["table_merged_cell_review_pending_count"], 2)
+        self.assertEqual(metrics["quality"]["table_merged_cell_review_visual_supported_count"], 1)
+        self.assertEqual(metrics["quality"]["table_merged_cell_review_estimated_only_count"], 1)
+        self.assertEqual(metrics["quality"]["table_merged_cell_review_missing_evidence_count"], 1)
+        self.assertEqual(metrics["quality"]["table_merged_cell_review_human_confirmed_count"], 0)
+        self.assertEqual(metrics["quality"]["table_merged_cell_review_rejected_count"], 0)
         self.assertEqual(metrics["quality"]["table_significance_token_count"], 2)
         self.assertEqual(metrics["quality"]["table_footnote_binding_count"], 2)
         self.assertEqual(metrics["quality"]["table_footnote_cell_binding_count"], 1)
@@ -3965,6 +4100,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["table_empty_cell_rate"], 0.25)
         self.assertEqual(metrics["rates"]["table_ragged_table_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_merged_cell_candidate_rate"], 1.0)
+        self.assertEqual(metrics["rates"]["table_merged_cell_review_required_rate"], 1.0)
+        self.assertEqual(metrics["rates"]["table_merged_cell_review_visual_supported_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["table_merged_cell_review_human_confirmed_rate"], 0.0)
         self.assertEqual(metrics["rates"]["continued_table_reconstruction_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_chain_merge_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_chain_reject_rate"], 0.5)
@@ -3993,6 +4131,21 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["breakdowns"]["table_merged_cell_candidate_type_counts"]["colspan"], 2)
         self.assertEqual(
             metrics["breakdowns"]["table_merged_cell_candidate_reason_counts"]["single_cell_ragged_row"],
+            1,
+        )
+        self.assertEqual(
+            metrics["breakdowns"]["table_merged_cell_review_default_decision_counts"][
+                "needs_human_confirmation"
+            ],
+            1,
+        )
+        self.assertEqual(metrics["breakdowns"]["table_merged_cell_review_human_decision_counts"]["pending"], 2)
+        self.assertEqual(
+            metrics["breakdowns"]["table_merged_cell_review_visual_evidence_counts"]["visual_span_bbox"],
+            1,
+        )
+        self.assertEqual(
+            metrics["breakdowns"]["table_merged_cell_review_bbox_evidence_counts"]["estimated"],
             1,
         )
         self.assertEqual(
@@ -4164,6 +4317,10 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["breakdowns"]["stage_elapsed_ms"]["document_ir"], 50)
         self.assertEqual(metrics["breakdowns"]["translator_counts"]["echo"], 2)
         self.assertEqual(metrics["evidence_files"]["translation_qa"], "output/qa_report.json")
+        self.assertEqual(
+            metrics["evidence_files"]["table_merged_cell_review"],
+            "output/table_merged_cell_review.json",
+        )
         self.assertEqual(metrics["evidence_files"]["ocr_tasks"], "output/ocr_tasks.json")
         self.assertEqual(metrics["evidence_files"]["ocr_results"], "output/ocr_results.json")
         self.assertEqual(metrics["evidence_files"]["ocr_writeback"], "output/ocr_writeback.json")
@@ -4760,6 +4917,8 @@ class StructureIRTests(unittest.TestCase):
             active_manifest_path = work_dir / "output" / "chunks_manifest.json"
             qa_path = work_dir / "output" / "structure_qa.json"
             table_reconstruction_path = work_dir / "output" / "table_reconstruction.json"
+            table_merged_cell_review_path = work_dir / "output" / "table_merged_cell_review.json"
+            table_merged_cell_review_md_path = work_dir / "output" / "table_merged_cell_review.md"
             structure_hints_manifest_path = work_dir / "output" / "structure_hints_manifest.json"
             chunk_boundary_qa_path = work_dir / "output" / "chunk_boundary_qa.json"
             chunk_strategy_comparison_path = work_dir / "output" / "chunk_strategy_comparison.json"
@@ -4805,6 +4964,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(active_manifest_path.is_file())
             self.assertTrue(qa_path.is_file())
             self.assertTrue(table_reconstruction_path.is_file())
+            self.assertTrue(table_merged_cell_review_path.is_file())
+            self.assertTrue(table_merged_cell_review_md_path.is_file())
             self.assertTrue(structure_hints_manifest_path.is_file())
             self.assertTrue(chunk_boundary_qa_path.is_file())
             self.assertTrue(chunk_strategy_comparison_path.is_file())
@@ -4850,6 +5011,7 @@ class StructureIRTests(unittest.TestCase):
             active_manifest = json.loads(active_manifest_path.read_text(encoding="utf-8"))
             qa = json.loads(qa_path.read_text(encoding="utf-8"))
             table_reconstruction = json.loads(table_reconstruction_path.read_text(encoding="utf-8"))
+            table_merged_cell_review = json.loads(table_merged_cell_review_path.read_text(encoding="utf-8"))
             structure_hints_manifest = json.loads(structure_hints_manifest_path.read_text(encoding="utf-8"))
             chunk_boundary_qa = json.loads(chunk_boundary_qa_path.read_text(encoding="utf-8"))
             chunk_strategy_comparison = json.loads(chunk_strategy_comparison_path.read_text(encoding="utf-8"))
@@ -4922,6 +5084,14 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("table_chain_reject_reason_counts", table_reconstruction["summary"])
             self.assertIn("table_chain_reject_reason_category_counts", table_reconstruction["summary"])
             self.assertIn("continued_table_groups", table_reconstruction)
+            self.assertEqual(table_merged_cell_review["schema_version"], "table-merged-cell-review-v1")
+            self.assertIn("candidate_review_count", table_merged_cell_review["summary"])
+            self.assertIn("review_required_count", table_merged_cell_review["summary"])
+            self.assertIn("candidate_reviews", table_merged_cell_review)
+            self.assertIn(
+                "表格合并单元格候选人工确认清单",
+                table_merged_cell_review_md_path.read_text(encoding="utf-8"),
+            )
             self.assertEqual(structure_hints_manifest["schema_version"], "structure-hints-manifest-v1")
             self.assertGreaterEqual(structure_hints_manifest["summary"]["chunk_count"], 1)
             self.assertIn("structure_hint_chunk_count", structure_hints_manifest["summary"])
@@ -4994,6 +5164,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertGreater(run_metrics["summary"]["request_char_count"], 0)
             self.assertIn("document_ir", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("ocr_candidate_promotion", run_metrics["summary"]["stage_elapsed_ms"])
+            self.assertIn("table_merged_cell_review", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("repair_patch_review", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("repair_publish", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("translated_pdf", run_metrics["summary"]["stage_elapsed_ms"])
@@ -5012,6 +5183,9 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(metrics["performance"]["estimated_total_cost"], 0)
             self.assertIn("reconstructable_table_count", metrics["quality"])
             self.assertIn("table_merged_cell_candidate_count", metrics["quality"])
+            self.assertIn("table_merged_cell_review_count", metrics["quality"])
+            self.assertIn("table_merged_cell_review_required_rate", metrics["rates"])
+            self.assertIn("table_merged_cell_review_default_decision_counts", metrics["breakdowns"])
             self.assertIn("structure_hint_chunk_count", metrics["quality"])
             self.assertIn("structure_hint_empty_chunk_count", metrics["quality"])
             self.assertIn("structure_hint_avg_char_count", metrics["quality"])
@@ -5064,6 +5238,10 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(
                 metrics["evidence_files"]["table_reconstruction"],
                 "output/table_reconstruction.json",
+            )
+            self.assertEqual(
+                metrics["evidence_files"]["table_merged_cell_review"],
+                "output/table_merged_cell_review.json",
             )
             self.assertEqual(
                 metrics["evidence_files"]["structure_hints_manifest"],
@@ -5133,6 +5311,8 @@ class StructureIRTests(unittest.TestCase):
                 "structure_hints_manifest.json",
                 "structure_qa.json",
                 "table_reconstruction.json",
+                "table_merged_cell_review.json",
+                "table_merged_cell_review.md",
                 "chunk_boundary_qa.json",
                 "chunk_strategy_comparison.json",
                 "vision_route.json",
@@ -5208,6 +5388,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/qa_report.md", rels)
             self.assertIn("output/document_ir.json", rels)
             self.assertIn("output/table_reconstruction.json", rels)
+            self.assertIn("output/table_merged_cell_review.json", rels)
+            self.assertIn("output/table_merged_cell_review.md", rels)
             self.assertIn("output/structure_hints_manifest.json", rels)
             self.assertIn("output/chunk_boundary_qa.json", rels)
             self.assertIn("output/chunk_strategy_comparison.json", rels)
@@ -5250,6 +5432,14 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(map_bundle_arcname("output/document_ir_promoted.json"), "设置/OCR晋级文档结构IR.json")
             self.assertEqual(map_bundle_arcname("output/structure_qa.json"), "质量/结构QA.json")
             self.assertEqual(map_bundle_arcname("output/table_reconstruction.json"), "质量/表格重建证据.json")
+            self.assertEqual(
+                map_bundle_arcname("output/table_merged_cell_review.json"),
+                "质量/表格合并候选人工确认.json",
+            )
+            self.assertEqual(
+                map_bundle_arcname("output/table_merged_cell_review.md"),
+                "质量/表格合并候选人工确认.md",
+            )
             self.assertEqual(map_bundle_arcname("output/structure_hints_manifest.json"), "设置/结构提示清单.json")
             self.assertEqual(map_bundle_arcname("output/chunk_boundary_qa.json"), "质量/分段边界QA.json")
             self.assertEqual(map_bundle_arcname("output/chunk_strategy_comparison.json"), "质量/分段策略对比.json")

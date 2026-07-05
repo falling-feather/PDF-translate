@@ -11,6 +11,7 @@ DEFAULT_EVIDENCE_FILES = {
     "structure_hints_manifest": "output/structure_hints_manifest.json",
     "structure_qa": "output/structure_qa.json",
     "table_reconstruction": "output/table_reconstruction.json",
+    "table_merged_cell_review": "output/table_merged_cell_review.json",
     "vision_route": "output/vision_route.json",
     "ocr_tasks": "output/ocr_tasks.json",
     "ocr_results": "output/ocr_results.json",
@@ -104,6 +105,7 @@ def build_experiment_metrics(
     chunk_strategy_comparison: dict[str, Any] | None = None,
     structure_hints_manifest: dict[str, Any] | None = None,
     table_reconstruction: dict[str, Any] | None = None,
+    table_merged_cell_review: dict[str, Any] | None = None,
     ocr_tasks: dict[str, Any] | None = None,
     ocr_results: dict[str, Any] | None = None,
     ocr_writeback: dict[str, Any] | None = None,
@@ -135,6 +137,7 @@ def build_experiment_metrics(
     chunk_boundary_summary = _summary(chunk_boundary_qa)
     chunk_strategy_summary = _summary(chunk_strategy_comparison)
     structure_hints_summary = _summary(structure_hints_manifest)
+    table_merged_cell_review_summary = _summary(table_merged_cell_review)
     translation_summary = _summary(translation_qa)
     repair_summary = _summary(repair_plan)
     repair_request_summary = _summary(repair_requests)
@@ -238,6 +241,48 @@ def build_experiment_metrics(
     )
     table_merged_cell_candidate_bbox_evidence_counts = _counter_dict(
         table_reconstruction_summary.get("merged_cell_candidate_bbox_evidence_counts")
+    )
+    table_merged_cell_review_count = _as_int(
+        table_merged_cell_review_summary.get("candidate_review_count")
+    )
+    table_merged_cell_review_required_count = _as_int(
+        table_merged_cell_review_summary.get("review_required_count")
+    )
+    table_merged_cell_review_pending_count = _as_int(
+        table_merged_cell_review_summary.get("pending_review_count")
+    )
+    table_merged_cell_review_visual_supported_count = _as_int(
+        table_merged_cell_review_summary.get("visual_supported_count")
+    )
+    table_merged_cell_review_estimated_only_count = _as_int(
+        table_merged_cell_review_summary.get("estimated_only_count")
+    )
+    table_merged_cell_review_missing_evidence_count = _as_int(
+        table_merged_cell_review_summary.get("missing_evidence_count")
+    )
+    table_merged_cell_review_human_confirmed_count = _as_int(
+        table_merged_cell_review_summary.get("human_confirmed_count")
+    )
+    table_merged_cell_review_rejected_count = _as_int(
+        table_merged_cell_review_summary.get("rejected_count")
+    )
+    table_merged_cell_review_confirmation_status_counts = _counter_dict(
+        table_merged_cell_review_summary.get("confirmation_status_counts")
+    )
+    table_merged_cell_review_default_decision_counts = _counter_dict(
+        table_merged_cell_review_summary.get("default_decision_counts")
+    )
+    table_merged_cell_review_human_decision_counts = _counter_dict(
+        table_merged_cell_review_summary.get("human_decision_counts")
+    )
+    table_merged_cell_review_candidate_status_counts = _counter_dict(
+        table_merged_cell_review_summary.get("candidate_status_counts")
+    )
+    table_merged_cell_review_visual_evidence_counts = _counter_dict(
+        table_merged_cell_review_summary.get("visual_evidence_counts")
+    )
+    table_merged_cell_review_bbox_evidence_counts = _counter_dict(
+        table_merged_cell_review_summary.get("bbox_evidence_counts")
     )
     table_caption_linked_count = _as_int(table_reconstruction_summary.get("caption_linked_table_count"))
     table_footnote_linked_count = _as_int(table_reconstruction_summary.get("footnote_linked_table_count"))
@@ -703,6 +748,20 @@ def build_experiment_metrics(
             "table_merged_cell_candidate_visual_supported_count": (
                 table_merged_cell_candidate_status_counts.get("visually_supported", 0)
             ),
+            "table_merged_cell_review_count": table_merged_cell_review_count,
+            "table_merged_cell_review_required_count": table_merged_cell_review_required_count,
+            "table_merged_cell_review_pending_count": table_merged_cell_review_pending_count,
+            "table_merged_cell_review_visual_supported_count": (
+                table_merged_cell_review_visual_supported_count
+            ),
+            "table_merged_cell_review_estimated_only_count": table_merged_cell_review_estimated_only_count,
+            "table_merged_cell_review_missing_evidence_count": (
+                table_merged_cell_review_missing_evidence_count
+            ),
+            "table_merged_cell_review_human_confirmed_count": (
+                table_merged_cell_review_human_confirmed_count
+            ),
+            "table_merged_cell_review_rejected_count": table_merged_cell_review_rejected_count,
             "table_caption_linked_count": table_caption_linked_count,
             "table_footnote_linked_count": table_footnote_linked_count,
             "table_footnote_binding_count": table_footnote_binding_count,
@@ -990,6 +1049,22 @@ def build_experiment_metrics(
                 table_merged_cell_candidate_status_counts.get("visually_supported", 0),
                 table_merged_cell_candidate_count,
             ),
+            "table_merged_cell_review_required_rate": _rate(
+                table_merged_cell_review_required_count,
+                table_merged_cell_review_count,
+            ),
+            "table_merged_cell_review_visual_supported_rate": _rate(
+                table_merged_cell_review_visual_supported_count,
+                table_merged_cell_review_count,
+            ),
+            "table_merged_cell_review_human_confirmed_rate": _rate(
+                table_merged_cell_review_human_confirmed_count,
+                table_merged_cell_review_count,
+            ),
+            "table_merged_cell_review_rejected_rate": _rate(
+                table_merged_cell_review_rejected_count,
+                table_merged_cell_review_count,
+            ),
             "table_numeric_cell_rate": _rate(table_numeric_cell_count, table_cell_count),
             "table_caption_link_rate": _rate(table_caption_linked_count, table_count),
             "table_footnote_binding_rate": _rate(table_footnote_linked_count, table_count),
@@ -1269,6 +1344,24 @@ def build_experiment_metrics(
                 table_merged_cell_candidate_visual_evidence_counts
             ),
             "table_merged_cell_candidate_bbox_evidence_counts": table_merged_cell_candidate_bbox_evidence_counts,
+            "table_merged_cell_review_confirmation_status_counts": (
+                table_merged_cell_review_confirmation_status_counts
+            ),
+            "table_merged_cell_review_default_decision_counts": (
+                table_merged_cell_review_default_decision_counts
+            ),
+            "table_merged_cell_review_human_decision_counts": (
+                table_merged_cell_review_human_decision_counts
+            ),
+            "table_merged_cell_review_candidate_status_counts": (
+                table_merged_cell_review_candidate_status_counts
+            ),
+            "table_merged_cell_review_visual_evidence_counts": (
+                table_merged_cell_review_visual_evidence_counts
+            ),
+            "table_merged_cell_review_bbox_evidence_counts": (
+                table_merged_cell_review_bbox_evidence_counts
+            ),
             "table_chain_reject_reason_counts": table_chain_reject_reason_counts,
             "table_chain_reject_reason_category_counts": table_chain_reject_reason_category_counts,
             "table_chain_warning_reason_counts": table_chain_warning_reason_counts,
@@ -1293,6 +1386,7 @@ def write_experiment_metrics(
     chunk_strategy_comparison: dict[str, Any] | None = None,
     structure_hints_manifest: dict[str, Any] | None = None,
     table_reconstruction: dict[str, Any] | None = None,
+    table_merged_cell_review: dict[str, Any] | None = None,
     ocr_tasks: dict[str, Any] | None = None,
     ocr_results: dict[str, Any] | None = None,
     ocr_writeback: dict[str, Any] | None = None,
@@ -1321,6 +1415,7 @@ def write_experiment_metrics(
         chunk_strategy_comparison=chunk_strategy_comparison,
         structure_hints_manifest=structure_hints_manifest,
         table_reconstruction=table_reconstruction,
+        table_merged_cell_review=table_merged_cell_review,
         ocr_tasks=ocr_tasks,
         ocr_results=ocr_results,
         ocr_writeback=ocr_writeback,

@@ -9,6 +9,7 @@ from pdf_translate.chunking import TextChunk
 from pdf_translate.extractors.document_ir import BlockIR, DocumentIR
 
 SCHEMA_VERSION = "table-reconstruction-v1"
+MERGED_CELL_REVIEW_SCHEMA_VERSION = "table-merged-cell-review-v1"
 
 _NUMBER_RE = re.compile(r"\b\d+(?:[.,]\d+)?%?")
 _UNIT_RE = re.compile(
@@ -1445,6 +1446,238 @@ def write_table_reconstruction_report(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
+
+
+def _candidate_review_confirmation_status(candidate: dict[str, Any]) -> str:
+    status = str(candidate.get("candidate_status") or "candidate").strip()
+    if status in {"human_confirmed", "rejected"}:
+        return status
+    return "pending_review"
+
+
+def _candidate_review_default_decision(candidate: dict[str, Any]) -> str:
+    status = str(candidate.get("candidate_status") or "candidate").strip()
+    evidence = str(candidate.get("visual_evidence_level") or "none").strip()
+    bbox_evidence = candidate.get("bbox_evidence") if isinstance(candidate.get("bbox_evidence"), dict) else {}
+    bbox_status = str(bbox_evidence.get("status") or "missing").strip()
+    if status == "human_confirmed":
+        return "confirm"
+    if status == "rejected":
+        return "reject"
+    if status == "visually_supported" or evidence == "visual_span_bbox" or bbox_status == "span_reported":
+        return "needs_human_confirmation"
+    return "needs_visual_review"
+
+
+def _candidate_review_item(
+    candidate: dict[str, Any],
+    *,
+    table: dict[str, Any],
+    index: int,
+) -> dict[str, Any]:
+    table_id = str(table.get("table_id") or table.get("block_id") or "")
+    page_no = _nonnegative_int(table.get("page_no")) or 0
+    row_index = _nonnegative_int(candidate.get("row_index", candidate.get("row"))) or 0
+    column_index = _nonnegative_int(
+        candidate.get("column_index", candidate.get("col", candidate.get("column")))
+    ) or 0
+    row_span = _positive_int(candidate.get("row_span")) or 1
+    column_span = _positive_int(candidate.get("column_span")) or 1
+    review_id = (
+        f"tmc-{index + 1:04d}-"
+        f"{table_id or 'table'}-"
+        f"r{row_index}c{column_index}"
+    )
+    evidence = candidate.get("bbox_evidence") if isinstance(candidate.get("bbox_evidence"), dict) else {}
+    confirmation_status = _candidate_review_confirmation_status(candidate)
+    return {
+        "review_id": review_id,
+        "table_id": table_id,
+        "block_id": str(table.get("block_id") or table_id),
+        "page_no": page_no,
+        "row_index": row_index,
+        "column_index": column_index,
+        "row_span": row_span,
+        "column_span": column_span,
+        "span_type": str(candidate.get("span_type") or candidate.get("type") or "unknown"),
+        "text": str(candidate.get("text") or ""),
+        "reason": str(candidate.get("reason") or "unknown"),
+        "confidence": str(candidate.get("confidence") or "unknown"),
+        "source": str(candidate.get("source") or "unknown"),
+        "source_task_id": str(candidate.get("source_task_id") or candidate.get("task_id") or ""),
+        "engine": str(candidate.get("engine") or ""),
+        "candidate_status": str(candidate.get("candidate_status") or "candidate"),
+        "confirmation_status": confirmation_status,
+        "default_decision": _candidate_review_default_decision(candidate),
+        "visual_evidence_level": str(candidate.get("visual_evidence_level") or "none"),
+        "bbox_evidence": evidence,
+        "bbox_evidence_status": str(evidence.get("status") or "missing"),
+        "covered_cells": candidate.get("covered_cells") or [],
+        "human_decision": "confirm"
+        if confirmation_status == "human_confirmed"
+        else "reject"
+        if confirmation_status == "rejected"
+        else "",
+        "human_comment": "",
+        "reviewed_by": "",
+        "reviewed_at": "",
+    }
+
+
+def build_table_merged_cell_review(table_reconstruction: dict[str, Any] | None) -> dict[str, Any]:
+    """Build a human review checklist for merged-cell candidates."""
+    if not isinstance(table_reconstruction, dict):
+        table_reconstruction = {}
+    reviews: list[dict[str, Any]] = []
+    tables = table_reconstruction.get("tables") if isinstance(table_reconstruction.get("tables"), list) else []
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        for candidate in table.get("merged_cell_candidates") or []:
+            if not isinstance(candidate, dict):
+                continue
+            reviews.append(
+                _candidate_review_item(
+                    candidate,
+                    table=table,
+                    index=len(reviews),
+                )
+            )
+
+    confirmation_status_counts = _count_values(
+        [str(item.get("confirmation_status") or "pending_review") for item in reviews]
+    )
+    default_decision_counts = _count_values(
+        [str(item.get("default_decision") or "needs_visual_review") for item in reviews]
+    )
+    human_decision_counts = _count_values(
+        [str(item.get("human_decision") or "pending") for item in reviews]
+    )
+    candidate_status_counts = _count_values(
+        [str(item.get("candidate_status") or "candidate") for item in reviews]
+    )
+    visual_evidence_counts = _count_values(
+        [str(item.get("visual_evidence_level") or "none") for item in reviews]
+    )
+    bbox_evidence_counts = _count_values(
+        [str(item.get("bbox_evidence_status") or "missing") for item in reviews]
+    )
+    review_required_count = sum(
+        1
+        for item in reviews
+        if item.get("confirmation_status") == "pending_review"
+        or str(item.get("default_decision") or "").startswith("needs_")
+    )
+    visual_supported_count = candidate_status_counts.get("visually_supported", 0)
+    estimated_only_count = sum(
+        1
+        for item in reviews
+        if item.get("visual_evidence_level") == "estimated_bbox"
+        or item.get("bbox_evidence_status") == "estimated"
+    )
+    missing_evidence_count = sum(
+        1
+        for item in reviews
+        if item.get("visual_evidence_level") in ("", "none")
+        or item.get("bbox_evidence_status") in ("", "missing")
+    )
+    human_confirmed_count = confirmation_status_counts.get("human_confirmed", 0)
+    rejected_count = confirmation_status_counts.get("rejected", 0)
+    pending_review_count = confirmation_status_counts.get("pending_review", 0)
+    return {
+        "schema_version": MERGED_CELL_REVIEW_SCHEMA_VERSION,
+        "doc_id": str(table_reconstruction.get("doc_id") or ""),
+        "source_schema_version": str(table_reconstruction.get("schema_version") or ""),
+        "summary": {
+            "candidate_review_count": len(reviews),
+            "review_required_count": review_required_count,
+            "pending_review_count": pending_review_count,
+            "visual_supported_count": visual_supported_count,
+            "estimated_only_count": estimated_only_count,
+            "missing_evidence_count": missing_evidence_count,
+            "human_confirmed_count": human_confirmed_count,
+            "rejected_count": rejected_count,
+            "confirmation_status_counts": confirmation_status_counts,
+            "default_decision_counts": default_decision_counts,
+            "human_decision_counts": human_decision_counts,
+            "candidate_status_counts": candidate_status_counts,
+            "visual_evidence_counts": visual_evidence_counts,
+            "bbox_evidence_counts": bbox_evidence_counts,
+        },
+        "candidate_reviews": reviews,
+    }
+
+
+def _markdown_cell(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = text.replace("|", "\\|")
+    return text
+
+
+def table_merged_cell_review_to_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    lines = [
+        "# 表格合并单元格候选人工确认清单",
+        "",
+        f"- 候选数：{int(summary.get('candidate_review_count') or 0)}",
+        f"- 需要人工确认：{int(summary.get('review_required_count') or 0)}",
+        f"- 视觉支持候选：{int(summary.get('visual_supported_count') or 0)}",
+        f"- 仅估算证据：{int(summary.get('estimated_only_count') or 0)}",
+        f"- 缺少视觉证据：{int(summary.get('missing_evidence_count') or 0)}",
+        f"- 已人工确认：{int(summary.get('human_confirmed_count') or 0)}",
+        f"- 已拒绝：{int(summary.get('rejected_count') or 0)}",
+        "",
+        "> 说明：本清单只用于人工确认合并单元格候选。视觉支持不等于人工确认，估算 bbox 也不能作为正式合并依据。",
+        "",
+    ]
+    reviews = report.get("candidate_reviews") if isinstance(report.get("candidate_reviews"), list) else []
+    if not reviews:
+        lines.append("暂无合并单元格候选。")
+        return "\n".join(lines) + "\n"
+
+    lines.extend(
+        [
+            "| review_id | 页码 | 表格 | 锚点 | 跨度 | 状态 | 证据 | 默认决策 | 文本 | 人工决策 |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for item in reviews:
+        evidence = f"{item.get('bbox_evidence_status')}/{item.get('visual_evidence_level')}"
+        span = f"{item.get('span_type')} {item.get('row_span')}x{item.get('column_span')}"
+        anchor = f"r{item.get('row_index')}c{item.get('column_index')}"
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_cell(item.get("review_id")),
+                    _markdown_cell(item.get("page_no")),
+                    _markdown_cell(item.get("table_id")),
+                    _markdown_cell(anchor),
+                    _markdown_cell(span),
+                    _markdown_cell(item.get("confirmation_status")),
+                    _markdown_cell(evidence),
+                    _markdown_cell(item.get("default_decision")),
+                    _markdown_cell(_clip(str(item.get("text") or ""), 80)),
+                    _markdown_cell(item.get("human_decision") or "pending"),
+                ]
+            )
+            + " |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def write_table_merged_cell_review(
+    table_reconstruction: dict[str, Any] | None,
+    json_path: Path,
+    markdown_path: Path | None = None,
+) -> dict[str, Any]:
+    review = build_table_merged_cell_review(table_reconstruction)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
+    if markdown_path is not None:
+        markdown_path.parent.mkdir(parents=True, exist_ok=True)
+        markdown_path.write_text(table_merged_cell_review_to_markdown(review), encoding="utf-8")
+    return review
 
 
 def _chunk_block_ids(chunk: TextChunk) -> set[str]:

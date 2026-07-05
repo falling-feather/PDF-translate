@@ -37,6 +37,7 @@ from pdf_translate.qa.structure import write_structure_qa
 from pdf_translate.qa.table_reconstruction import (
     build_table_translation_hints,
     write_structure_hints_manifest,
+    write_table_merged_cell_review,
     write_table_reconstruction_report,
 )
 from pdf_translate.qa.translation import write_translation_qa
@@ -291,12 +292,6 @@ def run_translate(
         doc_ir.write_json(out_dir / "document_ir.json")
     with run_metrics.stage("structure_qa"):
         structure_qa = write_structure_qa(doc_ir, out_dir / "structure_qa.json")
-    with run_metrics.stage("table_reconstruction"):
-        table_reconstruction = write_table_reconstruction_report(
-            doc_ir,
-            structure_qa,
-            out_dir / "table_reconstruction.json",
-        )
     with run_metrics.stage("vision_route"):
         vision_route = write_vision_route(doc_ir, out_dir / "vision_route.json")
     with run_metrics.stage("ocr_tasks"):
@@ -348,6 +343,18 @@ def run_translate(
         )
         promoted_document_ir = document_ir_from_json_dict(
             json.loads((out_dir / "document_ir_promoted.json").read_text(encoding="utf-8"))
+        )
+    with run_metrics.stage("table_reconstruction"):
+        table_reconstruction = write_table_reconstruction_report(
+            promoted_document_ir,
+            structure_qa,
+            out_dir / "table_reconstruction.json",
+        )
+    with run_metrics.stage("table_merged_cell_review"):
+        table_merged_cell_review = write_table_merged_cell_review(
+            table_reconstruction,
+            out_dir / "table_merged_cell_review.json",
+            out_dir / "table_merged_cell_review.md",
         )
     with run_metrics.stage("structure_chunking"):
         structure_chunks = build_structure_chunks(
@@ -582,6 +589,7 @@ def run_translate(
             chunk_strategy_comparison=chunk_strategy_comparison,
             structure_hints_manifest=structure_hints_manifest,
             table_reconstruction=table_reconstruction,
+            table_merged_cell_review=table_merged_cell_review,
             ocr_tasks=ocr_tasks,
             ocr_results=ocr_results,
             ocr_writeback=ocr_writeback,
