@@ -309,6 +309,63 @@ def _target_cell_text(target_table: dict[str, Any], row_index: int, column_index
     return str(row[column_index])
 
 
+def _safe_nonnegative_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _patch_cell_coord(cell: Any) -> tuple[int, int] | None:
+    if not isinstance(cell, dict):
+        return None
+    row_index = _safe_nonnegative_int(cell.get("row_index"))
+    column_index = _safe_nonnegative_int(cell.get("column_index"))
+    if row_index is None or column_index is None:
+        return None
+    return row_index, column_index
+
+
+def _matched_structure_patches(
+    patches: list[dict[str, Any]],
+    row_index: int,
+    column_index: int,
+) -> list[dict[str, Any]]:
+    coord = (row_index, column_index)
+    matched: list[dict[str, Any]] = []
+    for patch in patches:
+        anchor_coord = _patch_cell_coord(patch.get("anchor_cell"))
+        covered_coords = [
+            covered_coord
+            for covered_coord in (_patch_cell_coord(cell) for cell in patch.get("covered_cells") or [])
+            if covered_coord is not None
+        ]
+        if coord != anchor_coord and coord not in covered_coords:
+            continue
+        span = patch.get("span") if isinstance(patch.get("span"), dict) else {}
+        bbox_evidence = patch.get("bbox_evidence") if isinstance(patch.get("bbox_evidence"), dict) else {}
+        matched.append(
+            {
+                "patch_id": str(patch.get("patch_id") or ""),
+                "source_review_id": str(patch.get("source_review_id") or ""),
+                "operation": str(patch.get("operation") or patch.get("patch_type") or ""),
+                "cell_role": "anchor" if coord == anchor_coord else "covered",
+                "anchor_cell": patch.get("anchor_cell") if isinstance(patch.get("anchor_cell"), dict) else {},
+                "span": span,
+                "covered_cells": [
+                    cell for cell in patch.get("covered_cells") or [] if isinstance(cell, dict)
+                ][:20],
+                "bbox_evidence_status": str(
+                    patch.get("bbox_evidence_status")
+                    or bbox_evidence.get("status")
+                    or ""
+                ),
+            }
+        )
+    return matched
+
+
 def _table_cell_token_errors(
     source_tables: list[dict[str, Any]],
     target_tables: list[dict[str, Any]],
@@ -349,6 +406,11 @@ def _table_cell_token_errors(
             )
             if not missing_tokens:
                 continue
+            matched_structure_patches = _matched_structure_patches(
+                table_structure_patches,
+                row_index,
+                column_index,
+            )
             errors.append(
                 {
                     "table_index": table_index,
@@ -360,6 +422,8 @@ def _table_cell_token_errors(
                     "merged_cell_candidate_count": len(merged_cell_candidates),
                     "table_structure_patches": table_structure_patches[:20],
                     "table_structure_patch_count": len(table_structure_patches),
+                    "matched_structure_patches": matched_structure_patches[:20],
+                    "matched_structure_patch_count": len(matched_structure_patches),
                     "row_index": row_index,
                     "column_index": column_index,
                     "role": cell.get("role") or "data",

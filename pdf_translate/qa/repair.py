@@ -178,6 +178,137 @@ def _safe_nonnegative_int(value: Any) -> int | None:
     return parsed if parsed >= 0 else None
 
 
+def _cell_coord(cell: dict[str, Any]) -> tuple[int, int] | None:
+    row_index = _safe_nonnegative_int(cell.get("row_index"))
+    column_index = _safe_nonnegative_int(cell.get("column_index"))
+    if row_index is None or column_index is None:
+        return None
+    return row_index, column_index
+
+
+def _patch_coord(cell: dict[str, Any] | None) -> tuple[int, int] | None:
+    if not isinstance(cell, dict):
+        return None
+    return _cell_coord(cell)
+
+
+def _structure_patches_from_evidence(evidence: dict[str, Any]) -> list[dict[str, Any]]:
+    matched_patches: list[dict[str, Any]] = []
+    fallback_patches: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add_patch(raw_patch: Any, out: list[dict[str, Any]]) -> None:
+        if not isinstance(raw_patch, dict):
+            return
+        patch_id = str(raw_patch.get("patch_id") or "")
+        key = patch_id or json.dumps(raw_patch, ensure_ascii=False, sort_keys=True)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(raw_patch)
+
+    for cell in evidence.get("cells") or []:
+        if not isinstance(cell, dict):
+            continue
+        for patch in cell.get("matched_structure_patches") or []:
+            add_patch(patch, matched_patches)
+    if matched_patches:
+        return matched_patches
+
+    for cell in evidence.get("cells") or []:
+        if not isinstance(cell, dict):
+            continue
+        for patch in cell.get("table_structure_patches") or []:
+            add_patch(patch, fallback_patches)
+    for table in evidence.get("tables") or []:
+        if not isinstance(table, dict):
+            continue
+        for patch in table.get("table_structure_patches") or table.get("structure_patches") or []:
+            add_patch(patch, fallback_patches)
+    for patch in evidence.get("table_structure_patches") or []:
+        add_patch(patch, fallback_patches)
+    return fallback_patches
+
+
+def _structure_patch_context_from_evidence(
+    evidence: dict[str, Any],
+    cells: list[dict[str, Any]],
+) -> dict[str, Any]:
+    patches = _structure_patches_from_evidence(evidence)
+    if not patches:
+        return {}
+
+    cell_coords = {coord for cell in cells if (coord := _cell_coord(cell)) is not None}
+    normalized_patches: list[dict[str, Any]] = []
+    cell_contexts: list[dict[str, Any]] = []
+    relevant_patch_keys: set[str] = set()
+
+    for patch in patches:
+        span = patch.get("span") if isinstance(patch.get("span"), dict) else {}
+        anchor_coord = _patch_coord(patch.get("anchor_cell") if isinstance(patch.get("anchor_cell"), dict) else None)
+        covered_coords = [
+            coord
+            for coord in (
+                _patch_coord(cell) for cell in patch.get("covered_cells") or [] if isinstance(cell, dict)
+            )
+            if coord is not None
+        ]
+        patch_id = str(patch.get("patch_id") or "")
+        patch_summary = {
+            "patch_id": patch_id,
+            "source_review_id": str(patch.get("source_review_id") or ""),
+            "operation": str(patch.get("operation") or patch.get("patch_type") or ""),
+            "span_type": str(span.get("span_type") or patch.get("span_type") or ""),
+            "cell_role": str(patch.get("cell_role") or ""),
+            "row_span": _safe_nonnegative_int(span.get("row_span")) or 1,
+            "column_span": _safe_nonnegative_int(span.get("column_span")) or 1,
+            "anchor_cell": {
+                "row_index": anchor_coord[0],
+                "column_index": anchor_coord[1],
+            }
+            if anchor_coord is not None
+            else {},
+            "covered_cells": [
+                {"row_index": row_index, "column_index": column_index}
+                for row_index, column_index in covered_coords[:20]
+            ],
+        }
+        patch_key = patch_id or json.dumps(patch_summary, ensure_ascii=False, sort_keys=True)
+        normalized_patches.append(patch_summary)
+
+        relevant_coords = set(covered_coords)
+        if anchor_coord is not None:
+            relevant_coords.add(anchor_coord)
+        if not cell_coords.intersection(relevant_coords):
+            continue
+        relevant_patch_keys.add(patch_key)
+        for row_index, column_index in sorted(cell_coords.intersection(relevant_coords)):
+            role = "anchor" if anchor_coord == (row_index, column_index) else "covered"
+            cell_context = {
+                "row_index": row_index,
+                "column_index": column_index,
+                "structure_patch_id": patch_id,
+                "structure_patch_role": role,
+                "render_row_index": anchor_coord[0] if anchor_coord is not None else row_index,
+                "render_column_index": anchor_coord[1] if anchor_coord is not None else column_index,
+                "span_type": patch_summary["span_type"],
+                "row_span": patch_summary["row_span"],
+                "column_span": patch_summary["column_span"],
+            }
+            cell_contexts.append(cell_context)
+
+    if not cell_contexts:
+        return {}
+
+    context = {
+        "patch_count": len(normalized_patches),
+        "relevant_patch_count": len(relevant_patch_keys),
+        "patches": normalized_patches[:20],
+        "cells": cell_contexts[:20],
+    }
+    return context
+
+
 def _merge_target_from_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     """Extract a conservative table/cell merge target from QA evidence."""
     cells = [cell for cell in evidence.get("cells") or [] if isinstance(cell, dict)]
@@ -197,19 +328,47 @@ def _merge_target_from_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             if table_index is not None:
                 break
 
+    structure_context = _structure_patch_context_from_evidence(evidence, cells)
+    cell_context_by_coord = {
+        (context.get("row_index"), context.get("column_index")): context
+        for context in structure_context.get("cells", [])
+        if isinstance(context, dict)
+    }
+
     target: dict[str, Any] = {
         "table_index": table_index,
         "table_id": table_id,
         "cell_count": len(cells),
-        "cells": [
-            {
-                "row_index": _safe_nonnegative_int(cell.get("row_index")),
-                "column_index": _safe_nonnegative_int(cell.get("column_index")),
-                "missing_tokens": [str(token) for token in cell.get("missing_tokens") or [] if str(token)],
-            }
-            for cell in cells[:20]
-        ],
+        "cells": [],
     }
+    for cell in cells[:20]:
+        row_index = _safe_nonnegative_int(cell.get("row_index"))
+        column_index = _safe_nonnegative_int(cell.get("column_index"))
+        out_cell = {
+            "row_index": row_index,
+            "column_index": column_index,
+            "missing_tokens": [str(token) for token in cell.get("missing_tokens") or [] if str(token)],
+        }
+        context = cell_context_by_coord.get((row_index, column_index))
+        if context:
+            out_cell.update(
+                {
+                    "structure_patch_id": context.get("structure_patch_id") or "",
+                    "structure_patch_role": context.get("structure_patch_role") or "",
+                    "render_row_index": context.get("render_row_index"),
+                    "render_column_index": context.get("render_column_index"),
+                }
+            )
+        target["cells"].append(out_cell)
+    if structure_context:
+        target["structure_patch_context"] = structure_context
+        target["structure_patch_evidence_count"] = structure_context.get("relevant_patch_count", 0)
+        target["structure_patch_evidence"] = structure_context.get("patches", [])
+        target["structure_patch_source_review_ids"] = [
+            str(patch.get("source_review_id") or "")
+            for patch in structure_context.get("patches", [])
+            if str(patch.get("source_review_id") or "")
+        ]
     if table_index is None and not table_id and not cells:
         return {}
     return target
@@ -393,6 +552,10 @@ def _merge_candidate_into_chunk(
 def _repair_instruction(item: dict[str, Any], locked_tokens: list[str]) -> str:
     action = str(item.get("action") or "")
     if action == "repair_table_cell_tokens":
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        cells = [cell for cell in evidence.get("cells") or [] if isinstance(cell, dict)]
+        if _structure_patch_context_from_evidence(evidence, cells):
+            return "按表格单元格证据修复译文表格；该表格存在已确认合并单元格结构补丁，若缺失 token 属于 covered cell，应回填到对应 anchor 合并单元格；保持原表格行列与 Markdown 形状。"
         return "按表格单元格证据修复译文表格；保持原表格行列与 Markdown 形状，缺失的锁定 token 必须回到对应单元格。"
     if action == "repair_table_shape":
         return "按源表格维度重构译文表格；保持表头、行头、数字和单位，不要把表格线性化为普通段落。"
@@ -439,6 +602,10 @@ def _backend_payload(
         parts.extend(["", "【当前译文】", _clip_text(current_translation)])
     if locked_tokens:
         parts.extend(["", "【必须保留的锁定 token】", ", ".join(locked_tokens[:80])])
+    cells = [cell for cell in evidence.get("cells") or [] if isinstance(cell, dict)]
+    structure_context = _structure_patch_context_from_evidence(evidence, cells)
+    if structure_context:
+        parts.extend(["", "【确认表格结构补丁】", json.dumps(structure_context, ensure_ascii=False)])
     if evidence:
         parts.extend(["", "【QA 证据】", json.dumps(evidence, ensure_ascii=False)])
     parts.extend(["", "【输出要求】", "只输出修复后的中文译文或 Markdown 表格，不要解释原因，不要添加额外标题。"])
@@ -519,6 +686,7 @@ def build_repair_requests(
     priority_counts: Counter[str] = Counter()
     executor_counts: Counter[str] = Counter()
     status_counts: Counter[str] = Counter()
+    structure_patch_context_request_count = 0
 
     for item in repair_plan.get("items") or []:
         if not isinstance(item, dict):
@@ -530,6 +698,8 @@ def build_repair_requests(
         evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
         locked_tokens = _locked_tokens_from_evidence(evidence)
         merge_target = _merge_target_from_evidence(evidence)
+        if merge_target.get("structure_patch_context"):
+            structure_patch_context_request_count += 1
         executor = str(item.get("executor") or "human_review")
         action = str(item.get("action") or "review_chunk")
         priority = str(item.get("priority") or "P2")
@@ -573,6 +743,7 @@ def build_repair_requests(
             "priority_counts": dict(priority_counts),
             "executor_counts": dict(executor_counts),
             "status_counts": dict(status_counts),
+            "structure_patch_context_request_count": structure_patch_context_request_count,
         },
         "requests": requests,
     }
@@ -625,6 +796,7 @@ def repair_requests_to_markdown(report: dict[str, Any]) -> str:
         f"| 修复请求 | {summary.get('repair_request_count', 0)} |",
         f"| 可交给翻译后端 | {summary.get('ready_for_translation_backend_count', 0)} |",
         f"| 需人工复核 | {summary.get('manual_review_request_count', 0)} |",
+        f"| 携带结构补丁上下文 | {summary.get('structure_patch_context_request_count', 0)} |",
         "",
     ]
     requests = report.get("requests") or []
@@ -825,6 +997,7 @@ def build_repair_validation(
     missing_locked_token_count = 0
     table_shape_check_count = 0
     table_shape_passed_count = 0
+    structure_patch_context_count = 0
 
     for raw_request in repair_requests.get("requests") or []:
         if not isinstance(raw_request, dict):
@@ -835,6 +1008,10 @@ def build_repair_validation(
         locked_tokens = [str(token) for token in raw_request.get("locked_tokens") or [] if str(token)]
         evidence = raw_request.get("evidence") if isinstance(raw_request.get("evidence"), dict) else {}
         expected_shapes = _expected_table_shapes_from_evidence(evidence)
+        merge_target = raw_request.get("merge_target") if isinstance(raw_request.get("merge_target"), dict) else {}
+        has_structure_patch_context = bool(merge_target.get("structure_patch_context"))
+        if has_structure_patch_context:
+            structure_patch_context_count += 1
         base = {
             "request_id": request_id,
             "repair_id": raw_request.get("repair_id"),
@@ -847,7 +1024,7 @@ def build_repair_validation(
             "executor": raw_request.get("executor"),
             "locked_token_count": len(locked_tokens),
             "expected_table_shape_count": len(expected_shapes),
-            "merge_target": raw_request.get("merge_target") or {},
+            "merge_target": merge_target,
         }
         action_counts[action] += 1
 
@@ -935,6 +1112,7 @@ def build_repair_validation(
             "table_shape_pass_rate": round(table_shape_passed_count / table_shape_check_count, 4)
             if table_shape_check_count
             else 0.0,
+            "structure_patch_context_count": structure_patch_context_count,
             "status_counts": dict(status_counts),
             "action_counts": dict(action_counts),
         },
@@ -957,6 +1135,7 @@ def repair_validation_to_markdown(report: dict[str, Any]) -> str:
         f"| 跳过 | {summary.get('skipped_count', 0)} |",
         f"| 锁定 token 通过率 | {summary.get('locked_token_pass_rate', 0)} |",
         f"| 表格形状通过率 | {summary.get('table_shape_pass_rate', 0)} |",
+        f"| 携带结构补丁上下文 | {summary.get('structure_patch_context_count', 0)} |",
         "",
     ]
     validations = report.get("validations") or []
@@ -1023,6 +1202,8 @@ def build_repair_merge(
     applied_strategy_counts: Counter[str] = Counter()
     patched_chunks: set[str] = set()
     candidate_count = 0
+    structure_patch_context_candidate_count = 0
+    applied_structure_patch_context_count = 0
 
     for validation in repair_validation.get("validations") or []:
         if not isinstance(validation, dict):
@@ -1078,6 +1259,9 @@ def build_repair_merge(
             continue
 
         merge_target = request.get("merge_target") if isinstance(request.get("merge_target"), dict) else {}
+        has_structure_patch_context = bool(merge_target.get("structure_patch_context"))
+        if has_structure_patch_context:
+            structure_patch_context_candidate_count += 1
         repaired_text = _repair_result_text(result)
         merged_text, strategy, reason = _merge_candidate_into_chunk(chunk_text[chunk_id], repaired_text, request)
         strategy_counts[strategy] += 1
@@ -1094,6 +1278,8 @@ def build_repair_merge(
         status = "applied"
         status_counts[status] += 1
         applied_strategy_counts[strategy] += 1
+        if has_structure_patch_context:
+            applied_structure_patch_context_count += 1
         patches.append(
             {
                 **base,
@@ -1141,6 +1327,8 @@ def build_repair_merge(
             "manual_merge_required_count": status_counts.get("skipped_manual_merge_required", 0),
             "conflict_count": status_counts.get("skipped_chunk_conflict", 0),
             "table_targeted_patch_count": applied_strategy_counts.get("replace_markdown_table_by_evidence", 0),
+            "structure_patch_context_candidate_count": structure_patch_context_candidate_count,
+            "applied_structure_patch_context_count": applied_structure_patch_context_count,
             "status_counts": dict(status_counts),
             "strategy_counts": dict(strategy_counts),
             "applied_strategy_counts": dict(applied_strategy_counts),
@@ -1163,6 +1351,7 @@ def repair_merge_to_markdown(report: dict[str, Any]) -> str:
         f"| 已应用 | {summary.get('applied_count', 0)} |",
         f"| 已修改 chunk | {summary.get('patched_chunk_count', 0)} |",
         f"| 按证据定位表格补丁 | {summary.get('table_targeted_patch_count', 0)} |",
+        f"| 携带结构补丁上下文 | {summary.get('structure_patch_context_candidate_count', 0)} |",
         f"| 需人工合并 | {summary.get('manual_merge_required_count', 0)} |",
         f"| 冲突 | {summary.get('conflict_count', 0)} |",
         f"| 跳过 | {summary.get('skipped_count', 0)} |",
@@ -1192,6 +1381,15 @@ def repair_merge_to_markdown(report: dict[str, Any]) -> str:
             lines.append(
                 f"- 目标表格：第 {table_text} 个 Markdown 表格，目标单元格数 {merge_target.get('cell_count', 0)}"
             )
+            structure_context = (
+                merge_target.get("structure_patch_context")
+                if isinstance(merge_target.get("structure_patch_context"), dict)
+                else {}
+            )
+            if structure_context:
+                lines.append(
+                    f"- 结构补丁上下文：相关补丁 {structure_context.get('relevant_patch_count', 0)} 个"
+                )
         if patch.get("reason"):
             lines.append(f"- 原因：{patch.get('reason')}")
         if patch.get("patched_chunk_path"):
@@ -1363,6 +1561,7 @@ def _refresh_repair_patch_review_summary(report: dict[str, Any]) -> dict[str, An
     action_counts: Counter[str] = Counter()
     scope_counts: Counter[str] = Counter()
     table_patch_count = 0
+    structure_patch_review_count = 0
     human_reviewed_count = 0
 
     for review in reviews:
@@ -1384,6 +1583,9 @@ def _refresh_repair_patch_review_summary(report: dict[str, Any]) -> dict[str, An
 
         if strategy == "replace_markdown_table_by_evidence":
             table_patch_count += 1
+        merge_target = review.get("merge_target") if isinstance(review.get("merge_target"), dict) else {}
+        if merge_target.get("structure_patch_context"):
+            structure_patch_review_count += 1
         if status:
             status_counts[status] += 1
         if default_decision:
@@ -1417,6 +1619,7 @@ def _refresh_repair_patch_review_summary(report: dict[str, Any]) -> dict[str, An
         "human_rejected_count": human_decision_counts.get("reject", 0),
         "human_needs_revision_count": human_decision_counts.get("needs_revision", 0),
         "table_patch_review_count": table_patch_count,
+        "structure_patch_review_count": structure_patch_review_count,
         "applied_count": _safe_nonnegative_int(old_summary.get("applied_count")) or 0,
         "manual_merge_required_count": _safe_nonnegative_int(old_summary.get("manual_merge_required_count")) or 0,
         "conflict_count": _safe_nonnegative_int(old_summary.get("conflict_count")) or 0,
@@ -1441,6 +1644,7 @@ def build_repair_patch_review(repair_merge: dict[str, Any]) -> dict[str, Any]:
     action_counts: Counter[str] = Counter()
     scope_counts: Counter[str] = Counter()
     table_patch_count = 0
+    structure_patch_review_count = 0
 
     for patch in repair_merge.get("patches") or []:
         if not isinstance(patch, dict):
@@ -1453,6 +1657,8 @@ def build_repair_patch_review(repair_merge: dict[str, Any]) -> dict[str, Any]:
         merge_target = patch.get("merge_target") if isinstance(patch.get("merge_target"), dict) else {}
         if strategy == "replace_markdown_table_by_evidence":
             table_patch_count += 1
+        if merge_target.get("structure_patch_context"):
+            structure_patch_review_count += 1
         status_counts[status] += 1
         decision_counts[decision] += 1
         risk_counts[risk_level] += 1
@@ -1500,6 +1706,7 @@ def build_repair_patch_review(repair_merge: dict[str, Any]) -> dict[str, Any]:
             )
             or 0,
             "conflict_count": _safe_nonnegative_int(merge_summary.get("conflict_count")) or 0,
+            "structure_patch_review_count": structure_patch_review_count,
         },
         "patch_reviews": reviews,
     }
@@ -1518,6 +1725,7 @@ def repair_patch_review_to_markdown(report: dict[str, Any]) -> str:
         f"| 仍需人工处理 | {summary.get('review_required_count', 0)} |",
         f"| 发布阻断项 | {summary.get('publish_blocking_count', 0)} |",
         f"| 表格定位补丁 | {summary.get('table_patch_review_count', 0)} |",
+        f"| 结构补丁上下文补丁 | {summary.get('structure_patch_review_count', 0)} |",
         f"| 合并冲突 | {summary.get('conflict_count', 0)} |",
         "",
         "## 审核明细",
@@ -1548,6 +1756,15 @@ def repair_patch_review_to_markdown(report: dict[str, Any]) -> str:
             lines.append(
                 f"- 目标表格：第 {table_text} 个 Markdown 表格，目标单元格数 {merge_target.get('cell_count', 0)}"
             )
+            structure_context = (
+                merge_target.get("structure_patch_context")
+                if isinstance(merge_target.get("structure_patch_context"), dict)
+                else {}
+            )
+            if structure_context:
+                lines.append(
+                    f"- 结构补丁上下文：相关补丁 {structure_context.get('relevant_patch_count', 0)} 个"
+                )
         if review.get("reason"):
             lines.append(f"- 原因：{review.get('reason')}")
         if review.get("patched_chunk_path"):

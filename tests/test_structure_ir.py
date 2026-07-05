@@ -1928,6 +1928,190 @@ class StructureIRTests(unittest.TestCase):
             if parent.is_dir() and not any(parent.iterdir()):
                 shutil.rmtree(parent)
 
+    def test_repair_requests_promote_confirmed_structure_patch_into_merge_target(self) -> None:
+        root = Path.cwd() / "test-output" / "repair-structure-patch-context"
+        if root.exists():
+            shutil.rmtree(root)
+        chunk_dir = root / "chunks"
+        chunk_dir.mkdir(parents=True)
+        try:
+            chunks = [
+                TextChunk(
+                    "c0000",
+                    [0],
+                    "Model Result p\nBERT 91.2% p<0.05",
+                    0,
+                    0,
+                )
+            ]
+            chunks[0].block_ids = ["p1-b0000"]
+            (chunk_dir / "c0000.md").write_text(
+                (
+                    "| 模型 | 结果 |\n"
+                    "| --- | --- |\n"
+                    "| BERT | 91.2% |\n"
+                ),
+                encoding="utf-8",
+            )
+            structure_patch = {
+                "patch_id": "tsp-0001-p1-b0000-r1c1",
+                "source_review_id": "tmc-0001-p1-b0000-r1c1",
+                "patch_type": "merged_cell_span",
+                "operation": "apply_confirmed_merged_cell_span",
+                "applied": True,
+                "anchor_cell": {"row_index": 1, "column_index": 1},
+                "span": {
+                    "span_type": "colspan",
+                    "row_span": 1,
+                    "column_span": 2,
+                },
+                "covered_cells": [{"row_index": 1, "column_index": 2}],
+            }
+            table_reconstruction = {
+                "schema_version": "table-reconstruction-v1",
+                "confirmation_schema_version": "table-structure-publish-v1",
+                "table_structure_source": "confirmed",
+                "tables": [
+                    {
+                        "table_id": "p1-b0000",
+                        "block_id": "p1-b0000",
+                        "page_no": 1,
+                        "row_count": 2,
+                        "column_count": 3,
+                        "cells": [
+                            {
+                                "row_index": 0,
+                                "column_index": 0,
+                                "text": "Model",
+                                "locked_tokens": [],
+                            },
+                            {
+                                "row_index": 0,
+                                "column_index": 1,
+                                "text": "Result",
+                                "locked_tokens": [],
+                            },
+                            {
+                                "row_index": 0,
+                                "column_index": 2,
+                                "text": "p",
+                                "locked_tokens": [],
+                            },
+                            {
+                                "row_index": 1,
+                                "column_index": 0,
+                                "text": "BERT",
+                                "locked_tokens": ["BERT"],
+                            },
+                            {
+                                "row_index": 1,
+                                "column_index": 1,
+                                "text": "91.2%",
+                                "locked_tokens": ["91.2%"],
+                            },
+                            {
+                                "row_index": 1,
+                                "column_index": 2,
+                                "text": "p<0.05",
+                                "locked_tokens": ["p<0.05"],
+                            },
+                        ],
+                        "structure_patches": [structure_patch],
+                    }
+                ],
+            }
+
+            report = build_translation_qa(
+                chunks,
+                chunk_dir,
+                table_reconstruction=table_reconstruction,
+            )
+            issue = next(
+                issue
+                for issue in report["chunks"][0]["issues"]
+                if issue["type"] == "table_cell_token_mismatch"
+            )
+            cell = next(cell for cell in issue["cells"] if cell["column_index"] == 2)
+            self.assertEqual(cell["matched_structure_patch_count"], 1)
+            self.assertEqual(cell["matched_structure_patches"][0]["source_review_id"], "tmc-0001-p1-b0000-r1c1")
+            self.assertEqual(cell["matched_structure_patches"][0]["cell_role"], "covered")
+
+            plan = build_repair_plan(report)
+            requests = build_repair_requests(plan, chunks, chunk_dir)
+            self.assertEqual(requests["summary"]["structure_patch_context_request_count"], 1)
+            request = next(
+                request
+                for request in requests["requests"]
+                if request["action"] == "repair_table_cell_tokens"
+            )
+            merge_target = request["merge_target"]
+            self.assertEqual(merge_target["structure_patch_evidence_count"], 1)
+            self.assertEqual(merge_target["structure_patch_source_review_ids"], ["tmc-0001-p1-b0000-r1c1"])
+            self.assertEqual(merge_target["cells"][0]["structure_patch_role"], "covered")
+            self.assertEqual(merge_target["cells"][0]["render_row_index"], 1)
+            self.assertEqual(merge_target["cells"][0]["render_column_index"], 1)
+            self.assertIn("合并单元格", request["instruction"])
+            self.assertIn("【确认表格结构补丁】", request["backend_payload"]["user_message"])
+
+            repair_results = {
+                "schema_version": "repair-results-v1",
+                "summary": {"repair_request_count": 1, "succeeded_count": 1},
+                "results": [
+                    {
+                        "request_id": request["request_id"],
+                        "chunk_id": "c0000",
+                        "status": "succeeded",
+                        "action": "repair_table_cell_tokens",
+                        "scope": "table_cell",
+                        "result_excerpt": (
+                            "| 模型 | 结果 | p |\n"
+                            "| --- | --- | --- |\n"
+                            "| BERT | 91.2% p<0.05 |  |\n"
+                        ),
+                    }
+                ],
+            }
+            validation = build_repair_validation(requests, repair_results)
+            self.assertEqual(validation["summary"]["passed_count"], 1)
+            self.assertEqual(validation["summary"]["structure_patch_context_count"], 1)
+            merge = build_repair_merge(
+                requests,
+                repair_results,
+                validation,
+                chunks,
+                chunk_dir,
+                repaired_chunk_dir=root / "repaired_chunks",
+                repaired_full_path=root / "repaired_full.md",
+            )
+            self.assertEqual(merge["summary"]["structure_patch_context_candidate_count"], 1)
+            self.assertEqual(merge["summary"]["applied_structure_patch_context_count"], 1)
+            applied_patch = next(
+                patch
+                for patch in merge["patches"]
+                if patch.get("request_id") == request["request_id"]
+            )
+            self.assertEqual(
+                applied_patch["merge_target"]["structure_patch_source_review_ids"],
+                ["tmc-0001-p1-b0000-r1c1"],
+            )
+            patch_review = build_repair_patch_review(merge)
+            self.assertEqual(patch_review["summary"]["structure_patch_review_count"], 1)
+            review = next(
+                review
+                for review in patch_review["patch_reviews"]
+                if review.get("request_id") == request["request_id"]
+            )
+            self.assertEqual(
+                review["merge_target"]["structure_patch_source_review_ids"],
+                ["tmc-0001-p1-b0000-r1c1"],
+            )
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
     def test_structure_qa_reports_page_boundary_fragments(self) -> None:
         doc_ir = DocumentIR(
             doc_id="boundary-sample",
@@ -4175,6 +4359,7 @@ class StructureIRTests(unittest.TestCase):
                     "repair_request_count": 4,
                     "ready_for_translation_backend_count": 3,
                     "manual_review_request_count": 1,
+                    "structure_patch_context_request_count": 1,
                 },
             },
             repair_results={
@@ -4198,6 +4383,7 @@ class StructureIRTests(unittest.TestCase):
                     "missing_locked_token_count": 1,
                     "table_shape_check_count": 2,
                     "table_shape_passed_count": 1,
+                    "structure_patch_context_count": 1,
                 },
             },
             repair_merge={
@@ -4210,8 +4396,23 @@ class StructureIRTests(unittest.TestCase):
                     "manual_merge_required_count": 1,
                     "conflict_count": 0,
                     "table_targeted_patch_count": 1,
+                    "structure_patch_context_candidate_count": 1,
+                    "applied_structure_patch_context_count": 1,
                     "strategy_counts": {"replace_markdown_table_by_evidence": 1, "manual_merge_required": 1},
                     "applied_strategy_counts": {"replace_markdown_table_by_evidence": 1},
+                },
+            },
+            repair_patch_review={
+                "schema_version": "repair-patch-review-v1",
+                "summary": {
+                    "patch_count": 1,
+                    "auto_merge_safe_count": 1,
+                    "effective_safe_count": 1,
+                    "review_required_count": 0,
+                    "publish_blocking_count": 0,
+                    "human_reviewed_count": 0,
+                    "table_patch_review_count": 1,
+                    "structure_patch_review_count": 1,
                 },
             },
             repair_merge_qa={
@@ -4368,6 +4569,7 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["repair_request_count"], 4)
         self.assertEqual(metrics["quality"]["repair_backend_request_count"], 3)
         self.assertEqual(metrics["quality"]["repair_manual_request_count"], 1)
+        self.assertEqual(metrics["quality"]["repair_request_structure_patch_context_count"], 1)
         self.assertEqual(metrics["quality"]["repair_executed_request_count"], 2)
         self.assertEqual(metrics["quality"]["repair_succeeded_count"], 1)
         self.assertEqual(metrics["quality"]["repair_failed_count"], 1)
@@ -4377,11 +4579,15 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["repair_validation_failed_count"], 1)
         self.assertEqual(metrics["quality"]["repair_validation_missing_locked_token_count"], 1)
         self.assertEqual(metrics["quality"]["repair_validation_table_shape_passed_count"], 1)
+        self.assertEqual(metrics["quality"]["repair_validation_structure_patch_context_count"], 1)
         self.assertEqual(metrics["quality"]["repair_merge_candidate_count"], 2)
         self.assertEqual(metrics["quality"]["repair_merge_applied_count"], 1)
         self.assertEqual(metrics["quality"]["repair_merge_patched_chunk_count"], 1)
         self.assertEqual(metrics["quality"]["repair_merge_manual_required_count"], 1)
         self.assertEqual(metrics["quality"]["repair_merge_table_targeted_patch_count"], 1)
+        self.assertEqual(metrics["quality"]["repair_merge_structure_patch_context_candidate_count"], 1)
+        self.assertEqual(metrics["quality"]["repair_merge_applied_structure_patch_context_count"], 1)
+        self.assertEqual(metrics["quality"]["repair_patch_review_structure_patch_count"], 1)
         self.assertTrue(metrics["quality"]["repair_publish_confirmed"])
         self.assertTrue(metrics["quality"]["repair_publish_published"])
         self.assertEqual(metrics["quality"]["repair_publish_open_issue_count"], 1)

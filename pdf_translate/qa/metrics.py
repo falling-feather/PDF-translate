@@ -624,6 +624,9 @@ def build_experiment_metrics(
     repair_request_count = _as_int(repair_request_summary.get("repair_request_count"))
     repair_backend_request_count = _as_int(repair_request_summary.get("ready_for_translation_backend_count"))
     repair_manual_request_count = _as_int(repair_request_summary.get("manual_review_request_count"))
+    repair_request_structure_patch_context_count = _as_int(
+        repair_request_summary.get("structure_patch_context_request_count")
+    )
     repair_executed_request_count = _as_int(repair_result_summary.get("executed_request_count"))
     repair_succeeded_count = _as_int(repair_result_summary.get("succeeded_count"))
     repair_failed_count = _as_int(repair_result_summary.get("failed_count"))
@@ -641,6 +644,9 @@ def build_experiment_metrics(
     )
     repair_validation_table_shape_check_count = _as_int(repair_validation_summary.get("table_shape_check_count"))
     repair_validation_table_shape_passed_count = _as_int(repair_validation_summary.get("table_shape_passed_count"))
+    repair_validation_structure_patch_context_count = _as_int(
+        repair_validation_summary.get("structure_patch_context_count")
+    )
     repair_merge_candidate_count = _as_int(repair_merge_summary.get("merge_candidate_count"))
     repair_merge_applied_count = _as_int(repair_merge_summary.get("applied_count"))
     repair_merge_patched_chunk_count = _as_int(repair_merge_summary.get("patched_chunk_count"))
@@ -648,6 +654,12 @@ def build_experiment_metrics(
     repair_merge_manual_required_count = _as_int(repair_merge_summary.get("manual_merge_required_count"))
     repair_merge_conflict_count = _as_int(repair_merge_summary.get("conflict_count"))
     repair_merge_table_targeted_patch_count = _as_int(repair_merge_summary.get("table_targeted_patch_count"))
+    repair_merge_structure_patch_context_candidate_count = _as_int(
+        repair_merge_summary.get("structure_patch_context_candidate_count")
+    )
+    repair_merge_applied_structure_patch_context_count = _as_int(
+        repair_merge_summary.get("applied_structure_patch_context_count")
+    )
     repair_merge_strategy_counts = _counter_dict(repair_merge_summary.get("strategy_counts"))
     repair_merge_applied_strategy_counts = _counter_dict(repair_merge_summary.get("applied_strategy_counts"))
     repair_patch_review_count = _as_int(repair_patch_review_summary.get("patch_count"))
@@ -657,6 +669,9 @@ def build_experiment_metrics(
     repair_patch_review_blocking_count = _as_int(repair_patch_review_summary.get("publish_blocking_count"))
     repair_patch_review_human_reviewed_count = _as_int(repair_patch_review_summary.get("human_reviewed_count"))
     repair_patch_review_table_count = _as_int(repair_patch_review_summary.get("table_patch_review_count"))
+    repair_patch_review_structure_patch_count = _as_int(
+        repair_patch_review_summary.get("structure_patch_review_count")
+    )
     repair_patch_review_decision_counts = _counter_dict(
         repair_patch_review_summary.get("default_decision_counts")
     )
@@ -983,6 +998,7 @@ def build_experiment_metrics(
             "repair_request_count": repair_request_count,
             "repair_backend_request_count": repair_backend_request_count,
             "repair_manual_request_count": repair_manual_request_count,
+            "repair_request_structure_patch_context_count": repair_request_structure_patch_context_count,
             "repair_executed_request_count": repair_executed_request_count,
             "repair_succeeded_count": repair_succeeded_count,
             "repair_failed_count": repair_failed_count,
@@ -996,6 +1012,7 @@ def build_experiment_metrics(
             "repair_validation_missing_locked_token_count": repair_validation_missing_locked_token_count,
             "repair_validation_table_shape_check_count": repair_validation_table_shape_check_count,
             "repair_validation_table_shape_passed_count": repair_validation_table_shape_passed_count,
+            "repair_validation_structure_patch_context_count": repair_validation_structure_patch_context_count,
             "repair_merge_candidate_count": repair_merge_candidate_count,
             "repair_merge_applied_count": repair_merge_applied_count,
             "repair_merge_patched_chunk_count": repair_merge_patched_chunk_count,
@@ -1003,6 +1020,12 @@ def build_experiment_metrics(
             "repair_merge_manual_required_count": repair_merge_manual_required_count,
             "repair_merge_conflict_count": repair_merge_conflict_count,
             "repair_merge_table_targeted_patch_count": repair_merge_table_targeted_patch_count,
+            "repair_merge_structure_patch_context_candidate_count": (
+                repair_merge_structure_patch_context_candidate_count
+            ),
+            "repair_merge_applied_structure_patch_context_count": (
+                repair_merge_applied_structure_patch_context_count
+            ),
             "repair_patch_review_count": repair_patch_review_count,
             "repair_patch_review_safe_count": repair_patch_review_safe_count,
             "repair_patch_review_effective_safe_count": repair_patch_review_effective_safe_count,
@@ -1010,6 +1033,7 @@ def build_experiment_metrics(
             "repair_patch_review_blocking_count": repair_patch_review_blocking_count,
             "repair_patch_review_human_reviewed_count": repair_patch_review_human_reviewed_count,
             "repair_patch_review_table_count": repair_patch_review_table_count,
+            "repair_patch_review_structure_patch_count": repair_patch_review_structure_patch_count,
             "repair_publish_confirmed": repair_publish_confirmed,
             "repair_publish_published": repair_publish_published,
             "repair_publish_open_issue_count": repair_publish_open_issue_count,
