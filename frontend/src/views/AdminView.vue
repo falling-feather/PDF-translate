@@ -300,6 +300,13 @@ function logout() {
   router.replace("/login");
 }
 
+function formatAdminError(payload) {
+  if (!payload) return "操作失败";
+  if (typeof payload === "string") return payload;
+  const detail = payload.detail && typeof payload.detail === "object" ? payload.detail : payload;
+  return detail.user_message || detail.message || detail.detail || detail.error || "操作失败";
+}
+
 async function adminDownload(jobId, kind, filename) {
   const r = await fetch(`/api/admin/jobs/${jobId}/artifact?kind=${kind}`, { headers: authHeaders() });
   if (!r.ok) {
@@ -312,6 +319,26 @@ async function adminDownload(jobId, kind, filename) {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+async function adminConfirmRepairPublish(job) {
+  const openIssues = Number(job.repair_publish_open_issue_count || 0);
+  const confirmText = openIssues > 0
+    ? `当前仍有 ${openIssues} 个开放合并问题。确认后会生成修复发布稿，但原始译文仍会保留。是否继续？`
+    : "确认生成修复发布稿？原始译文仍会保留。";
+  if (!window.confirm(confirmText)) return;
+  const r = await fetch(`/api/jobs/${job.job_id}/repair-publish/confirm`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatAdminError(data));
+    return;
+  }
+  await loadJobs();
+  await loadAudit();
+  alert("已生成修复发布稿");
 }
 
 onMounted(() => {
@@ -537,6 +564,7 @@ onMounted(() => {
                 <button type="button" class="linkish" :disabled="!j.partial_output_ready" @click="adminDownload(j.job_id, 'output_md', 'translated.md')">MD</button>
                 <button type="button" class="linkish" :disabled="!j.translated_pdf_ready" @click="adminDownload(j.job_id, 'output_pdf', 'translated.pdf')">译PDF</button>
                 <button type="button" class="linkish" :disabled="!j.repair_publish_report_ready" @click="adminDownload(j.job_id, 'repair_publish', 'repair_publish.md')">修复报告</button>
+                <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.repair_publish_report_ready || j.repair_published_full_ready" @click="adminConfirmRepairPublish(j)">确认修复</button>
                 <button type="button" class="linkish" :disabled="!j.repair_published_full_ready" @click="adminDownload(j.job_id, 'repair_published_full', 'published_full.md')">修复稿</button>
                 <button type="button" class="linkish" :disabled="!j.bundle_zip_ready" @click="adminDownload(j.job_id, 'bundle_zip', j.job_id + '.zip')">ZIP</button>
               </td>

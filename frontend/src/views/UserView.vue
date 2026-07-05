@@ -383,6 +383,27 @@ async function cancelJob(jid) {
   await pollJob(jid);
 }
 
+async function confirmRepairPublish(jid) {
+  const job = taskMap.value[jid] || {};
+  const openIssues = Number(job.repair_publish_open_issue_count || 0);
+  const confirmText = openIssues > 0
+    ? `当前仍有 ${openIssues} 个开放合并问题。确认后会生成修复发布稿，但原始译文仍会保留。是否继续？`
+    : "确认生成修复发布稿？原始译文仍会保留。";
+  if (!window.confirm(confirmText)) return;
+  const r = await fetch(`/api/jobs/${jid}/repair-publish/confirm`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatErrorPayload(data));
+    return;
+  }
+  taskMap.value = { ...taskMap.value, [jid]: data };
+  await loadMyJobs();
+  alert("已生成修复发布稿");
+}
+
 function filenameFromContentDisposition(cd) {
   if (!cd) return null;
   const u8 = cd.match(/filename\*=UTF-8''([^;]+)/i);
@@ -722,6 +743,15 @@ onUnmounted(() => {
                   @click="downloadFrom(`/api/jobs/${tid}/download/repair-publish.md`, `${tid}_repair_publish.md`)"
                 >
                   修复报告
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done'"
+                  type="button"
+                  class="btn"
+                  :disabled="!taskMap[tid].repair_publish_report_ready || taskMap[tid].repair_published_full_ready"
+                  @click="confirmRepairPublish(tid)"
+                >
+                  确认修复稿
                 </button>
                 <button
                   v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"

@@ -8,6 +8,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from pdf_translate.cli import app
+from pdf_translate.server.routes_web import _confirm_repair_publish_for_record
 from pdf_translate.server.jobs import JOB_STATUS_SCHEMA_VERSION, JobRegistry
 
 
@@ -218,6 +219,45 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertTrue(merged[0]["repair_published_full_ready"])
         self.assertGreater(merged[0]["repair_published_full_bytes"], 0)
         self.assertIn("repair_publish_open_issues", merged[0]["artifact_warnings"])
+
+    def test_confirm_repair_publish_for_completed_job_writes_publish_copy(self) -> None:
+        root = self._case_root("repair-publish-confirm")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        out = rec.work_dir / "output"
+        out.mkdir()
+        (out / "translated_full.md").write_text("original translation", encoding="utf-8")
+        (out / "repaired_full.md").write_text("repaired translation", encoding="utf-8")
+        (out / "repair_merge.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "repair-merge-v1",
+                    "summary": {
+                        "applied_count": 1,
+                        "patched_chunk_count": 1,
+                        "manual_merge_required_count": 0,
+                        "conflict_count": 0,
+                        "skipped_count": 0,
+                        "repaired_full_path": (out / "repaired_full.md").as_posix(),
+                    },
+                    "patches": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        registry.update(rec.job_id, status="done", phase="done")
+
+        report = _confirm_repair_publish_for_record(rec)
+
+        self.assertTrue((out / "published_full.md").is_file())
+        self.assertEqual((out / "published_full.md").read_text(encoding="utf-8"), "repaired translation")
+        self.assertTrue(report["summary"]["confirmed"])
+        self.assertTrue(report["summary"]["published"])
+        self.assertEqual(report["summary"]["publish_status"], "published")
+        merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
+        self.assertTrue(merged[0]["repair_publish_published"])
+        self.assertTrue(merged[0]["repair_published_full_ready"])
 
     def test_artifact_summary_marks_done_without_translation_inconsistent(self) -> None:
         root = self._case_root("artifact-inconsistent")

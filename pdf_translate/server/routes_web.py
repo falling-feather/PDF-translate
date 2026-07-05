@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
@@ -12,6 +14,7 @@ from fastapi.responses import FileResponse, Response
 from pdf_translate.error_codes import PdfTranslateError, error_info_from_exception, make_error_info
 from pdf_translate.export_filename import suggest_md_download_name, suggest_zip_bundle_name
 from pdf_translate.pipeline_cancel import cancel_flag_path
+from pdf_translate.qa.repair import write_repair_publish
 
 from pdf_translate.server.auth_deps import Principal, bearer_principal, mint_token, require_admin
 from pdf_translate.server import database
@@ -31,6 +34,42 @@ from pdf_translate.translators.registry import (
 
 PDF_UPLOAD_MAGIC = b"%PDF-"
 UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
+
+
+def _read_json_artifact(path: Path, *, missing_message: str, invalid_message: str) -> dict[str, Any]:
+    if not path.is_file() or path.stat().st_size == 0:
+        raise HTTPException(404, missing_message)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(409, invalid_message) from exc
+    if not isinstance(raw, dict):
+        raise HTTPException(409, invalid_message)
+    return raw
+
+
+def _confirm_repair_publish_for_record(rec: JobRecord) -> dict[str, Any]:
+    if rec.status != "done":
+        raise HTTPException(409, "任务尚未完成，不能确认发布修复稿")
+    out_dir = rec.work_dir / "output"
+    repair_merge = _read_json_artifact(
+        out_dir / "repair_merge.json",
+        missing_message="局部修复合并报告尚未生成",
+        invalid_message="局部修复合并报告无法解析",
+    )
+    report = write_repair_publish(
+        repair_merge,
+        out_dir / "repair_publish.json",
+        out_dir / "repair_publish.md",
+        confirm=True,
+        source_full_path=out_dir / "repaired_full.md",
+        published_full_path=out_dir / "published_full.md",
+        original_full_path=out_dir / "translated_full.md",
+    )
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    if not summary.get("published"):
+        raise HTTPException(409, str(summary.get("reason") or "修复发布稿未生成"))
+    return report
 
 
 def _is_deepseek_model_name(model_name: str | None) -> bool:
@@ -549,6 +588,36 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             media_type="text/markdown; charset=utf-8",
             headers={"Content-Disposition": cd},
         )
+
+    @api.post("/jobs/{job_id}/repair-publish/confirm")
+    def confirm_repair_publish(
+        job_id: str,
+        request: Request,
+        p: Principal = Depends(bearer_principal),
+    ) -> dict:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        report = _confirm_repair_publish_for_record(rec)
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        app_registry.update(job_id, message="已确认并生成局部修复发布稿")
+        database.log_audit(
+            action="job_repair_publish_confirm",
+            ip=client_ip(request),
+            user_id=p.user_id,
+            username=p.username,
+            job_id=job_id,
+            detail={
+                "publish_status": summary.get("publish_status"),
+                "open_merge_issue_count": summary.get("open_merge_issue_count"),
+                "published_full_path": summary.get("published_full_path"),
+                "rollback_available": summary.get("rollback_available"),
+            },
+        )
+        updated = app_registry.get(job_id) or rec
+        d = _job_dict(updated)
+        d["repair_publish_summary"] = summary
+        return d
 
     @api.get("/jobs/{job_id}/download/bundle.zip")
     def download_zip(job_id: str, p: Principal = Depends(bearer_principal)) -> Response:
