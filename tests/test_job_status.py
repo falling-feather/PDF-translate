@@ -529,12 +529,18 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertTrue(report["summary"]["published"])
         self.assertEqual(report["summary"]["publish_status"], "published")
         self.assertEqual(report["summary"]["applied_confirmed_count"], 1)
+        self.assertEqual(report["summary"]["structure_patch_count"], 1)
+        self.assertEqual(report["summary"]["structure_patch_applied_count"], 1)
+        self.assertEqual(report["summary"]["structure_patch_covered_cell_count"], 1)
         self.assertTrue((out / "table_structure_publish.json").is_file())
         self.assertTrue((out / "table_structure_publish.md").is_file())
         self.assertTrue((out / "table_reconstruction_confirmed.json").is_file())
         confirmed = json.loads((out / "table_reconstruction_confirmed.json").read_text(encoding="utf-8"))
         self.assertEqual(confirmed["summary"]["confirmed_merged_cell_candidate_count"], 1)
+        self.assertEqual(confirmed["summary"]["table_structure_patch_count"], 1)
+        self.assertEqual(confirmed["summary"]["table_structure_patch_covered_cell_count"], 1)
         self.assertEqual(confirmed["tables"][0]["confirmed_merged_cell_candidate_count"], 1)
+        self.assertEqual(confirmed["tables"][0]["structure_patches"][0]["source_review_id"], "tmc-0001-p1-b0000-r0c0")
         self.assertEqual(report["summary"]["translated_pdf_refresh_status"], "refreshed")
         self.assertEqual(report["summary"]["translated_pdf_table_reconstruction_source"], "confirmed")
         self.assertEqual(report["summary"]["translated_pdf_confirmed_candidate_reference_count"], 1)
@@ -545,8 +551,12 @@ class JobStatusSnapshotTests(unittest.TestCase):
             translated_pdf_report["summary"]["confirmed_merged_cell_candidate_reference_count"],
             1,
         )
+        self.assertEqual(translated_pdf_report["summary"]["table_structure_patch_reference_count"], 1)
         merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
         self.assertTrue(merged[0]["table_structure_publish_published"])
+        self.assertEqual(merged[0]["table_structure_patch_count"], 1)
+        self.assertEqual(merged[0]["table_structure_patch_applied_count"], 1)
+        self.assertEqual(merged[0]["table_structure_patch_covered_cell_count"], 1)
         self.assertTrue(merged[0]["table_reconstruction_confirmed_ready"])
 
     def test_confirm_table_structure_publish_blocks_and_removes_stale_copy(self) -> None:

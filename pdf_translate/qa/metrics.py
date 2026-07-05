@@ -294,6 +294,12 @@ def build_experiment_metrics(
     table_merged_cell_review_bbox_evidence_counts = _counter_dict(
         table_merged_cell_review_summary.get("bbox_evidence_counts")
     )
+    table_structure_patch_operation_counts = _counter_dict(
+        table_structure_publish_summary.get("structure_patch_operation_counts")
+    )
+    table_structure_patch_span_type_counts = _counter_dict(
+        table_structure_publish_summary.get("structure_patch_span_type_counts")
+    )
     table_structure_publish_confirmed = _as_bool(table_structure_publish_summary.get("confirmed"))
     table_structure_publish_published = _as_bool(table_structure_publish_summary.get("published"))
     table_structure_publish_blocking_count = _as_int(
@@ -301,6 +307,22 @@ def build_experiment_metrics(
     )
     table_structure_publish_applied_count = _as_int(
         table_structure_publish_summary.get("applied_confirmed_count")
+    )
+    table_structure_patch_count = _as_int(table_structure_publish_summary.get("structure_patch_count"))
+    table_structure_patch_applied_count = _as_int(
+        table_structure_publish_summary.get("structure_patch_applied_count")
+    )
+    table_structure_patch_table_count = _as_int(
+        table_structure_publish_summary.get("structure_patch_table_count")
+    )
+    table_structure_patch_cell_count = _as_int(
+        table_structure_publish_summary.get("structure_patch_cell_count")
+    )
+    table_structure_patch_covered_cell_count = _as_int(
+        table_structure_publish_summary.get("structure_patch_covered_cell_count")
+    )
+    table_structure_patch_rollback_available = _as_bool(
+        table_structure_publish_summary.get("structure_patch_rollback_available")
     )
     table_caption_linked_count = _as_int(table_reconstruction_summary.get("caption_linked_table_count"))
     table_footnote_linked_count = _as_int(table_reconstruction_summary.get("footnote_linked_table_count"))
@@ -683,6 +705,12 @@ def build_experiment_metrics(
     translated_pdf_structural_relation_reference_count = _as_int(
         translated_pdf_summary.get("structural_relation_reference_count")
     )
+    translated_pdf_table_structure_patch_reference_count = _as_int(
+        translated_pdf_summary.get("table_structure_patch_reference_count")
+    )
+    translated_pdf_table_structure_patch_covered_cell_reference_count = _as_int(
+        translated_pdf_summary.get("table_structure_patch_covered_cell_reference_count")
+    )
     max_english_residual_ratio = _as_float(translation_summary.get("max_english_residual_ratio"))
     total_elapsed_ms = _as_int(run_summary.get("total_elapsed_ms"))
     translation_elapsed_ms = _as_int(run_summary.get("translation_elapsed_ms"))
@@ -790,6 +818,12 @@ def build_experiment_metrics(
             "table_structure_publish_published": table_structure_publish_published,
             "table_structure_publish_blocking_count": table_structure_publish_blocking_count,
             "table_structure_publish_applied_count": table_structure_publish_applied_count,
+            "table_structure_patch_count": table_structure_patch_count,
+            "table_structure_patch_applied_count": table_structure_patch_applied_count,
+            "table_structure_patch_table_count": table_structure_patch_table_count,
+            "table_structure_patch_cell_count": table_structure_patch_cell_count,
+            "table_structure_patch_covered_cell_count": table_structure_patch_covered_cell_count,
+            "table_structure_patch_rollback_available": table_structure_patch_rollback_available,
             "table_caption_linked_count": table_caption_linked_count,
             "table_footnote_linked_count": table_footnote_linked_count,
             "table_footnote_binding_count": table_footnote_binding_count,
@@ -999,6 +1033,12 @@ def build_experiment_metrics(
             "translated_pdf_structural_relation_reference_count": (
                 translated_pdf_structural_relation_reference_count
             ),
+            "translated_pdf_table_structure_patch_reference_count": (
+                translated_pdf_table_structure_patch_reference_count
+            ),
+            "translated_pdf_table_structure_patch_covered_cell_reference_count": (
+                translated_pdf_table_structure_patch_covered_cell_reference_count
+            ),
             "max_english_residual_ratio": max_english_residual_ratio,
         },
         "performance": {
@@ -1100,6 +1140,14 @@ def build_experiment_metrics(
             "table_structure_publish_rate": _rate(
                 int(table_structure_publish_published),
                 int(table_structure_publish_confirmed),
+            ),
+            "table_structure_patch_apply_rate": _rate(
+                table_structure_patch_applied_count,
+                table_structure_patch_count,
+            ),
+            "table_structure_patch_per_confirmed_candidate": _rate(
+                table_structure_patch_count,
+                table_structure_publish_applied_count,
             ),
             "table_numeric_cell_rate": _rate(table_numeric_cell_count, table_cell_count),
             "table_caption_link_rate": _rate(table_caption_linked_count, table_count),
@@ -1398,6 +1446,8 @@ def build_experiment_metrics(
             "table_merged_cell_review_bbox_evidence_counts": (
                 table_merged_cell_review_bbox_evidence_counts
             ),
+            "table_structure_patch_operation_counts": table_structure_patch_operation_counts,
+            "table_structure_patch_span_type_counts": table_structure_patch_span_type_counts,
             "table_chain_reject_reason_counts": table_chain_reject_reason_counts,
             "table_chain_reject_reason_category_counts": table_chain_reject_reason_category_counts,
             "table_chain_warning_reason_counts": table_chain_warning_reason_counts,

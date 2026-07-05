@@ -328,6 +328,11 @@ def _table_cell_token_errors(
             for candidate in table.get("merged_cell_candidates") or []
             if isinstance(candidate, dict)
         ]
+        table_structure_patches = [
+            patch
+            for patch in table.get("structure_patches") or []
+            if isinstance(patch, dict)
+        ]
         for cell in table.get("cells") or []:
             if not isinstance(cell, dict):
                 continue
@@ -353,6 +358,8 @@ def _table_cell_token_errors(
                     "source_table_shape": source_shape,
                     "merged_cell_candidates": merged_cell_candidates[:20],
                     "merged_cell_candidate_count": len(merged_cell_candidates),
+                    "table_structure_patches": table_structure_patches[:20],
+                    "table_structure_patch_count": len(table_structure_patches),
                     "row_index": row_index,
                     "column_index": column_index,
                     "role": cell.get("role") or "data",

@@ -518,6 +518,13 @@ class JobRegistry:
         table_structure_publish_status = str(table_publish_summary.get("publish_status") or "")
         table_structure_publish_blocking_count = self._as_int(table_publish_summary.get("blocking_review_count"))
         table_structure_publish_applied_count = self._as_int(table_publish_summary.get("applied_confirmed_count"))
+        table_structure_patch_count = self._as_int(table_publish_summary.get("structure_patch_count"))
+        table_structure_patch_applied_count = self._as_int(
+            table_publish_summary.get("structure_patch_applied_count")
+        )
+        table_structure_patch_covered_cell_count = self._as_int(
+            table_publish_summary.get("structure_patch_covered_cell_count")
+        )
         table_structure_publish_rollback_available = bool(table_publish_summary.get("rollback_available"))
         if repair_publish_open_issue_count > 0:
             warnings.append("repair_publish_open_issues")
@@ -603,6 +610,9 @@ class JobRegistry:
             "table_structure_publish_status": table_structure_publish_status,
             "table_structure_publish_blocking_count": table_structure_publish_blocking_count,
             "table_structure_publish_applied_count": table_structure_publish_applied_count,
+            "table_structure_patch_count": table_structure_patch_count,
+            "table_structure_patch_applied_count": table_structure_patch_applied_count,
+            "table_structure_patch_covered_cell_count": table_structure_patch_covered_cell_count,
             "table_structure_publish_rollback_available": table_structure_publish_rollback_available,
             "table_reconstruction_confirmed_ready": table_reconstruction_confirmed_bytes > 0,
             "table_reconstruction_confirmed_bytes": table_reconstruction_confirmed_bytes,
@@ -782,6 +792,9 @@ class JobRegistry:
                 "table_structure_publish_status": "",
                 "table_structure_publish_blocking_count": 0,
                 "table_structure_publish_applied_count": 0,
+                "table_structure_patch_count": 0,
+                "table_structure_patch_applied_count": 0,
+                "table_structure_patch_covered_cell_count": 0,
                 "table_structure_publish_rollback_available": False,
                 "table_reconstruction_confirmed_ready": False,
                 "table_reconstruction_confirmed_bytes": 0,

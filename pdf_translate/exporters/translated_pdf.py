@@ -47,6 +47,11 @@ TABLE_RECONSTRUCTION_SUMMARY_FIELDS = [
     "needs_revision_merged_cell_candidate_count",
     "pending_merged_cell_candidate_count",
     "tables_with_confirmed_merged_cells",
+    "table_structure_patch_count",
+    "table_structure_patch_applied_count",
+    "table_structure_patch_table_count",
+    "table_structure_patch_cell_count",
+    "table_structure_patch_covered_cell_count",
 ]
 
 
@@ -262,6 +267,15 @@ def _table_structure_context(chunk: TextChunk, table_reconstruction: dict[str, A
         "confirmed_merged_cell_candidate_reference_count": sum(
             len(table.get("confirmed_merged_cell_candidates") or []) for table in selected
         ),
+        "table_structure_patch_reference_count": sum(
+            len(table.get("structure_patches") or []) for table in selected
+        ),
+        "table_structure_patch_covered_cell_reference_count": sum(
+            len(patch.get("covered_cells") or [])
+            for table in selected
+            for patch in table.get("structure_patches") or []
+            if isinstance(patch, dict)
+        ),
         "continued_table_group_ids": [
             str(group.get("group_id") or "") for group in selected_groups if str(group.get("group_id") or "")
         ],
@@ -294,6 +308,10 @@ def _structure_context_lines(chunk_report: dict[str, Any]) -> list[str]:
     confirmed_candidate_count = int(chunk_report.get("confirmed_merged_cell_candidate_reference_count") or 0)
     if confirmed_candidate_count:
         lines.append(f"Confirmed merged-cell candidates: {confirmed_candidate_count}")
+    patch_count = int(chunk_report.get("table_structure_patch_reference_count") or 0)
+    if patch_count:
+        covered_count = int(chunk_report.get("table_structure_patch_covered_cell_reference_count") or 0)
+        lines.append(f"Table structure patches: {patch_count}, covered cells={covered_count}")
     group_ids = [str(item) for item in chunk_report.get("continued_table_group_ids") or [] if str(item)]
     if group_ids:
         lines.append(
@@ -519,6 +537,8 @@ def build_translated_pdf_report(
     source_footnote_bound_cell_count = 0
     merged_cell_candidate_reference_count = 0
     confirmed_merged_cell_candidate_reference_count = 0
+    table_structure_patch_reference_count = 0
+    table_structure_patch_covered_cell_reference_count = 0
     continued_table_group_reference_count = 0
     structural_relation_reference_count = 0
 
@@ -536,6 +556,7 @@ def build_translated_pdf_report(
                 "source_footnote_cell_binding_count",
                 "merged_cell_candidate_reference_count",
                 "confirmed_merged_cell_candidate_reference_count",
+                "table_structure_patch_reference_count",
                 "continued_table_group_count",
                 "structural_relation_count",
             )
@@ -551,6 +572,12 @@ def build_translated_pdf_report(
         merged_cell_candidate_reference_count += int(structure_context["merged_cell_candidate_reference_count"])
         confirmed_merged_cell_candidate_reference_count += int(
             structure_context["confirmed_merged_cell_candidate_reference_count"]
+        )
+        table_structure_patch_reference_count += int(
+            structure_context["table_structure_patch_reference_count"]
+        )
+        table_structure_patch_covered_cell_reference_count += int(
+            structure_context["table_structure_patch_covered_cell_reference_count"]
         )
         continued_table_group_reference_count += int(structure_context["continued_table_group_count"])
         structural_relation_reference_count += int(structure_context["structural_relation_count"])
@@ -598,6 +625,10 @@ def build_translated_pdf_report(
             "merged_cell_candidate_reference_count": merged_cell_candidate_reference_count,
             "confirmed_merged_cell_candidate_reference_count": (
                 confirmed_merged_cell_candidate_reference_count
+            ),
+            "table_structure_patch_reference_count": table_structure_patch_reference_count,
+            "table_structure_patch_covered_cell_reference_count": (
+                table_structure_patch_covered_cell_reference_count
             ),
             "continued_table_group_reference_count": continued_table_group_reference_count,
             "structural_relation_reference_count": structural_relation_reference_count,

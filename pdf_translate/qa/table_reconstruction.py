@@ -13,6 +13,7 @@ from pdf_translate.extractors.document_ir import BlockIR, DocumentIR
 SCHEMA_VERSION = "table-reconstruction-v1"
 MERGED_CELL_REVIEW_SCHEMA_VERSION = "table-merged-cell-review-v1"
 TABLE_STRUCTURE_PUBLISH_SCHEMA_VERSION = "table-structure-publish-v1"
+TABLE_STRUCTURE_PATCH_SCHEMA_VERSION = "table-structure-patch-v1"
 
 _NUMBER_RE = re.compile(r"\b\d+(?:[.,]\d+)?%?")
 _UNIT_RE = re.compile(
@@ -1935,6 +1936,157 @@ def _table_merged_cell_review_index(review_report: dict[str, Any] | None) -> dic
     return out
 
 
+def _safe_patch_id_part(value: Any) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip()).strip("-")
+    return text or "table"
+
+
+def _span_covered_cells(candidate: dict[str, Any]) -> list[dict[str, int]]:
+    row_index = _nonnegative_int(candidate.get("row_index", candidate.get("row")))
+    column_index = _nonnegative_int(candidate.get("column_index", candidate.get("col", candidate.get("column"))))
+    if row_index is None or column_index is None:
+        return []
+    covered = [
+        cell
+        for cell in _normalised_covered_cells(candidate.get("covered_cells"))
+        if not (cell.get("row_index") == row_index and cell.get("column_index") == column_index)
+    ]
+    if covered:
+        return covered
+    row_span = _positive_int(candidate.get("row_span")) or 1
+    column_span = _positive_int(candidate.get("column_span")) or 1
+    span_type = str(candidate.get("span_type") or candidate.get("type") or "").strip()
+    if span_type == "colspan" and column_span > 1:
+        return [
+            {"row_index": row_index, "column_index": column}
+            for column in range(column_index + 1, column_index + column_span)
+        ]
+    if span_type == "rowspan" and row_span > 1:
+        return [
+            {"row_index": row_index + offset, "column_index": column_index}
+            for offset in range(1, row_span)
+        ]
+    return []
+
+
+def _cell_lookup(table: dict[str, Any]) -> dict[tuple[int, int], dict[str, Any]]:
+    out: dict[tuple[int, int], dict[str, Any]] = {}
+    cells = table.get("cells") if isinstance(table.get("cells"), list) else []
+    for cell in cells:
+        if not isinstance(cell, dict):
+            continue
+        row = _nonnegative_int(cell.get("row_index"))
+        column = _nonnegative_int(cell.get("column_index"))
+        if row is None or column is None:
+            continue
+        out[(row, column)] = cell
+    return out
+
+
+def _build_table_structure_patch(
+    table: dict[str, Any],
+    candidate: dict[str, Any],
+    patch_index: int,
+) -> dict[str, Any] | None:
+    row_index = _nonnegative_int(candidate.get("row_index", candidate.get("row")))
+    column_index = _nonnegative_int(candidate.get("column_index", candidate.get("col", candidate.get("column"))))
+    if row_index is None or column_index is None:
+        return None
+    span_type = str(candidate.get("span_type") or candidate.get("type") or "unknown").strip() or "unknown"
+    row_span = _positive_int(candidate.get("row_span")) or 1
+    column_span = _positive_int(candidate.get("column_span")) or 1
+    if span_type not in {"colspan", "rowspan"}:
+        return None
+    if row_span <= 1 and column_span <= 1:
+        return None
+    table_id = str(table.get("table_id") or table.get("block_id") or "")
+    cell_map = _cell_lookup(table)
+    anchor_cell = cell_map.get((row_index, column_index), {})
+    covered_cells = _span_covered_cells(candidate)
+    evidence = candidate.get("bbox_evidence") if isinstance(candidate.get("bbox_evidence"), dict) else {}
+    patch_id = f"tsp-{patch_index:04d}-{_safe_patch_id_part(table_id)}-r{row_index}c{column_index}"
+    return {
+        "schema_version": TABLE_STRUCTURE_PATCH_SCHEMA_VERSION,
+        "patch_id": patch_id,
+        "patch_type": "merged_cell_span",
+        "operation": "apply_confirmed_merged_cell_span",
+        "application_scope": "cell_metadata",
+        "applied": True,
+        "rollback_available": True,
+        "table_id": table_id,
+        "block_id": str(table.get("block_id") or table_id),
+        "page_no": int(table.get("page_no") or 0),
+        "source_review_id": str(candidate.get("review_id") or ""),
+        "source_candidate_status": str(candidate.get("candidate_status") or ""),
+        "source_reason": str(candidate.get("reason") or ""),
+        "source_visual_evidence_level": str(candidate.get("visual_evidence_level") or ""),
+        "bbox_evidence_status": str(evidence.get("status") or "missing"),
+        "anchor_cell": {
+            "row_index": row_index,
+            "column_index": column_index,
+            "text": _clip(anchor_cell.get("text") or candidate.get("text") or ""),
+            "role": str(anchor_cell.get("role") or ""),
+        },
+        "span": {
+            "span_type": span_type,
+            "row_span": row_span,
+            "column_span": column_span,
+        },
+        "covered_cells": covered_cells,
+        "rollback_baseline": {
+            "source_schema_version": SCHEMA_VERSION,
+            "preserve_original_cells": True,
+            "original_anchor_cell_text": str(anchor_cell.get("text") or ""),
+            "original_covered_cell_count": len(covered_cells),
+        },
+    }
+
+
+def _apply_table_structure_patches_to_cells(
+    table: dict[str, Any],
+    patches: list[dict[str, Any]],
+) -> dict[str, int]:
+    cell_map = _cell_lookup(table)
+    patched: set[tuple[int, int]] = set()
+    covered: set[tuple[int, int]] = set()
+    for patch in patches:
+        anchor = patch.get("anchor_cell") if isinstance(patch.get("anchor_cell"), dict) else {}
+        row_index = _nonnegative_int(anchor.get("row_index"))
+        column_index = _nonnegative_int(anchor.get("column_index"))
+        if row_index is None or column_index is None:
+            continue
+        span = patch.get("span") if isinstance(patch.get("span"), dict) else {}
+        patch_id = str(patch.get("patch_id") or "")
+        anchor_cell = cell_map.get((row_index, column_index))
+        if isinstance(anchor_cell, dict):
+            anchor_cell["structure_patch_role"] = "anchor"
+            anchor_cell["merged_cell_patch_id"] = patch_id
+            anchor_cell["effective_row_span"] = _positive_int(span.get("row_span")) or 1
+            anchor_cell["effective_column_span"] = _positive_int(span.get("column_span")) or 1
+            anchor_cell["covered_cells"] = patch.get("covered_cells") or []
+            patched.add((row_index, column_index))
+        for covered_cell in patch.get("covered_cells") or []:
+            if not isinstance(covered_cell, dict):
+                continue
+            covered_row = _nonnegative_int(covered_cell.get("row_index"))
+            covered_column = _nonnegative_int(covered_cell.get("column_index"))
+            if covered_row is None or covered_column is None:
+                continue
+            cell = cell_map.get((covered_row, covered_column))
+            if isinstance(cell, dict):
+                cell["structure_patch_role"] = "covered"
+                cell["covered_by_merged_cell_patch_id"] = patch_id
+                cell["covered_by_row_index"] = row_index
+                cell["covered_by_column_index"] = column_index
+                cell["suppress_in_render"] = True
+                covered.add((covered_row, covered_column))
+    return {
+        "anchor_cell_count": len(patched),
+        "covered_cell_count": len(covered),
+        "patched_cell_count": len(patched | covered),
+    }
+
+
 def build_confirmed_table_reconstruction(
     table_reconstruction: dict[str, Any] | None,
     table_merged_cell_review: dict[str, Any] | None,
@@ -1951,6 +2103,9 @@ def build_confirmed_table_reconstruction(
     pending_candidate_count = 0
     tables_updated_count = 0
     tables_with_confirmed_count = 0
+    table_structure_patches: list[dict[str, Any]] = []
+    structure_patch_cell_count = 0
+    structure_patch_covered_cell_count = 0
 
     for table in tables:
         if not isinstance(table, dict):
@@ -2008,10 +2163,33 @@ def build_confirmed_table_reconstruction(
             tables_updated_count += 1
         if confirmed_candidates:
             tables_with_confirmed_count += 1
+        table_patches: list[dict[str, Any]] = []
+        for candidate in confirmed_candidates:
+            patch = _build_table_structure_patch(
+                table,
+                candidate,
+                len(table_structure_patches) + 1,
+            )
+            if patch is None:
+                continue
+            table_patches.append(patch)
+            table_structure_patches.append(patch)
+        patch_application = _apply_table_structure_patches_to_cells(table, table_patches)
+        table_patch_cell_count = sum(1 + len(patch.get("covered_cells") or []) for patch in table_patches)
+        table_patch_covered_cell_count = sum(len(patch.get("covered_cells") or []) for patch in table_patches)
+        structure_patch_cell_count += table_patch_cell_count
+        structure_patch_covered_cell_count += table_patch_covered_cell_count
         table["merged_cell_candidates"] = updated_candidates
         table["confirmed_merged_cell_candidates"] = confirmed_candidates
         table["confirmed_merged_cell_candidate_count"] = len(confirmed_candidates)
         table["merged_cell_candidate_status_counts"] = _count_candidate_statuses(updated_candidates)
+        table["structure_patches"] = table_patches
+        table["table_structure_patch_count"] = len(table_patches)
+        table["table_structure_patch_cell_count"] = table_patch_cell_count
+        table["table_structure_patch_covered_cell_count"] = table_patch_covered_cell_count
+        table["table_structure_patch_materialized_cell_count"] = int(
+            patch_application.get("patched_cell_count") or 0
+        )
 
     summary = confirmed.get("summary") if isinstance(confirmed.get("summary"), dict) else {}
     summary.update(
@@ -2023,10 +2201,37 @@ def build_confirmed_table_reconstruction(
             "pending_merged_cell_candidate_count": pending_candidate_count,
             "tables_updated_by_review_count": tables_updated_count,
             "tables_with_confirmed_merged_cells": tables_with_confirmed_count,
+            "table_structure_patch_schema_version": TABLE_STRUCTURE_PATCH_SCHEMA_VERSION,
+            "table_structure_patch_count": len(table_structure_patches),
+            "table_structure_patch_applied_count": len(
+                [patch for patch in table_structure_patches if patch.get("applied")]
+            ),
+            "table_structure_patch_table_count": len(
+                {
+                    str(patch.get("table_id") or "")
+                    for patch in table_structure_patches
+                    if str(patch.get("table_id") or "")
+                }
+            ),
+            "table_structure_patch_cell_count": structure_patch_cell_count,
+            "table_structure_patch_covered_cell_count": structure_patch_covered_cell_count,
+            "table_structure_patch_operation_counts": _count_values(
+                [str(patch.get("operation") or "unknown") for patch in table_structure_patches]
+            ),
+            "table_structure_patch_span_type_counts": _count_values(
+                [
+                    str((patch.get("span") or {}).get("span_type") or "unknown")
+                    for patch in table_structure_patches
+                    if isinstance(patch, dict)
+                ]
+            ),
+            "table_structure_patch_rollback_available": bool(table_structure_patches),
         }
     )
     confirmed["schema_version"] = SCHEMA_VERSION
     confirmed["confirmation_schema_version"] = TABLE_STRUCTURE_PUBLISH_SCHEMA_VERSION
+    confirmed["table_structure_patch_schema_version"] = TABLE_STRUCTURE_PATCH_SCHEMA_VERSION
+    confirmed["table_structure_patches"] = table_structure_patches
     confirmed["summary"] = summary
     return confirmed
 
@@ -2055,6 +2260,7 @@ def effective_table_reconstruction_view(
     )
     tables = view.get("tables") if isinstance(view.get("tables"), list) else []
     merged_candidates: list[dict[str, Any]] = []
+    structure_patches: list[dict[str, Any]] = []
     confirmed_candidate_count = 0
     tables_with_confirmed = 0
     for table in tables:
@@ -2085,6 +2291,10 @@ def effective_table_reconstruction_view(
         if confirmed_count:
             tables_with_confirmed += 1
         merged_candidates.extend(effective_candidates)
+        patches = [patch for patch in table.get("structure_patches") or [] if isinstance(patch, dict)]
+        if patches:
+            table["table_structure_patch_count"] = len(patches)
+            structure_patches.extend(patches)
 
     summary = view.get("summary") if isinstance(view.get("summary"), dict) else {}
     summary["table_structure_source"] = inferred_source
@@ -2102,6 +2312,38 @@ def effective_table_reconstruction_view(
     if inferred_source == "confirmed":
         summary["confirmed_merged_cell_candidate_count"] = confirmed_candidate_count
         summary["tables_with_confirmed_merged_cells"] = tables_with_confirmed
+        summary["table_structure_patch_schema_version"] = str(
+            view.get("table_structure_patch_schema_version") or TABLE_STRUCTURE_PATCH_SCHEMA_VERSION
+        )
+        summary["table_structure_patch_count"] = len(structure_patches)
+        summary["table_structure_patch_applied_count"] = len(
+            [patch for patch in structure_patches if patch.get("applied")]
+        )
+        summary["table_structure_patch_table_count"] = len(
+            {
+                str(patch.get("table_id") or "")
+                for patch in structure_patches
+                if str(patch.get("table_id") or "")
+            }
+        )
+        summary["table_structure_patch_cell_count"] = sum(
+            1 + len(patch.get("covered_cells") or []) for patch in structure_patches
+        )
+        summary["table_structure_patch_covered_cell_count"] = sum(
+            len(patch.get("covered_cells") or []) for patch in structure_patches
+        )
+        summary["table_structure_patch_operation_counts"] = _count_values(
+            [str(patch.get("operation") or "unknown") for patch in structure_patches]
+        )
+        summary["table_structure_patch_span_type_counts"] = _count_values(
+            [
+                str((patch.get("span") or {}).get("span_type") or "unknown")
+                for patch in structure_patches
+                if isinstance(patch, dict)
+            ]
+        )
+        summary["table_structure_patch_rollback_available"] = bool(structure_patches)
+        view["table_structure_patches"] = deepcopy(structure_patches)
     view["summary"] = summary
     return view
 
@@ -2177,6 +2419,39 @@ def build_table_structure_publish(
                 confirmed_summary.get("tables_updated_by_review_count")
             )
             or 0,
+            "structure_patch_count": _nonnegative_int(
+                confirmed_summary.get("table_structure_patch_count")
+            )
+            or 0,
+            "structure_patch_applied_count": _nonnegative_int(
+                confirmed_summary.get("table_structure_patch_applied_count")
+            )
+            or 0,
+            "structure_patch_table_count": _nonnegative_int(
+                confirmed_summary.get("table_structure_patch_table_count")
+            )
+            or 0,
+            "structure_patch_cell_count": _nonnegative_int(
+                confirmed_summary.get("table_structure_patch_cell_count")
+            )
+            or 0,
+            "structure_patch_covered_cell_count": _nonnegative_int(
+                confirmed_summary.get("table_structure_patch_covered_cell_count")
+            )
+            or 0,
+            "structure_patch_operation_counts": confirmed_summary.get(
+                "table_structure_patch_operation_counts"
+            )
+            if isinstance(confirmed_summary.get("table_structure_patch_operation_counts"), dict)
+            else {},
+            "structure_patch_span_type_counts": confirmed_summary.get(
+                "table_structure_patch_span_type_counts"
+            )
+            if isinstance(confirmed_summary.get("table_structure_patch_span_type_counts"), dict)
+            else {},
+            "structure_patch_rollback_available": bool(
+                confirmed_summary.get("table_structure_patch_rollback_available")
+            ),
             "rollback_available": True,
             "published_reconstruction_path": published_reconstruction_path.as_posix()
             if published and published_reconstruction_path is not None
@@ -2203,13 +2478,17 @@ def table_structure_publish_to_markdown(report: dict[str, Any]) -> str:
         f"| 已拒绝候选 | {summary.get('rejected_count', 0)} |",
         f"| 需修改/复查 | {summary.get('needs_revision_count', 0)} |",
         f"| 已应用确认候选 | {summary.get('applied_confirmed_count', 0)} |",
+        f"| 结构补丁数 | {summary.get('structure_patch_count', 0)} |",
+        f"| 已应用结构补丁 | {summary.get('structure_patch_applied_count', 0)} |",
+        f"| 补丁覆盖单元格 | {summary.get('structure_patch_covered_cell_count', 0)} |",
+        f"| 补丁可回滚 | {bool(summary.get('structure_patch_rollback_available'))} |",
         f"| 更新表格数 | {summary.get('tables_updated_count', 0)} |",
         f"| 发布副本 | {summary.get('published_reconstruction_path') or '-'} |",
         "",
         "> 说明：本报告只生成确认后的表格结构副本，不覆盖原始 table_reconstruction.json；PDF 重排和正式替换仍需后续流程消费该副本。",
         "",
     ]
-    lines[15:15] = [
+    lines[19:19] = [
         f"| PDF 刷新状态 | {summary.get('translated_pdf_refresh_status') or '-'} |",
         f"| PDF 表格结构来源 | {summary.get('translated_pdf_table_reconstruction_source') or '-'} |",
         (

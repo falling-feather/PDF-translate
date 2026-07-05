@@ -1224,6 +1224,12 @@ class StructureIRTests(unittest.TestCase):
                             "candidate_status": "candidate",
                         },
                     ],
+                    "cells": [
+                        {"row_index": 0, "column_index": 0, "text": "Dataset metrics", "role": "header"},
+                        {"row_index": 0, "column_index": 1, "text": "", "role": "header"},
+                        {"row_index": 0, "column_index": 2, "text": "", "role": "header"},
+                        {"row_index": 1, "column_index": 0, "text": "BERT", "role": "row_header"},
+                    ],
                 }
             ],
         }
@@ -1255,6 +1261,23 @@ class StructureIRTests(unittest.TestCase):
         self.assertTrue(table["confirmed_merged_cell_candidates"][0]["effective_for_publish"])
         self.assertEqual(table["merged_cell_candidates"][1]["candidate_status"], "rejected")
         self.assertFalse(table["merged_cell_candidates"][1]["effective_for_publish"])
+        self.assertEqual(confirmed["summary"]["table_structure_patch_count"], 1)
+        self.assertEqual(confirmed["summary"]["table_structure_patch_applied_count"], 1)
+        self.assertEqual(confirmed["summary"]["table_structure_patch_covered_cell_count"], 2)
+        self.assertTrue(confirmed["summary"]["table_structure_patch_rollback_available"])
+        patch = confirmed["table_structure_patches"][0]
+        self.assertEqual(patch["patch_type"], "merged_cell_span")
+        self.assertEqual(patch["operation"], "apply_confirmed_merged_cell_span")
+        self.assertEqual(patch["source_review_id"], "tmc-0001-p1-b0000-r0c0")
+        self.assertEqual(patch["span"]["span_type"], "colspan")
+        self.assertEqual(patch["span"]["column_span"], 3)
+        self.assertEqual(len(patch["covered_cells"]), 2)
+        self.assertTrue(patch["rollback_available"])
+        self.assertEqual(table["structure_patches"][0]["patch_id"], patch["patch_id"])
+        self.assertEqual(table["cells"][0]["structure_patch_role"], "anchor")
+        self.assertEqual(table["cells"][0]["effective_column_span"], 3)
+        self.assertEqual(table["cells"][1]["structure_patch_role"], "covered")
+        self.assertTrue(table["cells"][1]["suppress_in_render"])
 
         root = Path.cwd() / "test-output" / "table-structure-publish"
         if root.exists():
@@ -1271,9 +1294,15 @@ class StructureIRTests(unittest.TestCase):
             )
             self.assertTrue(report["summary"]["published"])
             self.assertEqual(report["summary"]["applied_confirmed_count"], 1)
+            self.assertEqual(report["summary"]["structure_patch_count"], 1)
+            self.assertEqual(report["summary"]["structure_patch_applied_count"], 1)
+            self.assertEqual(report["summary"]["structure_patch_covered_cell_count"], 2)
+            self.assertTrue(report["summary"]["structure_patch_rollback_available"])
             self.assertTrue((root / "table_reconstruction_confirmed.json").is_file())
             published = json.loads((root / "table_reconstruction_confirmed.json").read_text(encoding="utf-8"))
             self.assertEqual(published["tables"][0]["confirmed_merged_cell_candidate_count"], 1)
+            self.assertEqual(published["summary"]["table_structure_patch_count"], 1)
+            self.assertEqual(published["tables"][0]["table_structure_patch_count"], 1)
         finally:
             if root.exists():
                 shutil.rmtree(root)
@@ -1327,6 +1356,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(preferred["summary"]["table_structure_source"], "confirmed")
             self.assertEqual(preferred["summary"]["merged_cell_candidate_count"], 1)
             self.assertEqual(preferred["summary"]["confirmed_merged_cell_candidate_count"], 1)
+            self.assertEqual(preferred["summary"]["table_structure_patch_count"], 0)
             self.assertEqual(len(preferred["tables"][0]["merged_cell_candidates"]), 1)
             self.assertEqual(preferred["tables"][0]["raw_merged_cell_candidate_count"], 2)
             self.assertEqual(raw["summary"]["merged_cell_candidate_count"], 2)
@@ -3939,6 +3969,25 @@ class StructureIRTests(unittest.TestCase):
                     "bbox_evidence_counts": {"span_reported": 1, "estimated": 1},
                 },
             },
+            table_structure_publish={
+                "schema_version": "table-structure-publish-v1",
+                "summary": {
+                    "confirmed": True,
+                    "published": True,
+                    "blocking_review_count": 0,
+                    "applied_confirmed_count": 2,
+                    "structure_patch_count": 2,
+                    "structure_patch_applied_count": 2,
+                    "structure_patch_table_count": 1,
+                    "structure_patch_cell_count": 5,
+                    "structure_patch_covered_cell_count": 3,
+                    "structure_patch_rollback_available": True,
+                    "structure_patch_operation_counts": {
+                        "apply_confirmed_merged_cell_span": 2,
+                    },
+                    "structure_patch_span_type_counts": {"colspan": 1, "rowspan": 1},
+                },
+            },
             ocr_tasks={
                 "schema_version": "ocr-task-manifest-v1",
                 "summary": {
@@ -4200,6 +4249,8 @@ class StructureIRTests(unittest.TestCase):
                     "source_footnote_cell_binding_count": 1,
                     "continued_table_group_reference_count": 1,
                     "structural_relation_reference_count": 2,
+                    "table_structure_patch_reference_count": 2,
+                    "table_structure_patch_covered_cell_reference_count": 3,
                 },
             },
             run_metrics={
@@ -4349,6 +4400,8 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["translated_pdf_source_footnote_cell_binding_count"], 1)
         self.assertEqual(metrics["quality"]["translated_pdf_continued_table_group_reference_count"], 1)
         self.assertEqual(metrics["quality"]["translated_pdf_structural_relation_reference_count"], 2)
+        self.assertEqual(metrics["quality"]["translated_pdf_table_structure_patch_reference_count"], 2)
+        self.assertEqual(metrics["quality"]["translated_pdf_table_structure_patch_covered_cell_reference_count"], 3)
         self.assertEqual(metrics["rates"]["translated_pdf_structure_context_chunk_rate"], 0.5)
         self.assertEqual(metrics["quality"]["table_shape_error_count"], 1)
         self.assertEqual(metrics["quality"]["table_cell_token_error_count"], 2)
@@ -4393,6 +4446,15 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["table_merged_cell_review_rejected_count"], 0)
         self.assertEqual(metrics["quality"]["table_merged_cell_review_human_reviewed_count"], 0)
         self.assertEqual(metrics["quality"]["table_merged_cell_review_needs_revision_count"], 0)
+        self.assertTrue(metrics["quality"]["table_structure_publish_confirmed"])
+        self.assertTrue(metrics["quality"]["table_structure_publish_published"])
+        self.assertEqual(metrics["quality"]["table_structure_publish_applied_count"], 2)
+        self.assertEqual(metrics["quality"]["table_structure_patch_count"], 2)
+        self.assertEqual(metrics["quality"]["table_structure_patch_applied_count"], 2)
+        self.assertEqual(metrics["quality"]["table_structure_patch_table_count"], 1)
+        self.assertEqual(metrics["quality"]["table_structure_patch_cell_count"], 5)
+        self.assertEqual(metrics["quality"]["table_structure_patch_covered_cell_count"], 3)
+        self.assertTrue(metrics["quality"]["table_structure_patch_rollback_available"])
         self.assertEqual(metrics["quality"]["table_significance_token_count"], 2)
         self.assertEqual(metrics["quality"]["table_footnote_binding_count"], 2)
         self.assertEqual(metrics["quality"]["table_footnote_cell_binding_count"], 1)
@@ -4422,6 +4484,8 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["table_merged_cell_review_visual_supported_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_merged_cell_review_human_confirmed_rate"], 0.0)
         self.assertEqual(metrics["rates"]["table_merged_cell_review_human_reviewed_rate"], 0.0)
+        self.assertEqual(metrics["rates"]["table_structure_patch_apply_rate"], 1.0)
+        self.assertEqual(metrics["rates"]["table_structure_patch_per_confirmed_candidate"], 1.0)
         self.assertEqual(metrics["rates"]["continued_table_reconstruction_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_chain_merge_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_chain_reject_rate"], 0.5)
@@ -4467,6 +4531,14 @@ class StructureIRTests(unittest.TestCase):
             metrics["breakdowns"]["table_merged_cell_review_bbox_evidence_counts"]["estimated"],
             1,
         )
+        self.assertEqual(
+            metrics["breakdowns"]["table_structure_patch_operation_counts"][
+                "apply_confirmed_merged_cell_span"
+            ],
+            2,
+        )
+        self.assertEqual(metrics["breakdowns"]["table_structure_patch_span_type_counts"]["colspan"], 1)
+        self.assertEqual(metrics["breakdowns"]["table_structure_patch_span_type_counts"]["rowspan"], 1)
         self.assertEqual(
             metrics["breakdowns"]["table_chain_reject_reason_counts"]["header_mismatch_segment_1"],
             1,
@@ -5217,6 +5289,22 @@ class StructureIRTests(unittest.TestCase):
                                     "reason": "confirmed",
                                 }
                             ],
+                            "structure_patches": [
+                                {
+                                    "patch_id": "tsp-0001-p1-b0000-r0c0",
+                                    "patch_type": "merged_cell_span",
+                                    "operation": "apply_confirmed_merged_cell_span",
+                                    "applied": True,
+                                    "table_id": "p1-b0000",
+                                    "anchor_cell": {"row_index": 0, "column_index": 0},
+                                    "span": {
+                                        "span_type": "colspan",
+                                        "row_span": 1,
+                                        "column_span": 2,
+                                    },
+                                    "covered_cells": [{"row_index": 0, "column_index": 1}],
+                                }
+                            ],
                         }
                     ],
                 }
@@ -5235,8 +5323,12 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(report["summary"]["merged_cell_candidate_reference_count"], 1)
             self.assertEqual(report["summary"]["confirmed_merged_cell_candidate_reference_count"], 1)
             self.assertEqual(report["summary"]["confirmed_merged_cell_candidate_count"], 1)
+            self.assertEqual(report["summary"]["table_structure_patch_count"], 1)
+            self.assertEqual(report["summary"]["table_structure_patch_reference_count"], 1)
+            self.assertEqual(report["summary"]["table_structure_patch_covered_cell_reference_count"], 1)
             saved = json.loads((root / "translated_pdf_report.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["table_reconstruction_source"], "confirmed")
+            self.assertEqual(saved["summary"]["table_structure_patch_reference_count"], 1)
         finally:
             if root.exists():
                 shutil.rmtree(root)
