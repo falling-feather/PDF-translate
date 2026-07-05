@@ -5,6 +5,7 @@ import shutil
 import unittest
 from pathlib import Path
 
+import fitz
 from typer.testing import CliRunner
 from fastapi import HTTPException
 
@@ -12,6 +13,7 @@ from pdf_translate.cli import app
 from pdf_translate.server.routes_web import (
     _confirm_repair_publish_for_record,
     _confirm_table_structure_publish_for_record,
+    _render_table_merged_cell_review_preview_for_record,
 )
 from pdf_translate.server.jobs import JOB_STATUS_SCHEMA_VERSION, JobRegistry
 
@@ -592,6 +594,44 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertFalse(publish_report["summary"]["published"])
         self.assertEqual(publish_report["summary"]["publish_status"], "blocked_review_required")
         self.assertEqual(publish_report["summary"]["blocking_review_count"], 1)
+
+    def test_table_merged_cell_review_preview_renders_png(self) -> None:
+        root = self._case_root("table-review-preview")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=160)
+        page.insert_text((24, 36), "merged table candidate")
+        doc.save(rec.work_dir / "input.pdf")
+        doc.close()
+
+        png = _render_table_merged_cell_review_preview_for_record(
+            rec,
+            {
+                "page_no": 1,
+                "bbox_evidence": {
+                    "span_bbox": [20, 20, 130, 70],
+                    "evidence_bbox": [24, 24, 80, 58],
+                },
+            },
+        )
+
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertGreater(len(png), 1000)
+
+    def test_table_merged_cell_review_preview_rejects_invalid_page_no(self) -> None:
+        root = self._case_root("table-review-preview-invalid-page")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        doc = fitz.open()
+        doc.new_page(width=200, height=160)
+        doc.save(rec.work_dir / "input.pdf")
+        doc.close()
+
+        with self.assertRaises(HTTPException) as ctx:
+            _render_table_merged_cell_review_preview_for_record(rec, {"page_no": 0})
+
+        self.assertEqual(ctx.exception.status_code, 400)
 
     def test_artifact_summary_marks_done_without_translation_inconsistent(self) -> None:
         root = self._case_root("artifact-inconsistent")

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { authHeaders } from "../auth";
 
 const props = defineProps({
@@ -20,6 +20,11 @@ const errorText = ref("");
 const report = ref(null);
 const comments = ref({});
 const workingId = ref("");
+const selectedReviewId = ref("");
+const previewUrl = ref("");
+const previewLoading = ref(false);
+const previewError = ref("");
+const previewSeq = ref(0);
 
 function formatErrorPayload(payload) {
   if (!payload) return "请求失败";
@@ -45,6 +50,9 @@ const reviews = computed(() => {
 });
 
 const summary = computed(() => report.value?.summary || {});
+const selectedReview = computed(() =>
+  reviews.value.find((item) => item.review_id === selectedReviewId.value) || null,
+);
 
 function statusLabel(status) {
   const labels = {
@@ -70,6 +78,46 @@ function anchorText(item) {
   return `p${item.page_no || "-"} · r${item.row_index ?? "-"}c${item.column_index ?? "-"}`;
 }
 
+function clearPreviewUrl() {
+  if (previewUrl.value) {
+    URL.revokeObjectURL(previewUrl.value);
+    previewUrl.value = "";
+  }
+}
+
+async function loadPreview(item) {
+  if (!item?.review_id) return;
+  const seq = previewSeq.value + 1;
+  previewSeq.value = seq;
+  selectedReviewId.value = item.review_id;
+  previewLoading.value = true;
+  previewError.value = "";
+  clearPreviewUrl();
+  try {
+    const r = await fetch(
+      `/api/jobs/${props.jobId}/table-merged-cell-review/${encodeURIComponent(item.review_id)}/preview.png`,
+      { headers: authHeaders() },
+    );
+    if (seq !== previewSeq.value) return;
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      previewError.value = formatErrorPayload(data);
+      return;
+    }
+    const blob = await r.blob();
+    if (seq !== previewSeq.value) return;
+    previewUrl.value = URL.createObjectURL(blob);
+  } catch (err) {
+    if (seq === previewSeq.value) {
+      previewError.value = String(err?.message || err);
+    }
+  } finally {
+    if (seq === previewSeq.value) {
+      previewLoading.value = false;
+    }
+  }
+}
+
 async function loadReport() {
   loading.value = true;
   errorText.value = "";
@@ -88,6 +136,14 @@ async function loadReport() {
       next[item.review_id] = item.human_comment || "";
     }
     comments.value = next;
+    const nextPreview = reviews.value.find((item) => item.review_id === selectedReviewId.value) || reviews.value[0];
+    if (nextPreview) {
+      await loadPreview(nextPreview);
+    } else {
+      selectedReviewId.value = "";
+      previewError.value = "";
+      clearPreviewUrl();
+    }
   } catch (err) {
     errorText.value = String(err?.message || err);
   } finally {
@@ -126,6 +182,7 @@ async function submitDecision(item, decision) {
 }
 
 onMounted(loadReport);
+onUnmounted(clearPreviewUrl);
 </script>
 
 <template>
@@ -145,8 +202,20 @@ onMounted(loadReport);
       <p v-if="loading" class="muted">加载中…</p>
       <p v-else-if="!reviews.length" class="muted">暂无候选。</p>
 
-      <div v-else class="review-scroll">
-        <table class="review-table">
+      <div v-else class="review-body">
+        <aside class="preview-panel">
+          <div class="preview-title">
+            <strong>页面预览</strong>
+            <span v-if="selectedReview" class="muted small">{{ selectedReview.review_id }}</span>
+          </div>
+          <p v-if="previewLoading" class="muted small">正在加载预览...</p>
+          <p v-else-if="previewError" class="err small">{{ previewError }}</p>
+          <img v-else-if="previewUrl" :src="previewUrl" alt="表格候选页面预览" />
+          <p v-else class="muted small">选择一条候选查看页面框选。</p>
+        </aside>
+
+        <div class="review-scroll">
+          <table class="review-table">
           <thead>
             <tr>
               <th>候选</th>
@@ -181,6 +250,14 @@ onMounted(loadReport);
                 />
               </td>
               <td class="actions-cell">
+                <button
+                  type="button"
+                  :class="{ active: selectedReviewId === item.review_id }"
+                  :disabled="previewLoading && selectedReviewId === item.review_id"
+                  @click="loadPreview(item)"
+                >
+                  预览
+                </button>
                 <button type="button" :disabled="!!workingId" @click="submitDecision(item, 'confirm')">确认</button>
                 <button type="button" :disabled="!!workingId" @click="submitDecision(item, 'reject')">拒绝</button>
                 <button type="button" :disabled="!!workingId" @click="submitDecision(item, 'needs_revision')">复查</button>
@@ -188,7 +265,8 @@ onMounted(loadReport);
               </td>
             </tr>
           </tbody>
-        </table>
+          </table>
+        </div>
       </div>
     </section>
   </div>
@@ -206,7 +284,7 @@ onMounted(loadReport);
   background: rgba(0, 0, 0, 0.58);
 }
 .review-modal {
-  width: min(96vw, 1080px);
+  width: min(96vw, 1180px);
   max-height: 88vh;
   display: flex;
   flex-direction: column;
@@ -233,7 +311,38 @@ onMounted(loadReport);
   font-size: 1.45rem;
   cursor: pointer;
 }
+.review-body {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  gap: 0.75rem;
+  min-height: 0;
+}
+.preview-panel {
+  min-height: 0;
+  max-height: 64vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0d1117;
+  padding: 0.7rem;
+}
+.preview-title {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin-bottom: 0.55rem;
+  overflow-wrap: anywhere;
+}
+.preview-panel img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #fff;
+}
 .review-scroll {
+  min-width: 0;
   overflow: auto;
 }
 .review-table {
@@ -283,6 +392,10 @@ textarea {
   cursor: not-allowed;
   opacity: 0.55;
 }
+.actions-cell button.active {
+  border-color: rgba(91, 157, 255, 0.7);
+  color: var(--accent);
+}
 .status-pill {
   display: inline-block;
   padding: 0.12rem 0.4rem;
@@ -322,5 +435,13 @@ textarea {
 .err {
   color: var(--err);
   font-size: 0.88rem;
+}
+@media (max-width: 860px) {
+  .review-body {
+    grid-template-columns: 1fr;
+  }
+  .preview-panel {
+    max-height: 34vh;
+  }
 }
 </style>

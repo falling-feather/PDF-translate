@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+import fitz
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 
@@ -159,6 +160,82 @@ def _confirm_table_structure_publish_for_record(rec: JobRecord) -> dict[str, Any
     if not summary.get("published"):
         raise HTTPException(409, str(summary.get("reason") or "表格结构副本未生成"))
     return report
+
+
+def _normalise_preview_bbox(value: Any) -> tuple[float, float, float, float] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    try:
+        x0, y0, x1, y1 = [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1, y1)
+
+
+def _table_merged_cell_review_preview_bbox(review: dict[str, Any]) -> tuple[float, float, float, float] | None:
+    evidence = review.get("bbox_evidence") if isinstance(review.get("bbox_evidence"), dict) else {}
+    for key in ("span_bbox", "evidence_bbox", "candidate_bbox"):
+        bbox = _normalise_preview_bbox(evidence.get(key))
+        if bbox is not None:
+            return bbox
+    return None
+
+
+def _clip_preview_bbox(
+    bbox: tuple[float, float, float, float],
+    page_rect: fitz.Rect,
+) -> fitz.Rect | None:
+    x0 = min(max(bbox[0], page_rect.x0), page_rect.x1)
+    y0 = min(max(bbox[1], page_rect.y0), page_rect.y1)
+    x1 = min(max(bbox[2], page_rect.x0), page_rect.x1)
+    y1 = min(max(bbox[3], page_rect.y0), page_rect.y1)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return fitz.Rect(x0, y0, x1, y1)
+
+
+def _render_table_merged_cell_review_preview_for_record(
+    rec: JobRecord,
+    review: dict[str, Any],
+    *,
+    scale: float = 1.6,
+) -> bytes:
+    input_pdf = rec.work_dir / "input.pdf"
+    if not input_pdf.is_file() or input_pdf.stat().st_size == 0:
+        raise HTTPException(404, "input.pdf is not available for preview")
+    try:
+        page_no = int(review.get("page_no") or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "review page_no is invalid") from exc
+    if page_no <= 0:
+        raise HTTPException(400, "review page_no is invalid")
+    try:
+        doc = fitz.open(input_pdf)
+    except Exception as exc:  # pragma: no cover - pymupdf raises several concrete types
+        raise HTTPException(409, "input.pdf cannot be rendered") from exc
+    try:
+        if page_no > doc.page_count:
+            raise HTTPException(404, "review page is outside input.pdf")
+        page = doc.load_page(page_no - 1)
+        bbox = _table_merged_cell_review_preview_bbox(review)
+        if bbox is not None:
+            rect = _clip_preview_bbox(bbox, page.rect)
+            if rect is not None:
+                page.draw_rect(rect, color=(1, 0.2, 0.05), width=2.0, overlay=True)
+        matrix = fitz.Matrix(max(0.5, min(float(scale), 3.0)), max(0.5, min(float(scale), 3.0)))
+        pix = page.get_pixmap(matrix=matrix, alpha=False)
+        return pix.tobytes("png")
+    finally:
+        doc.close()
+
+
+def _find_table_merged_cell_review_item(report: dict[str, Any], review_id: str) -> dict[str, Any]:
+    for item in report.get("candidate_reviews") or []:
+        if isinstance(item, dict) and str(item.get("review_id") or "") == review_id:
+            return item
+    raise KeyError(review_id)
 
 
 def _is_deepseek_model_name(model_name: str | None) -> bool:
@@ -750,6 +827,35 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             invalid_message="表格重建报告无法解析",
         )
         return _read_or_create_table_merged_cell_review(out_dir, table_reconstruction)
+
+    @api.get("/jobs/{job_id}/table-merged-cell-review/{review_id}/preview.png")
+    def preview_table_merged_cell_review(
+        job_id: str,
+        review_id: str,
+        p: Principal = Depends(bearer_principal),
+    ) -> Response:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "job not found")
+        out_dir = rec.work_dir / "output"
+        table_reconstruction = _read_json_artifact(
+            out_dir / "table_reconstruction.json",
+            missing_message="table reconstruction report is not available",
+            invalid_message="table reconstruction report cannot be parsed",
+        )
+        report = _read_or_create_table_merged_cell_review(out_dir, table_reconstruction)
+        try:
+            review = _find_table_merged_cell_review_item(report, review_id)
+        except KeyError as exc:
+            raise HTTPException(404, f"table merged cell review item not found: {review_id}") from exc
+        return Response(
+            content=_render_table_merged_cell_review_preview_for_record(rec, review),
+            media_type="image/png",
+            headers={
+                "Cache-Control": "private, max-age=60",
+                "Content-Disposition": 'inline; filename="table-merged-cell-review-preview.png"',
+            },
+        )
 
     @api.get("/jobs/{job_id}/table-structure-publish")
     def get_table_structure_publish(job_id: str, p: Principal = Depends(bearer_principal)) -> dict:
