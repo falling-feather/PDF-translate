@@ -826,6 +826,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(candidate["source"], "local_text_table_parser")
         self.assertEqual(candidate["source_task_id"], "ocr-task-0001")
         self.assertEqual(candidate["engine"], "plain_text_table_ocr")
+        self.assertEqual(candidate["candidate_status"], "candidate")
+        self.assertEqual(candidate["visual_evidence_level"], "none")
+        self.assertEqual(candidate["bbox_evidence"]["status"], "missing")
 
         hints = build_table_translation_hints(TextChunk("c0000", [0], table.text, 0, 0), report)
         self.assertIn("r0c0", hints)
@@ -837,6 +840,84 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(hint_manifest["summary"]["structure_hint_merged_cell_candidate_type_counts"]["colspan"], 1)
         self.assertEqual(
             hint_manifest["summary"]["structure_hint_merged_cell_candidate_reason_counts"]["single_cell_ragged_row"],
+            1,
+        )
+
+    def test_table_reconstruction_marks_visual_span_bbox_evidence(self) -> None:
+        table = BlockIR(
+            "p1-b0000",
+            1,
+            "table",
+            "Dataset metrics\nModel Acc F1\nA 91 88",
+            (40, 640, 540, 760),
+            0,
+            meta={
+                "table": {
+                    "rows": [["Dataset metrics", "", ""], ["Model", "Acc", "F1"], ["A", "91", "88"]],
+                    "row_count": 3,
+                    "column_count": 3,
+                    "header": ["Model", "Acc", "F1"],
+                    "confidence": "high",
+                    "cell_bboxes": [
+                        {"row": 0, "col": 0, "bbox": [40, 640, 200, 680]},
+                        {"row": 0, "col": 1, "bbox": [200, 640, 360, 680]},
+                        {"row": 0, "col": 2, "bbox": [360, 640, 540, 680]},
+                        {"row": 1, "col": 0, "bbox": [40, 680, 200, 720]},
+                        {"row": 1, "col": 1, "bbox": [200, 680, 360, 720]},
+                        {"row": 1, "col": 2, "bbox": [360, 680, 540, 720]},
+                        {"row": 2, "col": 0, "bbox": [40, 720, 200, 760]},
+                        {"row": 2, "col": 1, "bbox": [200, 720, 360, 760]},
+                        {"row": 2, "col": 2, "bbox": [360, 720, 540, 760]},
+                    ],
+                    "merged_cell_candidates": [
+                        {
+                            "type": "colspan",
+                            "row": 0,
+                            "cols": [0, 1, 2],
+                            "bbox": [40, 640, 540, 680],
+                            "text": "Dataset metrics",
+                            "reason": "visual_header_span",
+                            "confidence": 0.94,
+                            "source": "layout_table_ocr",
+                        }
+                    ],
+                }
+            },
+        )
+        doc_ir = DocumentIR(
+            doc_id="visual-span-bbox-candidates",
+            source_pdf="sample.pdf",
+            pages=[PageIR(1, 600, 800, table.text, [table])],
+        )
+
+        report = build_table_reconstruction_report(doc_ir, build_structure_qa(doc_ir))
+
+        self.assertEqual(report["summary"]["merged_cell_candidate_count"], 1)
+        self.assertEqual(report["summary"]["merged_cell_candidate_status_counts"]["visually_supported"], 1)
+        self.assertEqual(
+            report["summary"]["merged_cell_candidate_visual_evidence_counts"]["visual_span_bbox"],
+            1,
+        )
+        self.assertEqual(report["summary"]["merged_cell_candidate_bbox_evidence_counts"]["span_reported"], 1)
+        candidate = report["tables"][0]["merged_cell_candidates"][0]
+        self.assertEqual(candidate["candidate_status"], "visually_supported")
+        self.assertEqual(candidate["visual_evidence_level"], "visual_span_bbox")
+        self.assertEqual(candidate["bbox_evidence"]["status"], "span_reported")
+        self.assertEqual(candidate["bbox_evidence"]["support_status"], "visual_span_supported")
+        self.assertEqual(candidate["bbox_evidence"]["evidence_bbox_coverage"], 1.0)
+        self.assertNotEqual(candidate["candidate_status"], "human_confirmed")
+
+        hints = build_table_translation_hints(TextChunk("c0000", [0], table.text, 0, 0), report)
+        self.assertIn("证据=span_reported/visual_span_bbox/visually_supported", hints)
+        hint_manifest = build_structure_hints_manifest([TextChunk("c0000", [0], table.text, 0, 0)], report)
+        self.assertEqual(
+            hint_manifest["summary"]["structure_hint_merged_cell_candidate_status_counts"]["visually_supported"],
+            1,
+        )
+        self.assertEqual(
+            hint_manifest["summary"]["structure_hint_merged_cell_candidate_visual_evidence_counts"][
+                "visual_span_bbox"
+            ],
             1,
         )
 
@@ -2254,6 +2335,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(merged["column_span"], 3)
         self.assertEqual(merged["cols"], [0, 1, 2])
         self.assertEqual(merged["reason"], "single_cell_ragged_row")
+        self.assertEqual(merged["candidate_status"], "candidate")
+        self.assertEqual(merged["visual_evidence_level"], "none")
+        self.assertEqual(merged["bbox_evidence"]["status"], "missing")
         self.assertEqual(
             [(cell["row_index"], cell["column_index"]) for cell in merged["covered_cells"]],
             [(0, 1), (0, 2)],
@@ -2286,6 +2370,13 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(reconstruction_candidate["source"], "local_text_table_parser")
         self.assertEqual(reconstruction_candidate["source_task_id"], table_task["task_id"])
         self.assertEqual(reconstruction_candidate["engine"], "plain_text_table_ocr")
+        self.assertEqual(reconstruction_candidate["candidate_status"], "candidate")
+        self.assertEqual(reconstruction_candidate["visual_evidence_level"], "estimated_bbox")
+        self.assertEqual(reconstruction_candidate["bbox_evidence"]["status"], "estimated")
+        self.assertEqual(reconstruction_candidate["bbox_evidence"]["support_status"], "estimated_grid_only")
+        self.assertEqual(reconstruction_candidate["confirmation_status"], "estimated_grid_only")
+        self.assertNotEqual(reconstruction_candidate["candidate_status"], "visually_supported")
+        self.assertNotEqual(reconstruction_candidate["candidate_status"], "human_confirmed")
         hints = build_table_translation_hints(
             TextChunk("c0000", [0], promoted_doc_ir.pages[0].blocks[0].text, 0, 0),
             reconstruction,
@@ -2294,6 +2385,7 @@ class StructureIRTests(unittest.TestCase):
         self.assertIn("colspan 1x3", hints)
         self.assertIn("single_cell_ragged_row", hints)
         self.assertIn("Dataset metrics", hints)
+        self.assertIn("证据=estimated/estimated_bbox/candidate", hints)
 
     def test_formula_ocr_writeback_preserves_structure_context(self) -> None:
         doc_ir = DocumentIR(

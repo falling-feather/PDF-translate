@@ -213,6 +213,15 @@ def _normalise_merged_cell_candidate(value: Any) -> Any:
             ]
     if covered_cells:
         out["covered_cells"] = covered_cells
+    out.setdefault("candidate_status", "candidate")
+    candidate_bbox = _normalized_bbox(out.get("bbox") or out.get("anchor_bbox") or out.get("span_bbox"))
+    if "visual_evidence_level" not in out:
+        out["visual_evidence_level"] = "visual_span_bbox" if len(candidate_bbox) == 4 else "none"
+    if not isinstance(out.get("bbox_evidence"), dict):
+        out["bbox_evidence"] = {
+            "status": "span_reported" if len(candidate_bbox) == 4 else "missing",
+            "source": "candidate_bbox" if len(candidate_bbox) == 4 else "not_provided",
+        }
     return out
 
 
@@ -345,6 +354,9 @@ def _merged_cell_candidate(
         "confidence": confidence,
         "covered_cells": covered_cells,
         "source": "local_text_table_parser",
+        "candidate_status": "candidate",
+        "visual_evidence_level": "none",
+        "bbox_evidence": {"status": "missing", "source": "text_heuristic"},
     }
     if span_type == "colspan":
         candidate["cols"] = list(range(column_index, column_index + column_span))

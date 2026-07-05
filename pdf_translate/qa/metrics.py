@@ -230,6 +230,15 @@ def build_experiment_metrics(
     table_merged_cell_candidate_reason_counts = _counter_dict(
         table_reconstruction_summary.get("merged_cell_candidate_reason_counts")
     )
+    table_merged_cell_candidate_status_counts = _counter_dict(
+        table_reconstruction_summary.get("merged_cell_candidate_status_counts")
+    )
+    table_merged_cell_candidate_visual_evidence_counts = _counter_dict(
+        table_reconstruction_summary.get("merged_cell_candidate_visual_evidence_counts")
+    )
+    table_merged_cell_candidate_bbox_evidence_counts = _counter_dict(
+        table_reconstruction_summary.get("merged_cell_candidate_bbox_evidence_counts")
+    )
     table_caption_linked_count = _as_int(table_reconstruction_summary.get("caption_linked_table_count"))
     table_footnote_linked_count = _as_int(table_reconstruction_summary.get("footnote_linked_table_count"))
     table_footnote_binding_count = _as_int(table_reconstruction_summary.get("table_footnote_binding_count"))
@@ -511,6 +520,15 @@ def build_experiment_metrics(
     structure_hint_merged_cell_candidate_reason_counts = _counter_dict(
         structure_hints_summary.get("structure_hint_merged_cell_candidate_reason_counts")
     )
+    structure_hint_merged_cell_candidate_status_counts = _counter_dict(
+        structure_hints_summary.get("structure_hint_merged_cell_candidate_status_counts")
+    )
+    structure_hint_merged_cell_candidate_visual_evidence_counts = _counter_dict(
+        structure_hints_summary.get("structure_hint_merged_cell_candidate_visual_evidence_counts")
+    )
+    structure_hint_merged_cell_candidate_bbox_evidence_counts = _counter_dict(
+        structure_hints_summary.get("structure_hint_merged_cell_candidate_bbox_evidence_counts")
+    )
     structure_hint_footnote_binding_count = _as_int(
         structure_hints_summary.get("structure_hint_footnote_binding_count")
     )
@@ -665,6 +683,9 @@ def build_experiment_metrics(
             "structure_hint_table_count": structure_hint_table_count,
             "structure_hint_continued_group_count": structure_hint_continued_group_count,
             "structure_hint_merged_cell_candidate_count": structure_hint_merged_cell_candidate_count,
+            "structure_hint_merged_cell_candidate_visual_supported_count": (
+                structure_hint_merged_cell_candidate_status_counts.get("visually_supported", 0)
+            ),
             "structure_hint_footnote_binding_count": structure_hint_footnote_binding_count,
             "structure_hint_locked_token_count": structure_hint_locked_token_count,
             "table_count": table_count,
@@ -679,6 +700,9 @@ def build_experiment_metrics(
             "table_ragged_table_count": table_ragged_table_count,
             "table_ragged_row_count": table_ragged_row_count,
             "table_merged_cell_candidate_count": table_merged_cell_candidate_count,
+            "table_merged_cell_candidate_visual_supported_count": (
+                table_merged_cell_candidate_status_counts.get("visually_supported", 0)
+            ),
             "table_caption_linked_count": table_caption_linked_count,
             "table_footnote_linked_count": table_footnote_linked_count,
             "table_footnote_binding_count": table_footnote_binding_count,
@@ -946,6 +970,10 @@ def build_experiment_metrics(
                 structure_hint_merged_cell_candidate_count,
                 structure_hint_chunk_count,
             ),
+            "structure_hint_merged_cell_candidate_visual_supported_rate": _rate(
+                structure_hint_merged_cell_candidate_status_counts.get("visually_supported", 0),
+                structure_hint_merged_cell_candidate_count,
+            ),
             "structure_hint_footnote_binding_per_chunk": _rate(
                 structure_hint_footnote_binding_count,
                 structure_hint_chunk_count,
@@ -958,6 +986,10 @@ def build_experiment_metrics(
             "table_empty_cell_rate": _rate(table_empty_cell_count, table_cell_count),
             "table_ragged_table_rate": _rate(table_ragged_table_count, table_count),
             "table_merged_cell_candidate_rate": _rate(table_merged_cell_candidate_count, table_count),
+            "table_merged_cell_candidate_visual_supported_rate": _rate(
+                table_merged_cell_candidate_status_counts.get("visually_supported", 0),
+                table_merged_cell_candidate_count,
+            ),
             "table_numeric_cell_rate": _rate(table_numeric_cell_count, table_cell_count),
             "table_caption_link_rate": _rate(table_caption_linked_count, table_count),
             "table_footnote_binding_rate": _rate(table_footnote_linked_count, table_count),
@@ -1223,8 +1255,20 @@ def build_experiment_metrics(
             "error_category_counts": run_error_category_counts,
             "structure_hint_merged_cell_candidate_type_counts": structure_hint_merged_cell_candidate_type_counts,
             "structure_hint_merged_cell_candidate_reason_counts": structure_hint_merged_cell_candidate_reason_counts,
+            "structure_hint_merged_cell_candidate_status_counts": structure_hint_merged_cell_candidate_status_counts,
+            "structure_hint_merged_cell_candidate_visual_evidence_counts": (
+                structure_hint_merged_cell_candidate_visual_evidence_counts
+            ),
+            "structure_hint_merged_cell_candidate_bbox_evidence_counts": (
+                structure_hint_merged_cell_candidate_bbox_evidence_counts
+            ),
             "table_merged_cell_candidate_type_counts": table_merged_cell_candidate_type_counts,
             "table_merged_cell_candidate_reason_counts": table_merged_cell_candidate_reason_counts,
+            "table_merged_cell_candidate_status_counts": table_merged_cell_candidate_status_counts,
+            "table_merged_cell_candidate_visual_evidence_counts": (
+                table_merged_cell_candidate_visual_evidence_counts
+            ),
+            "table_merged_cell_candidate_bbox_evidence_counts": table_merged_cell_candidate_bbox_evidence_counts,
             "table_chain_reject_reason_counts": table_chain_reject_reason_counts,
             "table_chain_reject_reason_category_counts": table_chain_reject_reason_category_counts,
             "table_chain_warning_reason_counts": table_chain_warning_reason_counts,

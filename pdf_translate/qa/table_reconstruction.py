@@ -69,6 +69,24 @@ def _count_candidate_reasons(candidates: list[dict[str, Any]]) -> dict[str, int]
     return _count_values([str(candidate.get("reason") or "unknown") for candidate in candidates])
 
 
+def _count_candidate_evidence_statuses(candidates: list[dict[str, Any]]) -> dict[str, int]:
+    return _count_values(
+        [
+            str((candidate.get("bbox_evidence") or {}).get("status") or "unknown")
+            for candidate in candidates
+            if isinstance(candidate, dict)
+        ]
+    )
+
+
+def _count_candidate_visual_evidence_levels(candidates: list[dict[str, Any]]) -> dict[str, int]:
+    return _count_values([str(candidate.get("visual_evidence_level") or "none") for candidate in candidates])
+
+
+def _count_candidate_statuses(candidates: list[dict[str, Any]]) -> dict[str, int]:
+    return _count_values([str(candidate.get("candidate_status") or "candidate") for candidate in candidates])
+
+
 def _chain_reason_category(reason: str) -> str:
     text = str(reason or "").strip()
     if text.startswith("header_mismatch_segment_"):
@@ -408,6 +426,18 @@ def _normalise_meta_merged_candidate(value: Any) -> dict[str, Any] | None:
         candidate["rows"] = normalised_rows
     if normalised_cols:
         candidate["cols"] = normalised_cols
+    for key in (
+        "bbox",
+        "anchor_bbox",
+        "span_bbox",
+        "bbox_estimated",
+        "estimated",
+        "bbox_evidence",
+        "visual_evidence_level",
+        "candidate_status",
+    ):
+        if value.get(key) not in (None, "", []):
+            candidate[key] = value.get(key)
     for key in ("task_id", "source_task_id", "engine"):
         if value.get(key) not in (None, "", []):
             candidate[key] = str(value.get(key))
@@ -428,6 +458,251 @@ def _meta_merged_cell_candidates(table_meta: dict[str, Any]) -> list[dict[str, A
                 candidate["engine"] = str(table_meta.get("source_engine"))
             candidates.append(candidate)
     return candidates
+
+
+def _normalise_bbox(value: Any) -> list[float] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    out: list[float] = []
+    for item in value:
+        if isinstance(item, bool):
+            return None
+        try:
+            out.append(float(item))
+        except (TypeError, ValueError):
+            return None
+    x0, y0, x1, y1 = out
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return [round(x0, 4), round(y0, 4), round(x1, 4), round(y1, 4)]
+
+
+def _cell_bbox_index(value: Any) -> dict[tuple[int, int], dict[str, Any]]:
+    if not isinstance(value, list):
+        return {}
+    out: dict[tuple[int, int], dict[str, Any]] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        row = _nonnegative_int(item.get("row_index", item.get("row")))
+        column = _nonnegative_int(item.get("column_index", item.get("col", item.get("column"))))
+        bbox = _normalise_bbox(item.get("bbox"))
+        if row is None or column is None or bbox is None:
+            continue
+        out[(row, column)] = {
+            "bbox": bbox,
+            "estimated": bool(item.get("estimated") or item.get("bbox_estimated")),
+        }
+    return out
+
+
+def _bbox_union(bboxes: list[list[float]]) -> list[float] | None:
+    if not bboxes:
+        return None
+    return [
+        round(min(bbox[0] for bbox in bboxes), 4),
+        round(min(bbox[1] for bbox in bboxes), 4),
+        round(max(bbox[2] for bbox in bboxes), 4),
+        round(max(bbox[3] for bbox in bboxes), 4),
+    ]
+
+
+def _bbox_area(bbox: list[float] | None) -> float:
+    if not bbox:
+        return 0.0
+    return max(0.0, bbox[2] - bbox[0]) * max(0.0, bbox[3] - bbox[1])
+
+
+def _bbox_overlap_area(first: list[float] | None, second: list[float] | None) -> float:
+    if not first or not second:
+        return 0.0
+    x0 = max(first[0], second[0])
+    y0 = max(first[1], second[1])
+    x1 = min(first[2], second[2])
+    y1 = min(first[3], second[3])
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    return (x1 - x0) * (y1 - y0)
+
+
+def _bbox_coverage(candidate_bbox: list[float] | None, span_bbox: list[float] | None) -> float:
+    area = _bbox_area(span_bbox)
+    if area <= 0:
+        return 0.0
+    return round(_bbox_overlap_area(candidate_bbox, span_bbox) / area, 4)
+
+
+def _candidate_anchor(candidate: dict[str, Any]) -> tuple[int, int] | None:
+    row = _nonnegative_int(candidate.get("row_index", candidate.get("row")))
+    column = _nonnegative_int(candidate.get("column_index", candidate.get("col", candidate.get("column"))))
+    if row is None or column is None:
+        return None
+    return (row, column)
+
+
+def _candidate_span_cells(candidate: dict[str, Any]) -> list[tuple[int, int]]:
+    anchor = _candidate_anchor(candidate)
+    if anchor is None:
+        return sorted(_candidate_covered_set(candidate))
+    return sorted({anchor, *_candidate_covered_set(candidate)})
+
+
+def _candidate_bbox_evidence(
+    candidate: dict[str, Any],
+    cell_bboxes: dict[tuple[int, int], dict[str, Any]],
+) -> dict[str, Any]:
+    existing_evidence = candidate.get("bbox_evidence") if isinstance(candidate.get("bbox_evidence"), dict) else {}
+    existing_status = str(existing_evidence.get("status") or "").strip()
+    existing_candidate_status = str(candidate.get("candidate_status") or "").strip()
+    if existing_candidate_status == "human_confirmed" or existing_status == "manual_verified":
+        return {
+            **existing_evidence,
+            "status": "manual_verified",
+            "support_status": "manual_verified",
+            "confirmation_status": "human_confirmed",
+            "visual_evidence_level": "manual_verified",
+        }
+    anchor = _candidate_anchor(candidate)
+    span_cells = _candidate_span_cells(candidate)
+    if anchor is None or not span_cells:
+        return {
+            "status": "missing",
+            "support_status": "missing_candidate_anchor",
+            "confirmation_status": "needs_visual_review",
+            "visual_evidence_level": "none",
+        }
+    base: dict[str, Any] = {
+        "anchor_cell": {"row_index": anchor[0], "column_index": anchor[1]},
+        "span_cell_count": len(span_cells),
+    }
+    direct_candidate_bbox = (
+        _normalise_bbox(candidate.get("bbox"))
+        or _normalise_bbox(candidate.get("anchor_bbox"))
+        or _normalise_bbox(candidate.get("span_bbox"))
+    )
+    if not cell_bboxes:
+        if direct_candidate_bbox:
+            return {
+                **base,
+                "status": "span_reported",
+                "support_status": "candidate_span_bbox_without_cell_grid",
+                "confirmation_status": "visual_supported",
+                "visual_evidence_level": "visual_span_bbox",
+                "available_cell_bbox_count": 0,
+                "evidence_bbox_source": "candidate_bbox",
+                "evidence_bbox": direct_candidate_bbox,
+                "candidate_bbox": direct_candidate_bbox,
+            }
+        if existing_status in {"span_reported", "ocr_reported", "estimated"}:
+            visual_evidence_level = str(candidate.get("visual_evidence_level") or existing_status).strip()
+            return {
+                **base,
+                **existing_evidence,
+                "status": existing_status,
+                "support_status": str(existing_evidence.get("support_status") or existing_status),
+                "confirmation_status": "visual_supported" if existing_status == "span_reported" else "needs_visual_review",
+                "visual_evidence_level": visual_evidence_level,
+                "available_cell_bbox_count": 0,
+            }
+        return {
+            **base,
+            "status": "missing",
+            "support_status": "missing_cell_bboxes",
+            "confirmation_status": "needs_visual_review",
+            "visual_evidence_level": "none",
+            "available_cell_bbox_count": 0,
+        }
+
+    missing_cells = [cell for cell in span_cells if cell not in cell_bboxes]
+    if missing_cells:
+        return {
+            **base,
+            "status": "missing",
+            "support_status": "incomplete_cell_bboxes",
+            "confirmation_status": "needs_visual_review",
+            "visual_evidence_level": "none",
+            "available_cell_bbox_count": len(span_cells) - len(missing_cells),
+            "missing_cells": [
+                {"row_index": row, "column_index": column}
+                for row, column in missing_cells[:12]
+            ],
+        }
+
+    span_entries = [cell_bboxes[cell] for cell in span_cells]
+    span_bbox = _bbox_union([entry["bbox"] for entry in span_entries])
+    estimated_cell_bbox_count = sum(1 for entry in span_entries if entry.get("estimated"))
+    real_cell_bbox_count = len(span_entries) - estimated_cell_bbox_count
+    candidate_bbox = direct_candidate_bbox
+    anchor_entry = cell_bboxes.get(anchor)
+    evidence_bbox = candidate_bbox or (anchor_entry or {}).get("bbox")
+    evidence_bbox_source = "candidate_bbox" if candidate_bbox else "anchor_cell_bbox"
+    evidence_bbox_estimated = bool(candidate.get("bbox_estimated") or candidate.get("estimated"))
+    if not candidate_bbox and anchor_entry is not None:
+        evidence_bbox_estimated = bool(anchor_entry.get("estimated"))
+    coverage = _bbox_coverage(evidence_bbox, span_bbox)
+
+    if coverage >= 0.85 and not evidence_bbox_estimated:
+        status = "span_reported"
+        support_status = "visual_span_supported"
+        confirmation_status = "visual_supported"
+        visual_evidence_level = "visual_span_bbox"
+    elif coverage >= 0.85:
+        status = "estimated"
+        support_status = "estimated_span_supported"
+        confirmation_status = "estimated_grid_only"
+        visual_evidence_level = "estimated_bbox"
+    elif real_cell_bbox_count > 0:
+        status = "ocr_reported"
+        support_status = "visual_bboxes_present_unconfirmed_span"
+        confirmation_status = "needs_visual_review"
+        visual_evidence_level = "ocr_cell_bbox"
+    else:
+        status = "estimated"
+        support_status = "estimated_grid_only"
+        confirmation_status = "estimated_grid_only"
+        visual_evidence_level = "estimated_bbox"
+
+    evidence = {
+        **base,
+        "status": status,
+        "support_status": support_status,
+        "confirmation_status": confirmation_status,
+        "visual_evidence_level": visual_evidence_level,
+        "available_cell_bbox_count": len(span_entries),
+        "estimated_cell_bbox_count": estimated_cell_bbox_count,
+        "real_cell_bbox_count": real_cell_bbox_count,
+        "span_bbox": span_bbox,
+        "evidence_bbox_source": evidence_bbox_source,
+        "evidence_bbox_coverage": coverage,
+    }
+    if evidence_bbox:
+        evidence["evidence_bbox"] = evidence_bbox
+    if candidate_bbox:
+        evidence["candidate_bbox"] = candidate_bbox
+    return evidence
+
+
+def _with_candidate_bbox_evidence(
+    candidates: list[dict[str, Any]],
+    table_meta: dict[str, Any],
+) -> list[dict[str, Any]]:
+    cell_bboxes = _cell_bbox_index(table_meta.get("cell_bboxes"))
+    out: list[dict[str, Any]] = []
+    for candidate in candidates:
+        enriched = dict(candidate)
+        evidence = _candidate_bbox_evidence(enriched, cell_bboxes)
+        enriched["bbox_evidence"] = evidence
+        enriched["confirmation_status"] = evidence.get("confirmation_status")
+        enriched["visual_evidence_level"] = evidence.get("visual_evidence_level") or "none"
+        existing_status = str(enriched.get("candidate_status") or "").strip()
+        if existing_status in {"human_confirmed", "rejected"}:
+            enriched["candidate_status"] = existing_status
+        elif evidence.get("confirmation_status") == "visual_supported":
+            enriched["candidate_status"] = "visually_supported"
+        else:
+            enriched["candidate_status"] = "candidate"
+        out.append(enriched)
+    return out
 
 
 def _candidate_covered_set(candidate: dict[str, Any]) -> set[tuple[int, int]]:
@@ -663,6 +938,7 @@ def _table_entry(
         _meta_merged_cell_candidates(table_meta),
         _merged_cell_candidates(raw_rows, column_count),
     )
+    merged_cell_candidates = _with_candidate_bbox_evidence(merged_cell_candidates, table_meta)
     warnings = _table_warnings(
         table_meta,
         rows=raw_rows,
@@ -691,6 +967,9 @@ def _table_entry(
         "merged_cell_candidate_count": len(merged_cell_candidates),
         "merged_cell_candidate_type_counts": _count_candidate_types(merged_cell_candidates),
         "merged_cell_candidate_reason_counts": _count_candidate_reasons(merged_cell_candidates),
+        "merged_cell_candidate_status_counts": _count_candidate_statuses(merged_cell_candidates),
+        "merged_cell_candidate_visual_evidence_counts": _count_candidate_visual_evidence_levels(merged_cell_candidates),
+        "merged_cell_candidate_bbox_evidence_counts": _count_candidate_evidence_statuses(merged_cell_candidates),
         "merged_cell_candidates": merged_cell_candidates,
         "caption_blocks": children.get("captions", []),
         "footnote_blocks": children.get("footnotes", []),
@@ -932,6 +1211,11 @@ def _continued_table_group(
         "merged_cell_candidate_count": len(merged_cell_candidates),
         "merged_cell_candidate_type_counts": _count_candidate_types(merged_cell_candidates),
         "merged_cell_candidate_reason_counts": _count_candidate_reasons(merged_cell_candidates),
+        "merged_cell_candidate_status_counts": _count_candidate_statuses(merged_cell_candidates),
+        "merged_cell_candidate_visual_evidence_counts": _count_candidate_visual_evidence_levels(
+            merged_cell_candidates
+        ),
+        "merged_cell_candidate_bbox_evidence_counts": _count_candidate_evidence_statuses(merged_cell_candidates),
         "merged_cell_candidates": merged_cell_candidates,
         "header": header,
         "rows": merged_rows,
@@ -1007,6 +1291,13 @@ def build_table_reconstruction_report(
     table_merged_cell_candidate_count = len(merged_cell_candidates)
     table_merged_cell_candidate_type_counts = _count_candidate_types(merged_cell_candidates)
     table_merged_cell_candidate_reason_counts = _count_candidate_reasons(merged_cell_candidates)
+    table_merged_cell_candidate_status_counts = _count_candidate_statuses(merged_cell_candidates)
+    table_merged_cell_candidate_visual_evidence_counts = _count_candidate_visual_evidence_levels(
+        merged_cell_candidates
+    )
+    table_merged_cell_candidate_bbox_evidence_counts = _count_candidate_evidence_statuses(
+        merged_cell_candidates
+    )
     table_ragged_row_count = sum(int(table.get("ragged_row_count") or 0) for table in tables)
     table_ragged_table_count = sum(
         1
@@ -1108,6 +1399,9 @@ def build_table_reconstruction_report(
             "merged_cell_candidate_count": table_merged_cell_candidate_count,
             "merged_cell_candidate_type_counts": table_merged_cell_candidate_type_counts,
             "merged_cell_candidate_reason_counts": table_merged_cell_candidate_reason_counts,
+            "merged_cell_candidate_status_counts": table_merged_cell_candidate_status_counts,
+            "merged_cell_candidate_visual_evidence_counts": table_merged_cell_candidate_visual_evidence_counts,
+            "merged_cell_candidate_bbox_evidence_counts": table_merged_cell_candidate_bbox_evidence_counts,
             "caption_linked_table_count": caption_linked_table_count,
             "footnote_linked_table_count": footnote_linked_table_count,
             "table_footnote_binding_count": table_footnote_binding_count,
@@ -1223,6 +1517,10 @@ def _merged_cell_candidate_hint(candidate: dict[str, Any]) -> str:
     source_table_id = str(candidate.get("source_table_id") or "").strip()
     reason = str(candidate.get("reason") or "").strip()
     confidence = str(candidate.get("confidence") or "").strip()
+    evidence = candidate.get("bbox_evidence") if isinstance(candidate.get("bbox_evidence"), dict) else {}
+    evidence_status = str(evidence.get("status") or "").strip()
+    visual_evidence_level = str(candidate.get("visual_evidence_level") or "").strip()
+    candidate_status = str(candidate.get("candidate_status") or "").strip()
     text = _clip(str(candidate.get("text") or ""), 60)
     cell_ref = f"r{row}c{col}"
     if source_table_id:
@@ -1234,6 +1532,13 @@ def _merged_cell_candidate_hint(candidate: dict[str, Any]) -> str:
         parts.append("原因=" + reason)
     if confidence:
         parts.append("置信=" + confidence)
+    if evidence_status:
+        evidence_label = evidence_status
+        if visual_evidence_level:
+            evidence_label += "/" + visual_evidence_level
+        if candidate_status:
+            evidence_label += "/" + candidate_status
+        parts.append("证据=" + evidence_label)
     if text:
         parts.append("锚文本=" + text)
     return "；".join(parts)
@@ -1435,6 +1740,13 @@ def build_structure_hints_manifest(
                 "merged_cell_candidate_count": len(merged_candidates),
                 "merged_cell_candidate_type_counts": _count_candidate_types(merged_candidates),
                 "merged_cell_candidate_reason_counts": _count_candidate_reasons(merged_candidates),
+                "merged_cell_candidate_status_counts": _count_candidate_statuses(merged_candidates),
+                "merged_cell_candidate_visual_evidence_counts": _count_candidate_visual_evidence_levels(
+                    merged_candidates
+                ),
+                "merged_cell_candidate_bbox_evidence_counts": _count_candidate_evidence_statuses(
+                    merged_candidates
+                ),
                 "footnote_binding_count": footnote_binding_count,
                 "locked_token_count": locked_token_count,
                 "hint_text": hints,
@@ -1477,6 +1789,27 @@ def build_structure_hints_manifest(
                     entry["merged_cell_candidate_reason_counts"]
                     for entry in chunk_entries
                     if isinstance(entry["merged_cell_candidate_reason_counts"], dict)
+                ]
+            ),
+            "structure_hint_merged_cell_candidate_status_counts": _sum_count_dicts(
+                [
+                    entry["merged_cell_candidate_status_counts"]
+                    for entry in chunk_entries
+                    if isinstance(entry["merged_cell_candidate_status_counts"], dict)
+                ]
+            ),
+            "structure_hint_merged_cell_candidate_visual_evidence_counts": _sum_count_dicts(
+                [
+                    entry["merged_cell_candidate_visual_evidence_counts"]
+                    for entry in chunk_entries
+                    if isinstance(entry["merged_cell_candidate_visual_evidence_counts"], dict)
+                ]
+            ),
+            "structure_hint_merged_cell_candidate_bbox_evidence_counts": _sum_count_dicts(
+                [
+                    entry["merged_cell_candidate_bbox_evidence_counts"]
+                    for entry in chunk_entries
+                    if isinstance(entry["merged_cell_candidate_bbox_evidence_counts"], dict)
                 ]
             ),
             "structure_hint_footnote_binding_count": sum(
