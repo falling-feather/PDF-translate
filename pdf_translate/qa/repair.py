@@ -15,6 +15,7 @@ REQUEST_SCHEMA_VERSION = "repair-requests-v1"
 RESULT_SCHEMA_VERSION = "repair-results-v1"
 VALIDATION_SCHEMA_VERSION = "repair-validation-v1"
 MERGE_SCHEMA_VERSION = "repair-merge-v1"
+PUBLISH_SCHEMA_VERSION = "repair-publish-v1"
 
 _ISSUE_RULES = {
     "missing_translation": {
@@ -1285,4 +1286,130 @@ def write_repair_merge(
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
     markdown_path.write_text(repair_merge_to_markdown(report), encoding="utf-8")
+    return report
+
+
+def build_repair_publish(
+    repair_merge: dict[str, Any],
+    *,
+    confirm: bool = False,
+    source_full_path: Path | None = None,
+    published_full_path: Path | None = None,
+    original_full_path: Path | None = None,
+) -> dict[str, Any]:
+    """Create an explicit, auditable publication copy from the repaired merge output."""
+    summary = repair_merge.get("summary") if isinstance(repair_merge.get("summary"), dict) else {}
+    source_path_text = str(summary.get("repaired_full_path") or "")
+    source_path = source_full_path or (Path(source_path_text) if source_path_text else None)
+    target_path = published_full_path
+    applied_count = _safe_nonnegative_int(summary.get("applied_count")) or 0
+    manual_required_count = _safe_nonnegative_int(summary.get("manual_merge_required_count")) or 0
+    conflict_count = _safe_nonnegative_int(summary.get("conflict_count")) or 0
+    skipped_count = _safe_nonnegative_int(summary.get("skipped_count")) or 0
+    open_merge_issue_count = manual_required_count + conflict_count
+
+    status = "pending_confirmation"
+    reason = "需要显式人工确认后才生成发布副本。"
+    published = False
+    warnings: list[str] = []
+    if manual_required_count:
+        warnings.append(f"{manual_required_count} 条修复仍需人工合并。")
+    if conflict_count:
+        warnings.append(f"{conflict_count} 个 chunk 存在合并冲突。")
+    if skipped_count:
+        warnings.append(f"{skipped_count} 条修复未进入合并。")
+
+    if confirm:
+        if source_path is None or not source_path.is_file():
+            status = "blocked_missing_repaired_full"
+            reason = "未找到可发布的修复合并译文。"
+        elif target_path is None:
+            status = "blocked_missing_publish_target"
+            reason = "未提供发布副本输出路径。"
+        elif applied_count <= 0:
+            status = "blocked_no_applied_repairs"
+            reason = "没有已应用的修复补丁，未生成发布副本。"
+        else:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+            published = True
+            status = "published_with_warnings" if open_merge_issue_count else "published"
+            reason = "已生成人工确认后的修复发布副本。"
+
+    return {
+        "schema_version": PUBLISH_SCHEMA_VERSION,
+        "summary": {
+            "repair_merge_schema_version": repair_merge.get("schema_version"),
+            "confirmed": bool(confirm),
+            "published": published,
+            "publish_status": status,
+            "reason": reason,
+            "applied_count": applied_count,
+            "patched_chunk_count": _safe_nonnegative_int(summary.get("patched_chunk_count")) or 0,
+            "manual_merge_required_count": manual_required_count,
+            "conflict_count": conflict_count,
+            "skipped_count": skipped_count,
+            "open_merge_issue_count": open_merge_issue_count,
+            "source_repaired_full_path": source_path.as_posix() if source_path else "",
+            "published_full_path": target_path.as_posix() if target_path else "",
+            "original_full_path": original_full_path.as_posix() if original_full_path else "",
+            "rollback_available": bool(original_full_path and original_full_path.is_file()),
+            "warnings": warnings,
+        },
+        "source": {
+            "repair_merge_summary": summary,
+            "repair_merge_patches": repair_merge.get("patches") or [],
+        },
+    }
+
+
+def repair_publish_to_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary", {})
+    warnings = summary.get("warnings") if isinstance(summary.get("warnings"), list) else []
+    lines = [
+        "# 局部修复发布确认",
+        "",
+        "| 指标 | 值 |",
+        "| --- | --- |",
+        f"| 状态 | `{summary.get('publish_status') or '-'}` |",
+        f"| 已请求发布确认 | {summary.get('confirmed', False)} |",
+        f"| 已发布副本 | {summary.get('published', False)} |",
+        f"| 已应用补丁 | {summary.get('applied_count', 0)} |",
+        f"| 已修改 chunk | {summary.get('patched_chunk_count', 0)} |",
+        f"| 待人工合并 | {summary.get('manual_merge_required_count', 0)} |",
+        f"| 冲突 | {summary.get('conflict_count', 0)} |",
+        f"| 发布副本 | `{summary.get('published_full_path') or '-'}` |",
+        f"| 修复合并译文 | `{summary.get('source_repaired_full_path') or '-'}` |",
+        f"| 原始译文 | `{summary.get('original_full_path') or '-'}` |",
+        f"| 可回滚 | {summary.get('rollback_available', False)} |",
+        "",
+        summary.get("reason") or "",
+    ]
+    if warnings:
+        lines.extend(["", "## 警告", ""])
+        lines.extend(f"- {warning}" for warning in warnings)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_repair_publish(
+    repair_merge: dict[str, Any],
+    json_path: Path,
+    markdown_path: Path,
+    *,
+    confirm: bool = False,
+    source_full_path: Path | None = None,
+    published_full_path: Path | None = None,
+    original_full_path: Path | None = None,
+) -> dict[str, Any]:
+    report = build_repair_publish(
+        repair_merge,
+        confirm=confirm,
+        source_full_path=source_full_path,
+        published_full_path=published_full_path or json_path.parent / "published_full.md",
+        original_full_path=original_full_path,
+    )
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(repair_publish_to_markdown(report), encoding="utf-8")
     return report

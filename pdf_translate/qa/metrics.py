@@ -28,6 +28,8 @@ DEFAULT_EVIDENCE_FILES = {
     "repair_validation": "output/repair_validation.json",
     "repair_merge": "output/repair_merge.json",
     "repair_merge_qa": "output/repair_merge_qa.json",
+    "repair_publish": "output/repair_publish.json",
+    "repair_published_full": "output/published_full.md",
     "translated_pdf": "output/translated_full.pdf",
     "translated_pdf_report": "output/translated_pdf_report.json",
     "run_metrics": "output/run_metrics.json",
@@ -111,6 +113,7 @@ def build_experiment_metrics(
     repair_validation: dict[str, Any] | None = None,
     repair_merge: dict[str, Any] | None = None,
     repair_merge_qa: dict[str, Any] | None = None,
+    repair_publish: dict[str, Any] | None = None,
     translated_pdf_report: dict[str, Any] | None = None,
     run_metrics: dict[str, Any] | None = None,
     cost_estimate: dict[str, Any] | None = None,
@@ -137,6 +140,7 @@ def build_experiment_metrics(
     repair_validation_summary = _summary(repair_validation)
     repair_merge_summary = _summary(repair_merge)
     repair_merge_qa_summary = _summary(repair_merge_qa)
+    repair_publish_summary = _summary(repair_publish)
     translated_pdf_summary = _summary(translated_pdf_report)
     run_summary = _summary(run_metrics)
     cost_summary = _summary(cost_estimate)
@@ -540,6 +544,10 @@ def build_experiment_metrics(
     repair_merge_table_targeted_patch_count = _as_int(repair_merge_summary.get("table_targeted_patch_count"))
     repair_merge_strategy_counts = _counter_dict(repair_merge_summary.get("strategy_counts"))
     repair_merge_applied_strategy_counts = _counter_dict(repair_merge_summary.get("applied_strategy_counts"))
+    repair_publish_confirmed = _as_bool(repair_publish_summary.get("confirmed"))
+    repair_publish_published = _as_bool(repair_publish_summary.get("published"))
+    repair_publish_open_issue_count = _as_int(repair_publish_summary.get("open_merge_issue_count"))
+    repair_publish_status = str(repair_publish_summary.get("publish_status") or "")
     post_repair_issue_count = _as_int(repair_merge_qa_summary.get("issue_count"))
     post_repair_table_shape_error_count = _as_int(repair_merge_qa_summary.get("table_shape_error_count"))
     post_repair_table_cell_token_error_count = _as_int(repair_merge_qa_summary.get("table_cell_token_error_count"))
@@ -827,6 +835,9 @@ def build_experiment_metrics(
             "repair_merge_manual_required_count": repair_merge_manual_required_count,
             "repair_merge_conflict_count": repair_merge_conflict_count,
             "repair_merge_table_targeted_patch_count": repair_merge_table_targeted_patch_count,
+            "repair_publish_confirmed": repair_publish_confirmed,
+            "repair_publish_published": repair_publish_published,
+            "repair_publish_open_issue_count": repair_publish_open_issue_count,
             "post_repair_issue_count": post_repair_issue_count,
             "post_repair_issue_delta": translation_issue_count - post_repair_issue_count,
             "post_repair_table_shape_error_count": post_repair_table_shape_error_count,
@@ -988,6 +999,7 @@ def build_experiment_metrics(
                 repair_merge_table_targeted_patch_count,
                 repair_merge_applied_count,
             ),
+            "repair_publish_rate": _rate(int(repair_publish_published), int(repair_publish_confirmed)),
             "post_repair_issue_reduction_rate": _rate(
                 translation_issue_count - post_repair_issue_count,
                 translation_issue_count,
@@ -1158,6 +1170,7 @@ def build_experiment_metrics(
             "repair_scope_counts": repair_scope_counts,
             "repair_merge_strategy_counts": repair_merge_strategy_counts,
             "repair_merge_applied_strategy_counts": repair_merge_applied_strategy_counts,
+            "repair_publish_status_counts": {repair_publish_status: 1} if repair_publish_status else {},
             "stage_elapsed_ms": stage_elapsed_ms,
             "stage_counts": stage_counts,
             "translator_counts": translator_counts,
@@ -1202,6 +1215,7 @@ def write_experiment_metrics(
     repair_validation: dict[str, Any] | None = None,
     repair_merge: dict[str, Any] | None = None,
     repair_merge_qa: dict[str, Any] | None = None,
+    repair_publish: dict[str, Any] | None = None,
     translated_pdf_report: dict[str, Any] | None = None,
     run_metrics: dict[str, Any] | None = None,
     cost_estimate: dict[str, Any] | None = None,
@@ -1228,6 +1242,7 @@ def write_experiment_metrics(
         repair_validation=repair_validation,
         repair_merge=repair_merge,
         repair_merge_qa=repair_merge_qa,
+        repair_publish=repair_publish,
         translated_pdf_report=translated_pdf_report,
         run_metrics=run_metrics,
         cost_estimate=cost_estimate,

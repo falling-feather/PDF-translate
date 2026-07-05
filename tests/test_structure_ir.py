@@ -37,6 +37,7 @@ from pdf_translate.qa.repair import (
     build_repair_requests,
     build_repair_results,
     build_repair_merge,
+    build_repair_publish,
     build_repair_validation,
 )
 from pdf_translate.qa.structure import build_structure_qa
@@ -1137,6 +1138,30 @@ class StructureIRTests(unittest.TestCase):
             repaired_chunk = (root / "repaired_chunks" / "c0000.md").read_text(encoding="utf-8")
             self.assertIn("| BERT | 91.2% | p<0.05 |", repaired_chunk)
             self.assertTrue((root / "repaired_full.md").is_file())
+            draft_publish = build_repair_publish(
+                merge,
+                source_full_path=root / "repaired_full.md",
+                published_full_path=root / "published_full.md",
+                original_full_path=chunk_dir / "c0000.md",
+            )
+            self.assertEqual(draft_publish["schema_version"], "repair-publish-v1")
+            self.assertFalse(draft_publish["summary"]["confirmed"])
+            self.assertFalse(draft_publish["summary"]["published"])
+            self.assertEqual(draft_publish["summary"]["publish_status"], "pending_confirmation")
+            self.assertFalse((root / "published_full.md").exists())
+            confirmed_publish = build_repair_publish(
+                merge,
+                confirm=True,
+                source_full_path=root / "repaired_full.md",
+                published_full_path=root / "published_full.md",
+                original_full_path=chunk_dir / "c0000.md",
+            )
+            self.assertTrue(confirmed_publish["summary"]["confirmed"])
+            self.assertTrue(confirmed_publish["summary"]["published"])
+            self.assertEqual(confirmed_publish["summary"]["publish_status"], "published")
+            self.assertTrue(confirmed_publish["summary"]["rollback_available"])
+            published_text = (root / "published_full.md").read_text(encoding="utf-8")
+            self.assertIn("| BERT | 91.2% | p<0.05 |", published_text)
         finally:
             if root.exists():
                 shutil.rmtree(root)
@@ -3265,6 +3290,15 @@ class StructureIRTests(unittest.TestCase):
                     "missing_table_locked_token_count": 1,
                 },
             },
+            repair_publish={
+                "schema_version": "repair-publish-v1",
+                "summary": {
+                    "confirmed": True,
+                    "published": True,
+                    "publish_status": "published_with_warnings",
+                    "open_merge_issue_count": 1,
+                },
+            },
             translated_pdf_report={
                 "schema_version": "translated-pdf-report-v1",
                 "summary": {
@@ -3412,6 +3446,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["repair_merge_patched_chunk_count"], 1)
         self.assertEqual(metrics["quality"]["repair_merge_manual_required_count"], 1)
         self.assertEqual(metrics["quality"]["repair_merge_table_targeted_patch_count"], 1)
+        self.assertTrue(metrics["quality"]["repair_publish_confirmed"])
+        self.assertTrue(metrics["quality"]["repair_publish_published"])
+        self.assertEqual(metrics["quality"]["repair_publish_open_issue_count"], 1)
         self.assertEqual(metrics["quality"]["post_repair_issue_count"], 3)
         self.assertEqual(metrics["quality"]["post_repair_issue_delta"], 1)
         self.assertEqual(metrics["quality"]["post_repair_table_cell_token_error_count"], 1)
@@ -3536,7 +3573,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["repair_table_shape_validation_pass_rate"], 0.5)
         self.assertEqual(metrics["rates"]["repair_merge_apply_rate"], 0.5)
         self.assertEqual(metrics["rates"]["repair_merge_table_targeted_patch_rate"], 1.0)
+        self.assertEqual(metrics["rates"]["repair_publish_rate"], 1.0)
         self.assertEqual(metrics["breakdowns"]["repair_merge_strategy_counts"]["replace_markdown_table_by_evidence"], 1)
+        self.assertEqual(metrics["breakdowns"]["repair_publish_status_counts"]["published_with_warnings"], 1)
         self.assertEqual(
             metrics["breakdowns"]["repair_merge_applied_strategy_counts"]["replace_markdown_table_by_evidence"],
             1,
@@ -3695,6 +3734,8 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["evidence_files"]["repair_results"], "output/repair_results.json")
         self.assertEqual(metrics["evidence_files"]["repair_validation"], "output/repair_validation.json")
         self.assertEqual(metrics["evidence_files"]["repair_merge"], "output/repair_merge.json")
+        self.assertEqual(metrics["evidence_files"]["repair_publish"], "output/repair_publish.json")
+        self.assertEqual(metrics["evidence_files"]["repair_published_full"], "output/published_full.md")
         self.assertEqual(metrics["evidence_files"]["repair_merge_qa"], "output/repair_merge_qa.json")
         self.assertEqual(metrics["evidence_files"]["run_metrics"], "output/run_metrics.json")
         self.assertEqual(metrics["evidence_files"]["run_log"], "output/run_log.jsonl")
@@ -4303,9 +4344,12 @@ class StructureIRTests(unittest.TestCase):
             repair_validation_md_path = work_dir / "output" / "repair_validation.md"
             repair_merge_path = work_dir / "output" / "repair_merge.json"
             repair_merge_md_path = work_dir / "output" / "repair_merge.md"
+            repair_publish_path = work_dir / "output" / "repair_publish.json"
+            repair_publish_md_path = work_dir / "output" / "repair_publish.md"
             repair_merge_qa_path = work_dir / "output" / "repair_merge_qa.json"
             repair_merge_qa_md_path = work_dir / "output" / "repair_merge_qa.md"
             repaired_full_path = work_dir / "output" / "repaired_full.md"
+            published_full_path = work_dir / "output" / "published_full.md"
             metrics_path = work_dir / "output" / "experiment_metrics.json"
             run_metrics_path = work_dir / "output" / "run_metrics.json"
             run_log_path = work_dir / "output" / "run_log.jsonl"
@@ -4343,9 +4387,12 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(repair_validation_md_path.is_file())
             self.assertTrue(repair_merge_path.is_file())
             self.assertTrue(repair_merge_md_path.is_file())
+            self.assertTrue(repair_publish_path.is_file())
+            self.assertTrue(repair_publish_md_path.is_file())
             self.assertTrue(repair_merge_qa_path.is_file())
             self.assertTrue(repair_merge_qa_md_path.is_file())
             self.assertTrue(repaired_full_path.is_file())
+            self.assertFalse(published_full_path.exists())
             self.assertTrue(metrics_path.is_file())
             self.assertTrue(run_metrics_path.is_file())
             self.assertTrue(run_log_path.is_file())
@@ -4375,6 +4422,7 @@ class StructureIRTests(unittest.TestCase):
             repair_results = json.loads(repair_results_path.read_text(encoding="utf-8"))
             repair_validation = json.loads(repair_validation_path.read_text(encoding="utf-8"))
             repair_merge = json.loads(repair_merge_path.read_text(encoding="utf-8"))
+            repair_publish = json.loads(repair_publish_path.read_text(encoding="utf-8"))
             repair_merge_qa = json.loads(repair_merge_qa_path.read_text(encoding="utf-8"))
             metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
             run_metrics = json.loads(run_metrics_path.read_text(encoding="utf-8"))
@@ -4484,6 +4532,10 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("validated_result_count", repair_validation["summary"])
             self.assertEqual(repair_merge["schema_version"], "repair-merge-v1")
             self.assertIn("applied_count", repair_merge["summary"])
+            self.assertEqual(repair_publish["schema_version"], "repair-publish-v1")
+            self.assertFalse(repair_publish["summary"]["confirmed"])
+            self.assertFalse(repair_publish["summary"]["published"])
+            self.assertEqual(repair_publish["summary"]["publish_status"], "pending_confirmation")
             self.assertEqual(repair_merge_qa["schema_version"], "translation-qa-v1")
             self.assertEqual(run_metrics["schema_version"], "run-metrics-v1")
             self.assertEqual(run_metrics["pipeline_variant"], "structure")
@@ -4493,6 +4545,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertGreater(run_metrics["summary"]["request_char_count"], 0)
             self.assertIn("document_ir", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("ocr_candidate_promotion", run_metrics["summary"]["stage_elapsed_ms"])
+            self.assertIn("repair_publish", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("translated_pdf", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertTrue(any(event["event_type"] == "chunk_translation" for event in run_log_lines))
             self.assertEqual(cost_estimate["schema_version"], "cost-estimate-v1")
@@ -4541,6 +4594,10 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(metrics["evidence_files"]["ocr_candidate_promotion"], "output/ocr_candidate_promotion.json")
             self.assertEqual(metrics["evidence_files"]["document_ir_ocr"], "output/document_ir_ocr.json")
             self.assertEqual(metrics["evidence_files"]["document_ir_promoted"], "output/document_ir_promoted.json")
+            self.assertFalse(metrics["quality"]["repair_publish_published"])
+            self.assertEqual(metrics["breakdowns"]["repair_publish_status_counts"]["pending_confirmation"], 1)
+            self.assertEqual(metrics["evidence_files"]["repair_publish"], "output/repair_publish.json")
+            self.assertEqual(metrics["evidence_files"]["repair_published_full"], "output/published_full.md")
             self.assertIn("entity_missing_rate", metrics["rates"])
             self.assertIn("split_boundary_rate", metrics["rates"])
             self.assertIn("budget_overflow_chunk_rate", metrics["rates"])
@@ -4645,8 +4702,11 @@ class StructureIRTests(unittest.TestCase):
                 "repair_validation.md",
                 "repair_merge.json",
                 "repair_merge.md",
+                "repair_publish.json",
+                "repair_publish.md",
                 "repair_merge_qa.json",
                 "repair_merge_qa.md",
+                "published_full.md",
                 "experiment_metrics.json",
                 "run_metrics.json",
                 "cost_estimate.json",
@@ -4665,6 +4725,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/repair_results.json", rels)
             self.assertIn("output/repair_validation.json", rels)
             self.assertIn("output/repair_merge.json", rels)
+            self.assertIn("output/repair_publish.json", rels)
+            self.assertIn("output/repair_publish.md", rels)
             self.assertIn("output/repair_merge_qa.json", rels)
             self.assertIn("output/repairs/rq0000.md", rels)
             self.assertIn("output/repaired_chunks/c0000.md", rels)
@@ -4680,6 +4742,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/ocr_candidate_promotion.md", rels)
             self.assertIn("output/document_ir_promoted.json", rels)
             self.assertIn("output/repaired_full.md", rels)
+            self.assertIn("output/published_full.md", rels)
             self.assertIn("output/translated_full.pdf", rels)
             self.assertIn("output/translated_pdf_report.json", rels)
             self.assertIn("output/bilingual.html", rels)
@@ -4701,7 +4764,10 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(map_bundle_arcname("output/repair_results.md"), "质量/局部修复结果.md")
             self.assertEqual(map_bundle_arcname("output/repair_validation.md"), "质量/局部修复验证.md")
             self.assertEqual(map_bundle_arcname("output/repair_merge.md"), "质量/局部修复合并.md")
+            self.assertEqual(map_bundle_arcname("output/repair_publish.json"), "质量/局部修复发布确认.json")
+            self.assertEqual(map_bundle_arcname("output/repair_publish.md"), "质量/局部修复发布确认.md")
             self.assertEqual(map_bundle_arcname("output/repair_merge_qa.md"), "质量/局部修复后QA.md")
+            self.assertEqual(map_bundle_arcname("output/published_full.md"), "译文/人工确认修复发布稿.md")
             self.assertEqual(map_bundle_arcname("output/repairs/rq0000.md"), "质量/局部修复片段/rq0000.md")
             self.assertEqual(map_bundle_arcname("output/repaired_chunks/c0000.md"), "译文/局部修复分块/c0000.md")
             self.assertEqual(

@@ -100,6 +100,11 @@ def cmd_translate(
         min=1,
         help="最多执行 N 条局部修复请求；仅 --execute-repairs 生效",
     ),
+    publish_repairs: bool = typer.Option(
+        False,
+        "--publish-repairs",
+        help="人工确认后把已验证修复合并稿复制为发布副本 published_full.md；不覆盖原译文",
+    ),
     chunk_strategy: str = typer.Option(
         "page",
         "--chunk-strategy",
@@ -134,6 +139,7 @@ def cmd_translate(
         chunk_strategy=chunk_strategy,  # type: ignore[arg-type]
         execute_repair_requests=execute_repairs,
         max_repair_requests=max_repair_requests,
+        publish_repairs=publish_repairs,
         ocr_results_path=ocr_results,
         execute_ocr=execute_ocr,
         ocr_engine=ocr_engine,
@@ -228,6 +234,11 @@ def cmd_run(
         min=1,
         help="最多执行 N 条局部修复请求；仅 --execute-repairs 生效",
     ),
+    publish_repairs: bool = typer.Option(
+        False,
+        "--publish-repairs",
+        help="人工确认后把已验证修复合并稿复制为发布副本 published_full.md；不覆盖原译文",
+    ),
     chunk_strategy: str = typer.Option(
         "page",
         "--chunk-strategy",
@@ -265,6 +276,7 @@ def cmd_run(
         chunk_strategy=chunk_strategy,  # type: ignore[arg-type]
         execute_repair_requests=execute_repairs,
         max_repair_requests=max_repair_requests,
+        publish_repairs=publish_repairs,
         ocr_results_path=ocr_results,
         execute_ocr=execute_ocr,
         ocr_engine=ocr_engine,

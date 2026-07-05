@@ -114,6 +114,9 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "repair_request_count",
         "repair_merge_applied_count",
         "repair_merge_table_targeted_patch_count",
+        "repair_publish_confirmed",
+        "repair_publish_published",
+        "repair_publish_open_issue_count",
         "post_repair_issue_count",
     ],
     "rates": [
@@ -165,6 +168,7 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "qa_issue_per_chunk",
         "repair_merge_apply_rate",
         "repair_merge_table_targeted_patch_rate",
+        "repair_publish_rate",
         "post_repair_issue_reduction_rate",
     ],
     "performance": [
@@ -218,6 +222,7 @@ COMPARISON_FIELDS = [
     ("rates", "ocr_table_cell_bbox_coverage_rate"),
     ("rates", "ocr_structured_formula_gate_pass_rate"),
     ("rates", "ocr_structured_formula_promotion_rate"),
+    ("rates", "repair_publish_rate"),
     ("performance", "total_elapsed_ms"),
     ("performance", "translation_request_count"),
     ("performance", "estimated_total_cost"),

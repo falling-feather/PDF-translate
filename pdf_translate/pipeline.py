@@ -29,6 +29,7 @@ from pdf_translate.qa.repair import (
     write_repair_requests,
     write_repair_results,
     write_repair_merge,
+    write_repair_publish,
     write_repair_validation,
 )
 from pdf_translate.qa.structure import write_structure_qa
@@ -247,6 +248,7 @@ def run_translate(
     chunk_strategy: Literal["page", "structure"] = "page",
     execute_repair_requests: bool = False,
     max_repair_requests: int | None = None,
+    publish_repairs: bool = False,
     ocr_results_path: Path | None = None,
     execute_ocr: bool = False,
     ocr_engine: str = "tesseract_cli",
@@ -510,6 +512,16 @@ def run_translate(
                 document_ir=doc_ir,
                 table_reconstruction=table_reconstruction,
             )
+        with run_metrics.stage("repair_publish", confirmed=publish_repairs):
+            repair_publish = write_repair_publish(
+                repair_merge,
+                out_dir / "repair_publish.json",
+                out_dir / "repair_publish.md",
+                confirm=publish_repairs,
+                source_full_path=out_dir / "repaired_full.md",
+                published_full_path=out_dir / "published_full.md",
+                original_full_path=out_dir / "translated_full.md",
+            )
         with run_metrics.stage("bilingual_html"):
             write_bilingual_html(
                 chunks,
@@ -572,6 +584,7 @@ def run_translate(
             repair_validation=repair_validation,
             repair_merge=repair_merge,
             repair_merge_qa=repair_merge_qa,
+            repair_publish=repair_publish,
             translated_pdf_report=translated_pdf_report,
             run_metrics=run_metrics_summary,
             cost_estimate=cost_estimate,
