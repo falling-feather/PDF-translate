@@ -813,6 +813,38 @@ class JobStatusSnapshotTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        (out / "vlm_review.md").write_text("# VLM review", encoding="utf-8")
+        (out / "vlm_review.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "vlm-fallback-review-v1",
+                    "summary": {
+                        "review_count": 3,
+                        "review_required_count": 2,
+                        "pending_review_count": 1,
+                        "human_reviewed_count": 2,
+                        "accepted_result_count": 1,
+                        "marked_unusable_count": 1,
+                        "needs_revision_count": 1,
+                        "ready_for_writeback_count": 1,
+                        "structured_result_count": 1,
+                    },
+                    "reviews": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (out / "vlm_results.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "ocr-results-v1",
+                    "source": "vlm_fallback_review",
+                    "summary": {"result_count": 1},
+                    "results": [{"task_id": "ocr-p0001-table", "text": "Recovered table"}],
+                }
+            ),
+            encoding="utf-8",
+        )
         registry.update(rec.job_id, status="done", phase="done")
 
         merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
@@ -870,6 +902,20 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(merged[0]["vlm_fallback_ocr_low_confidence_task_count"], 2)
         self.assertEqual(merged[0]["vlm_fallback_ocr_candidate_gate_task_count"], 2)
         self.assertEqual(merged[0]["vlm_fallback_structured_gate_task_count"], 1)
+        self.assertTrue(merged[0]["vlm_fallback_review_ready"])
+        self.assertGreater(merged[0]["vlm_fallback_review_bytes"], 0)
+        self.assertEqual(merged[0]["vlm_fallback_review_count"], 3)
+        self.assertEqual(merged[0]["vlm_fallback_review_required_count"], 2)
+        self.assertEqual(merged[0]["vlm_fallback_review_pending_count"], 1)
+        self.assertEqual(merged[0]["vlm_fallback_review_human_reviewed_count"], 2)
+        self.assertEqual(merged[0]["vlm_fallback_review_accepted_result_count"], 1)
+        self.assertEqual(merged[0]["vlm_fallback_review_marked_unusable_count"], 1)
+        self.assertEqual(merged[0]["vlm_fallback_review_needs_revision_count"], 1)
+        self.assertEqual(merged[0]["vlm_fallback_review_ready_for_writeback_count"], 1)
+        self.assertEqual(merged[0]["vlm_fallback_review_structured_result_count"], 1)
+        self.assertTrue(merged[0]["vlm_fallback_results_ready"])
+        self.assertGreater(merged[0]["vlm_fallback_results_bytes"], 0)
+        self.assertEqual(merged[0]["vlm_fallback_results_result_count"], 1)
         self.assertTrue(merged[0]["repair_publish_confirmed"])
         self.assertTrue(merged[0]["repair_publish_published"])
         self.assertEqual(merged[0]["repair_publish_status"], "published_with_warnings")
@@ -909,6 +955,7 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertIn("repair_patch_review_blocking_items", merged[0]["artifact_warnings"])
         self.assertIn("table_merged_cell_review_required_items", merged[0]["artifact_warnings"])
         self.assertIn("vlm_fallback_missing_visual_evidence", merged[0]["artifact_warnings"])
+        self.assertIn("vlm_fallback_review_required_items", merged[0]["artifact_warnings"])
 
     def test_vlm_fallback_tasks_downloads_for_user_and_admin(self) -> None:
         root = self._case_root("vlm-fallback-download")
@@ -962,6 +1009,140 @@ class JobStatusSnapshotTests(unittest.TestCase):
         )
         self.assertEqual(admin_download.status_code, 200)
         self.assertEqual(admin_download.json()["tasks"][0]["source_ocr_task_id"], "ocr-p1-table")
+
+    def test_vlm_fallback_review_api_writes_review_and_ocr_results(self) -> None:
+        root = self._case_root("vlm-fallback-review-api")
+        database.configure(root / "app.db")
+        registry = JobRegistry(root / "jobs")
+        rec = registry.create_job(
+            owner_user_id=7,
+            owner_username="alice",
+            original_filename="paper.pdf",
+        )
+        out = rec.work_dir / "output"
+        out.mkdir()
+        payload = {
+            "schema_version": "vlm-fallback-tasks-v1",
+            "doc_id": "vlm-api-sample",
+            "source_pdf": "paper.pdf",
+            "summary": {"task_count": 2, "ready_task_count": 2},
+            "tasks": [
+                {
+                    "task_id": "vlm-p1-table",
+                    "source_ocr_task_id": "ocr-p1-table",
+                    "doc_id": "vlm-api-sample",
+                    "page_no": 1,
+                    "scope": "region",
+                    "layout_scope": "table_region",
+                    "status": "pending_vlm",
+                    "priority": "P0",
+                    "block_id": "p1-b0000",
+                    "block_type": "table",
+                    "target_structure_type": "table",
+                    "expected_outputs": ["plain_text", "structured_cells"],
+                    "trigger_reasons": ["low_confidence"],
+                    "input_path": "vision_crops/page-0001/p1-b0000-table.png",
+                    "page_preview_path": "vision_pages/page-0001.png",
+                    "bbox": [40, 80, 560, 200],
+                },
+                {
+                    "task_id": "vlm-p2-image",
+                    "source_ocr_task_id": "ocr-p2-image",
+                    "doc_id": "vlm-api-sample",
+                    "page_no": 2,
+                    "scope": "region",
+                    "layout_scope": "image_region",
+                    "status": "pending_vlm",
+                    "priority": "P1",
+                    "block_id": "p2-b0000",
+                    "block_type": "image",
+                    "target_structure_type": "image",
+                    "expected_outputs": ["plain_text"],
+                    "trigger_reasons": ["missing_ocr_result"],
+                },
+            ],
+        }
+        (out / "vlm_tasks.json").write_text(json.dumps(payload), encoding="utf-8")
+        registry.update(rec.job_id, status="done", phase="done")
+
+        api = FastAPI()
+        api.include_router(register_web_routes(registry))
+        api.dependency_overrides[bearer_principal] = lambda: Principal(
+            user_id=7,
+            username="alice",
+            role="user",
+        )
+        api.dependency_overrides[require_admin] = lambda: Principal(
+            user_id=1,
+            username="admin",
+            role="admin",
+        )
+        self.addCleanup(api.dependency_overrides.clear)
+        client = TestClient(api)
+
+        review_response = client.get(f"/api/jobs/{rec.job_id}/vlm-fallback-review")
+        self.assertEqual(review_response.status_code, 200)
+        review_payload = review_response.json()
+        self.assertEqual(review_payload["schema_version"], "vlm-fallback-review-v1")
+        self.assertEqual(review_payload["summary"]["review_count"], 2)
+        self.assertTrue((out / "vlm_review.json").is_file())
+        self.assertTrue((out / "vlm_review.md").is_file())
+
+        accept_response = client.post(
+            f"/api/jobs/{rec.job_id}/vlm-fallback-review/vlm-p1-table",
+            json={
+                "decision": "accept_result",
+                "review_text": "Metric | Score\nAccuracy | 91.2",
+                "review_confidence": 0.91,
+                "review_language": "eng",
+                "structured_result": {
+                    "structured_cells": [
+                        {"row_index": 0, "column_index": 0, "text": "Metric"},
+                        {"row_index": 0, "column_index": 1, "text": "Score"},
+                        {"row_index": 1, "column_index": 0, "text": "Accuracy"},
+                        {"row_index": 1, "column_index": 1, "text": "91.2"},
+                    ]
+                },
+                "comment": "manual visual check",
+            },
+        )
+        self.assertEqual(accept_response.status_code, 200)
+        accepted = accept_response.json()
+        self.assertEqual(accepted["vlm_fallback_review_summary"]["ready_for_writeback_count"], 1)
+        self.assertEqual(accepted["vlm_fallback_results_summary"]["result_count"], 1)
+        result_payload = json.loads((out / "vlm_results.json").read_text(encoding="utf-8"))
+        self.assertEqual(result_payload["schema_version"], "ocr-results-v1")
+        self.assertEqual(result_payload["results"][0]["task_id"], "ocr-p1-table")
+        self.assertEqual(result_payload["results"][0]["structured_cells"][3]["text"], "91.2")
+
+        batch_response = client.post(
+            f"/api/jobs/{rec.job_id}/vlm-fallback-review/batch",
+            json={
+                "review_ids": ["vlm-p2-image"],
+                "decision": "mark_unusable",
+                "comment": "no readable image evidence",
+            },
+        )
+        self.assertEqual(batch_response.status_code, 200)
+        batched = batch_response.json()
+        self.assertEqual(batched["vlm_fallback_review_summary"]["marked_unusable_count"], 1)
+        self.assertEqual(batched["vlm_fallback_review_summary"]["review_required_count"], 0)
+
+        review_download = client.get(f"/api/jobs/{rec.job_id}/download/vlm-review.md")
+        self.assertEqual(review_download.status_code, 200)
+        self.assertIn("vlm_review.md", review_download.headers["content-disposition"])
+        result_download = client.get(f"/api/jobs/{rec.job_id}/download/vlm-results.json")
+        self.assertEqual(result_download.status_code, 200)
+        self.assertEqual(result_download.json()["results"][0]["task_id"], "ocr-p1-table")
+        admin_download = client.get(
+            f"/api/admin/jobs/{rec.job_id}/artifact?kind=vlm_fallback_results"
+        )
+        self.assertEqual(admin_download.status_code, 200)
+        self.assertEqual(admin_download.json()["source"], "vlm_fallback_review")
+
+        actions = [event["action"] for event in database.list_audit(limit=10)]
+        self.assertIn("job_vlm_fallback_review_update", actions)
+        self.assertIn("job_vlm_fallback_review_batch_update", actions)
 
     def test_artifact_summary_reports_glossary_review_status(self) -> None:
         root = self._case_root("glossary-review-artifacts")

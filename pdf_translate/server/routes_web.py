@@ -41,6 +41,12 @@ from pdf_translate.qa.table_reconstruction import (
     write_table_merged_cell_review_decision,
     write_table_structure_publish,
 )
+from pdf_translate.vision.vlm_review import (
+    write_vlm_fallback_review,
+    write_vlm_fallback_review_batch_decision,
+    write_vlm_fallback_review_decision,
+    write_vlm_review_ocr_results,
+)
 
 from pdf_translate.server.auth_deps import Principal, bearer_principal, mint_token, require_admin
 from pdf_translate.server import database
@@ -184,6 +190,18 @@ def _read_or_create_table_merged_cell_review(
             invalid_message="表格合并候选确认清单无法解析",
         )
     return write_table_merged_cell_review(table_reconstruction, json_path, md_path)
+
+
+def _read_or_create_vlm_fallback_review(out_dir: Path, vlm_tasks: dict[str, Any]) -> dict[str, Any]:
+    json_path = out_dir / "vlm_review.json"
+    md_path = out_dir / "vlm_review.md"
+    if json_path.is_file() and json_path.stat().st_size > 0:
+        return _read_json_artifact(
+            json_path,
+            missing_message="VLM 复核报告尚未生成",
+            invalid_message="VLM 复核报告无法解析",
+        )
+    return write_vlm_fallback_review(vlm_tasks, json_path, md_path)
 
 
 def _read_or_create_table_structure_publish(
@@ -1415,6 +1433,46 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             headers={"Content-Disposition": cd},
         )
 
+    @api.get("/jobs/{job_id}/download/vlm-review.md")
+    def download_vlm_fallback_review(
+        job_id: str,
+        p: Principal = Depends(bearer_principal),
+    ) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "vlm_review.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "VLM 复核报告尚未生成")
+        ascii_fallback = "vlm_review.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_vlm_review.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
+    @api.get("/jobs/{job_id}/download/vlm-results.json")
+    def download_vlm_fallback_results(
+        job_id: str,
+        p: Principal = Depends(bearer_principal),
+    ) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "vlm_results.json"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "VLM 复核回写结果尚未生成")
+        ascii_fallback = "vlm_results.json"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_vlm_results.json"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
     @api.get("/jobs/{job_id}/download/glossary-retranslation-plan.md")
     def download_glossary_retranslation_plan_md(
         job_id: str,
@@ -2035,6 +2093,156 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         d["table_structure_publish_summary"] = summary
         return d
 
+    @api.get("/jobs/{job_id}/vlm-fallback-review")
+    def get_vlm_fallback_review(job_id: str, p: Principal = Depends(bearer_principal)) -> dict:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        out_dir = rec.work_dir / "output"
+        vlm_tasks = _read_json_artifact(
+            out_dir / "vlm_tasks.json",
+            missing_message="VLM 复核任务清单尚未生成",
+            invalid_message="VLM 复核任务清单无法解析",
+        )
+        return _read_or_create_vlm_fallback_review(out_dir, vlm_tasks)
+
+    @api.post("/jobs/{job_id}/vlm-fallback-review/batch")
+    def update_vlm_fallback_review_batch(
+        job_id: str,
+        request: Request,
+        payload: dict[str, Any] = Body(...),
+        p: Principal = Depends(bearer_principal),
+    ) -> dict:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        if rec.status != "done":
+            raise HTTPException(409, "任务尚未完成，暂不能批量审核 VLM 复核项")
+        out_dir = rec.work_dir / "output"
+        vlm_tasks = _read_json_artifact(
+            out_dir / "vlm_tasks.json",
+            missing_message="VLM 复核任务清单尚未生成",
+            invalid_message="VLM 复核任务清单无法解析",
+        )
+        _read_or_create_vlm_fallback_review(out_dir, vlm_tasks)
+        review_ids = payload.get("review_ids")
+        try:
+            report = write_vlm_fallback_review_batch_decision(
+                out_dir / "vlm_review.json",
+                out_dir / "vlm_review.md",
+                review_ids,
+                decision=payload.get("decision"),
+                reviewer=p.username,
+                comment=payload.get("comment") or "",
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(404, f"VLM 复核项不存在：{exc}") from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "VLM 复核报告尚未生成") from exc
+        results = write_vlm_review_ocr_results(report, out_dir / "vlm_results.json")
+        updated_review_ids: list[str] = []
+        seen_review_ids: set[str] = set()
+        if isinstance(review_ids, list):
+            for item in review_ids:
+                item_id = str(item or "").strip()
+                if item_id and item_id not in seen_review_ids:
+                    seen_review_ids.add(item_id)
+                    updated_review_ids.append(item_id)
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        result_summary = results.get("summary") if isinstance(results.get("summary"), dict) else {}
+        updated_count = len(updated_review_ids)
+        app_registry.update(job_id, message=f"已批量更新 {updated_count} 个 VLM 复核项")
+        database.log_audit(
+            action="job_vlm_fallback_review_batch_update",
+            ip=client_ip(request),
+            user_id=p.user_id,
+            username=p.username,
+            job_id=job_id,
+            detail={
+                "review_ids": updated_review_ids,
+                "updated_count": updated_count,
+                "decision": payload.get("decision"),
+                "review_required_count": summary.get("review_required_count"),
+                "human_reviewed_count": summary.get("human_reviewed_count"),
+                "ready_for_writeback_count": summary.get("ready_for_writeback_count"),
+                "vlm_result_count": result_summary.get("result_count"),
+            },
+        )
+        updated = app_registry.get(job_id) or rec
+        d = _job_dict(updated)
+        d["vlm_fallback_review_summary"] = summary
+        d["vlm_fallback_results_summary"] = result_summary
+        return d
+
+    @api.post("/jobs/{job_id}/vlm-fallback-review/{review_id}")
+    def update_vlm_fallback_review(
+        job_id: str,
+        review_id: str,
+        request: Request,
+        payload: dict[str, Any] = Body(...),
+        p: Principal = Depends(bearer_principal),
+    ) -> dict:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        if rec.status != "done":
+            raise HTTPException(409, "任务尚未完成，暂不能审核 VLM 复核项")
+        out_dir = rec.work_dir / "output"
+        vlm_tasks = _read_json_artifact(
+            out_dir / "vlm_tasks.json",
+            missing_message="VLM 复核任务清单尚未生成",
+            invalid_message="VLM 复核任务清单无法解析",
+        )
+        _read_or_create_vlm_fallback_review(out_dir, vlm_tasks)
+        text = payload.get("review_text") if "review_text" in payload else payload.get("text")
+        confidence = payload.get("review_confidence") if "review_confidence" in payload else payload.get("confidence")
+        language = payload.get("review_language") if "review_language" in payload else payload.get("language")
+        try:
+            report = write_vlm_fallback_review_decision(
+                out_dir / "vlm_review.json",
+                out_dir / "vlm_review.md",
+                review_id,
+                decision=payload.get("decision"),
+                reviewer=p.username,
+                comment=payload.get("comment") or "",
+                text=text,
+                confidence=confidence,
+                language=language or "",
+                structured_result=payload.get("structured_result"),
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(404, f"VLM 复核项不存在：{review_id}") from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "VLM 复核报告尚未生成") from exc
+        results = write_vlm_review_ocr_results(report, out_dir / "vlm_results.json")
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        result_summary = results.get("summary") if isinstance(results.get("summary"), dict) else {}
+        app_registry.update(job_id, message="已更新 VLM 复核项")
+        database.log_audit(
+            action="job_vlm_fallback_review_update",
+            ip=client_ip(request),
+            user_id=p.user_id,
+            username=p.username,
+            job_id=job_id,
+            detail={
+                "review_id": review_id,
+                "decision": payload.get("decision"),
+                "review_required_count": summary.get("review_required_count"),
+                "human_reviewed_count": summary.get("human_reviewed_count"),
+                "ready_for_writeback_count": summary.get("ready_for_writeback_count"),
+                "vlm_result_count": result_summary.get("result_count"),
+            },
+        )
+        updated = app_registry.get(job_id) or rec
+        d = _job_dict(updated)
+        d["vlm_fallback_review_summary"] = summary
+        d["vlm_fallback_results_summary"] = result_summary
+        return d
+
     @api.get("/jobs/{job_id}/repair-patch-review")
     def get_repair_patch_review(job_id: str, p: Principal = Depends(bearer_principal)) -> dict:
         rec = app_registry.get(job_id)
@@ -2589,6 +2797,24 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
                 filename="vlm_tasks.json",
                 media_type="application/json; charset=utf-8",
             )
+        if kind == "vlm_fallback_review":
+            p = root / "output" / "vlm_review.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "VLM 复核报告尚未生成")
+            return FileResponse(
+                p,
+                filename="vlm_review.md",
+                media_type="text/markdown; charset=utf-8",
+            )
+        if kind == "vlm_fallback_results":
+            p = root / "output" / "vlm_results.json"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "VLM 复核回写结果尚未生成")
+            return FileResponse(
+                p,
+                filename="vlm_results.json",
+                media_type="application/json; charset=utf-8",
+            )
         if kind == "glossary_retranslation_plan_md":
             p = root / "output" / "glossary_retranslation_plan.md"
             if not p.is_file() or p.stat().st_size == 0:
@@ -2719,7 +2945,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             return Response(content=data, media_type="application/zip", headers={"Content-Disposition": cd})
         raise HTTPException(
             400,
-            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_effectiveness / repair_rollback / repair_formal_replace / repair_formal_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / vlm_fallback_tasks / glossary_retranslation_plan_md / glossary_retranslation_plan_json / glossary_retranslation_result_md / glossary_retranslation_result_json / glossary_retranslated_full / glossary_retranslation_publish / glossary_retranslation_published_full / glossary_retranslation_rollback / glossary_retranslation_rollback_full / repair_published_full / repair_rollback_full / repair_formal_full / repair_formal_backup_full / repair_formal_active_before_rollback_full / bundle_zip",
+            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_effectiveness / repair_rollback / repair_formal_replace / repair_formal_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / vlm_fallback_tasks / vlm_fallback_review / vlm_fallback_results / glossary_retranslation_plan_md / glossary_retranslation_plan_json / glossary_retranslation_result_md / glossary_retranslation_result_json / glossary_retranslated_full / glossary_retranslation_publish / glossary_retranslation_published_full / glossary_retranslation_rollback / glossary_retranslation_rollback_full / repair_published_full / repair_rollback_full / repair_formal_full / repair_formal_backup_full / repair_formal_active_before_rollback_full / bundle_zip",
         )
 
     api.include_router(admin)

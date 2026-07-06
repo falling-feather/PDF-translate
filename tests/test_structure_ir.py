@@ -84,6 +84,16 @@ from pdf_translate.translators.http_retry import call_with_http_retry, capture_h
 from pdf_translate.translators.openai_compatible import _build_user_message
 from pdf_translate.vision.ocr_tasks import build_ocr_task_manifest, write_ocr_task_manifest
 from pdf_translate.vision.vlm_tasks import build_vlm_fallback_tasks, write_vlm_fallback_tasks
+from pdf_translate.vision.vlm_review import (
+    apply_vlm_fallback_review_batch_decision,
+    apply_vlm_fallback_review_decision,
+    build_vlm_fallback_review,
+    build_vlm_review_ocr_results,
+    write_vlm_fallback_review,
+    write_vlm_fallback_review_batch_decision,
+    write_vlm_fallback_review_decision,
+    write_vlm_review_ocr_results,
+)
 from pdf_translate.vision.ocr_executor import execute_ocr_tasks
 from pdf_translate.vision.ocr_promotion import build_ocr_candidate_promotion, write_ocr_candidate_promotion
 from pdf_translate.vision.ocr_writeback import (
@@ -4701,6 +4711,222 @@ class StructureIRTests(unittest.TestCase):
         blocked_task = next(task for task in payload["tasks"] if task["source_ocr_task_id"] == "ocr-p0002-image")
         self.assertEqual(blocked_task["status"], "blocked_missing_visual_evidence")
         self.assertIn("missing_visual_evidence", blocked_task["trigger_reasons"])
+
+    def test_vlm_fallback_review_accepts_manual_result_as_ocr_payload(self) -> None:
+        vlm_tasks = {
+            "schema_version": "vlm-fallback-tasks-v1",
+            "doc_id": "vlm-review-sample",
+            "source_pdf": "sample.pdf",
+            "result_contract": {
+                "schema_version": "ocr-results-v1",
+                "task_id_policy": "Return results with source_ocr_task_id.",
+            },
+            "tasks": [
+                {
+                    "task_id": "vlm-ocr-p0001-table",
+                    "source_ocr_task_id": "ocr-p0001-table",
+                    "doc_id": "vlm-review-sample",
+                    "page_no": 1,
+                    "scope": "region",
+                    "layout_scope": "table_region",
+                    "status": "pending_vlm",
+                    "priority": "P0",
+                    "block_id": "p1-b0000",
+                    "block_type": "table",
+                    "target_structure_type": "table",
+                    "trigger_reasons": ["low_confidence", "structured_table_missing_cell_bboxes"],
+                    "source_stages": ["ocr_writeback_rejection", "ocr_candidate_gate"],
+                    "review_goals": ["recover_visible_text", "recover_table_grid_and_cells"],
+                    "expected_outputs": ["plain_text", "structured_cells", "cell_bboxes"],
+                    "input_path": "vision_crops/page-0001/p1-b0000-table.png",
+                    "page_preview_path": "vision_pages/page-0001.png",
+                    "bbox": [60, 540, 500, 620],
+                    "table_context": {"row_count": 2, "column_count": 2},
+                },
+                {
+                    "task_id": "vlm-ocr-p0002-image",
+                    "source_ocr_task_id": "ocr-p0002-image",
+                    "doc_id": "vlm-review-sample",
+                    "page_no": 2,
+                    "scope": "region",
+                    "layout_scope": "image_region",
+                    "status": "blocked_missing_visual_evidence",
+                    "priority": "P1",
+                    "block_id": "p2-b0000",
+                    "block_type": "image",
+                    "target_structure_type": "image",
+                    "trigger_reasons": ["missing_visual_evidence"],
+                    "source_stages": ["ocr_missing_result"],
+                    "review_goals": ["verify_image_caption_relationship"],
+                    "expected_outputs": ["plain_text"],
+                },
+            ],
+        }
+
+        report = build_vlm_fallback_review(vlm_tasks)
+
+        self.assertEqual(report["schema_version"], "vlm-fallback-review-v1")
+        self.assertEqual(report["summary"]["review_count"], 2)
+        self.assertEqual(report["summary"]["pending_review_count"], 1)
+        self.assertEqual(report["summary"]["blocked_by_missing_visual_evidence_count"], 1)
+        table_review = next(item for item in report["reviews"] if item["review_id"] == "vlm-ocr-p0001-table")
+        self.assertEqual(table_review["source_ocr_task_id"], "ocr-p0001-table")
+        self.assertFalse(table_review["ready_for_writeback"])
+
+        apply_vlm_fallback_review_decision(
+            report,
+            "vlm-ocr-p0001-table",
+            decision="accept",
+            reviewer="alice",
+            comment="manual crop review",
+            text="Metric | Score\nAccuracy | 91.2",
+            confidence=0.93,
+            language="eng",
+            structured_result={
+                "structured_cells": [
+                    {"row_index": 0, "column_index": 0, "text": "Metric"},
+                    {"row_index": 0, "column_index": 1, "text": "Score"},
+                    {"row_index": 1, "column_index": 0, "text": "Accuracy"},
+                    {"row_index": 1, "column_index": 1, "text": "91.2"},
+                ],
+                "cell_bboxes": [{"row_index": 1, "column_index": 1, "bbox": [400, 580, 460, 610]}],
+            },
+        )
+        apply_vlm_fallback_review_decision(
+            report,
+            "vlm-ocr-p0002-image",
+            decision="mark_unusable",
+            reviewer="alice",
+            comment="missing image evidence",
+        )
+
+        self.assertEqual(report["summary"]["accepted_result_count"], 1)
+        self.assertEqual(report["summary"]["marked_unusable_count"], 1)
+        self.assertEqual(report["summary"]["ready_for_writeback_count"], 1)
+        self.assertEqual(report["summary"]["review_required_count"], 0)
+
+        results = build_vlm_review_ocr_results(report)
+
+        self.assertEqual(results["schema_version"], "ocr-results-v1")
+        self.assertEqual(results["source"], "vlm_fallback_review")
+        self.assertEqual(results["summary"]["result_count"], 1)
+        self.assertEqual(results["results"][0]["task_id"], "ocr-p0001-table")
+        self.assertEqual(results["results"][0]["text"], "Metric | Score\nAccuracy | 91.2")
+        self.assertEqual(results["results"][0]["confidence"], 0.93)
+        self.assertEqual(results["results"][0]["engine"], "manual_vlm_review")
+        self.assertEqual(results["results"][0]["structured_cells"][3]["text"], "91.2")
+        self.assertIn("source_vlm_review_id:vlm-ocr-p0001-table", results["results"][0]["warnings"])
+
+    def test_vlm_fallback_review_batch_decision_updates_atomically(self) -> None:
+        report = build_vlm_fallback_review(
+            {
+                "schema_version": "vlm-fallback-tasks-v1",
+                "doc_id": "vlm-batch-sample",
+                "tasks": [
+                    {
+                        "task_id": "vlm-a",
+                        "source_ocr_task_id": "ocr-a",
+                        "status": "pending_vlm",
+                        "priority": "P1",
+                    },
+                    {
+                        "task_id": "vlm-b",
+                        "source_ocr_task_id": "ocr-b",
+                        "status": "pending_vlm",
+                        "priority": "P1",
+                    },
+                ],
+            }
+        )
+
+        with self.assertRaises(KeyError):
+            apply_vlm_fallback_review_batch_decision(
+                report,
+                ["vlm-a", "missing"],
+                decision="needs_revision",
+                reviewer="alice",
+            )
+        self.assertEqual(report["summary"]["human_reviewed_count"], 0)
+        self.assertEqual(report["reviews"][0]["human_decision"], "")
+        self.assertEqual(report["reviews"][1]["human_decision"], "")
+
+        with self.assertRaises(ValueError):
+            apply_vlm_fallback_review_batch_decision(
+                report,
+                ["vlm-a", "vlm-b"],
+                decision="accept_result",
+                reviewer="alice",
+            )
+        self.assertEqual(report["summary"]["human_reviewed_count"], 0)
+
+        apply_vlm_fallback_review_batch_decision(
+            report,
+            ["vlm-a", "vlm-b"],
+            decision="needs_revision",
+            reviewer="alice",
+            comment="review later",
+        )
+        self.assertEqual(report["summary"]["human_reviewed_count"], 2)
+        self.assertEqual(report["summary"]["needs_revision_count"], 2)
+        self.assertEqual(report["summary"]["review_required_count"], 2)
+
+    def test_vlm_fallback_review_writes_markdown_and_results(self) -> None:
+        root = Path.cwd() / "test-output" / "vlm-fallback-review"
+        if root.exists():
+            shutil.rmtree(root)
+        try:
+            vlm_tasks = {
+                "schema_version": "vlm-fallback-tasks-v1",
+                "doc_id": "vlm-write-sample",
+                "tasks": [
+                    {
+                        "task_id": "vlm-ocr-a",
+                        "source_ocr_task_id": "ocr-a",
+                        "status": "pending_vlm",
+                        "page_no": 1,
+                        "priority": "P0",
+                        "expected_outputs": ["plain_text"],
+                    }
+                ],
+            }
+            json_path = root / "output" / "vlm_review.json"
+            md_path = root / "output" / "vlm_review.md"
+            result_path = root / "output" / "vlm_results.json"
+            report = write_vlm_fallback_review(vlm_tasks, json_path, md_path)
+            self.assertTrue(json_path.is_file())
+            self.assertTrue(md_path.is_file())
+            self.assertEqual(report["summary"]["review_count"], 1)
+
+            report = write_vlm_fallback_review_decision(
+                json_path,
+                md_path,
+                "vlm-ocr-a",
+                decision="accept_result",
+                reviewer="alice",
+                text="Recovered text",
+                confidence=0.88,
+                language="eng",
+            )
+            results = write_vlm_review_ocr_results(report, result_path)
+
+            self.assertTrue(result_path.is_file())
+            self.assertIn("Recovered text", md_path.read_text(encoding="utf-8"))
+            self.assertEqual(results["results"][0]["task_id"], "ocr-a")
+
+            report = write_vlm_fallback_review_batch_decision(
+                json_path,
+                md_path,
+                ["vlm-ocr-a"],
+                decision="clear",
+                reviewer="alice",
+            )
+            self.assertEqual(report["summary"]["pending_review_count"], 1)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
 
     def test_local_ocr_executor_runs_ready_tasks_into_results_payload(self) -> None:
         root = Path.cwd() / "test-output" / "ocr-executor"

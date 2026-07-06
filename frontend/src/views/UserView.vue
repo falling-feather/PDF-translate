@@ -5,6 +5,7 @@ import { authHeaders, clearSession, getUsername } from "../auth";
 import GlossaryReviewModal from "../components/GlossaryReviewModal.vue";
 import RepairPatchReviewModal from "../components/RepairPatchReviewModal.vue";
 import TableMergedCellReviewModal from "../components/TableMergedCellReviewModal.vue";
+import VlmFallbackReviewModal from "../components/VlmFallbackReviewModal.vue";
 
 const router = useRouter();
 const displayName = computed(() => getUsername());
@@ -46,6 +47,7 @@ const showSupportModal = ref(false);
 const glossaryReviewJobId = ref("");
 const repairPatchReviewJobId = ref("");
 const tableReviewJobId = ref("");
+const vlmReviewJobId = ref("");
 const pageNow = ref(Date.now());
 let footerTimer = null;
 
@@ -182,6 +184,8 @@ function artifactSummary(j) {
   if (j.table_merged_cell_review_ready) ready.push("表格确认");
   if (j.table_structure_publish_ready) ready.push("表格发布");
   if (j.vlm_fallback_tasks_ready) ready.push("VLM复核");
+  if (j.vlm_fallback_review_ready) ready.push("VLM审核");
+  if (j.vlm_fallback_results_ready) ready.push("VLM回写结果");
   if (j.repair_patch_review_ready) ready.push("补丁审核");
   if (j.repair_effectiveness_report_ready) ready.push("修复效果");
   if (j.repair_publish_report_ready) ready.push("修复报告");
@@ -420,6 +424,10 @@ async function reviewTableMergedCell(jid) {
   tableReviewJobId.value = jid;
 }
 
+async function reviewVlmFallback(jid) {
+  vlmReviewJobId.value = jid;
+}
+
 async function onGlossaryReviewUpdated(job) {
   if (job?.job_id) {
     taskMap.value = { ...taskMap.value, [job.job_id]: job };
@@ -435,6 +443,13 @@ async function onTableReviewUpdated(job) {
 }
 
 async function onRepairPatchReviewUpdated(job) {
+  if (job?.job_id) {
+    taskMap.value = { ...taskMap.value, [job.job_id]: job };
+  }
+  await loadMyJobs();
+}
+
+async function onVlmReviewUpdated(job) {
   if (job?.job_id) {
     taskMap.value = { ...taskMap.value, [job.job_id]: job };
   }
@@ -1154,6 +1169,33 @@ onUnmounted(() => {
                   v-if="taskMap[tid].status === 'done'"
                   type="button"
                   class="btn linkish"
+                  :disabled="!taskMap[tid].vlm_fallback_tasks_ready"
+                  @click="reviewVlmFallback(tid)"
+                >
+                  审核VLM
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].vlm_fallback_review_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/vlm-review.md`, `${tid}_vlm_review.md`)"
+                >
+                  VLM审核报告
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].vlm_fallback_results_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/vlm-results.json`, `${tid}_vlm_results.json`)"
+                >
+                  VLM回写
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done'"
+                  type="button"
+                  class="btn linkish"
                   :disabled="!taskMap[tid].repair_patch_review_ready"
                   @click="reviewRepairPatch(tid)"
                 >
@@ -1378,6 +1420,12 @@ onUnmounted(() => {
       :job-id="glossaryReviewJobId"
       @updated="onGlossaryReviewUpdated"
       @close="glossaryReviewJobId = ''"
+    />
+    <VlmFallbackReviewModal
+      v-if="vlmReviewJobId"
+      :job-id="vlmReviewJobId"
+      @updated="onVlmReviewUpdated"
+      @close="vlmReviewJobId = ''"
     />
     <RepairPatchReviewModal
       v-if="repairPatchReviewJobId"

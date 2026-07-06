@@ -585,6 +585,32 @@ class JobRegistry:
         return summary, None
 
     @staticmethod
+    def _vlm_fallback_review_summary(path: Path) -> tuple[dict[str, Any], str | None]:
+        if not path.is_file():
+            return {}, None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}, "vlm_fallback_review_invalid"
+        summary = raw.get("summary")
+        if not isinstance(summary, dict):
+            return {}, "vlm_fallback_review_summary_missing"
+        return summary, None
+
+    @staticmethod
+    def _vlm_fallback_results_summary(path: Path) -> tuple[dict[str, Any], str | None]:
+        if not path.is_file():
+            return {}, None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}, "vlm_fallback_results_invalid"
+        summary = raw.get("summary")
+        if not isinstance(summary, dict):
+            return {}, "vlm_fallback_results_summary_missing"
+        return summary, None
+
+    @staticmethod
     def _glossary_review_summary(memory_dir: Path) -> tuple[dict[str, Any], str | None]:
         if not memory_dir.is_dir():
             return {}, None
@@ -715,6 +741,9 @@ class JobRegistry:
         table_structure_publish_md = output_dir / "table_structure_publish.md"
         table_reconstruction_confirmed_json = output_dir / "table_reconstruction_confirmed.json"
         vlm_tasks_json = output_dir / "vlm_tasks.json"
+        vlm_review_json = output_dir / "vlm_review.json"
+        vlm_review_md = output_dir / "vlm_review.md"
+        vlm_results_json = output_dir / "vlm_results.json"
         input_bytes = self._file_size(input_pdf)
         glossary_bytes = self._file_size(glossary_json)
         pending_review_bytes = self._file_size(pending_review_json)
@@ -761,6 +790,9 @@ class JobRegistry:
         table_structure_publish_md_bytes = self._file_size(table_structure_publish_md)
         table_reconstruction_confirmed_bytes = self._file_size(table_reconstruction_confirmed_json)
         vlm_tasks_json_bytes = self._file_size(vlm_tasks_json)
+        vlm_review_json_bytes = self._file_size(vlm_review_json)
+        vlm_review_md_bytes = self._file_size(vlm_review_md)
+        vlm_results_json_bytes = self._file_size(vlm_results_json)
         repair_summary, repair_warning = self._repair_publish_summary(repair_publish_json)
         repair_rollback_summary, repair_rollback_warning = self._repair_rollback_summary(repair_rollback_json)
         repair_formal_replace_summary, repair_formal_replace_warning = self._repair_formal_replace_summary(
@@ -780,6 +812,8 @@ class JobRegistry:
             table_structure_publish_json
         )
         vlm_tasks_summary, vlm_tasks_warning = self._vlm_fallback_tasks_summary(vlm_tasks_json)
+        vlm_review_summary, vlm_review_warning = self._vlm_fallback_review_summary(vlm_review_json)
+        vlm_results_summary, vlm_results_warning = self._vlm_fallback_results_summary(vlm_results_json)
         glossary_review_summary, glossary_review_warning = self._glossary_review_summary(memory_dir)
         glossary_retranslation_plan_summary, glossary_retranslation_plan_warning = (
             self._glossary_retranslation_plan_summary(glossary_retranslation_plan_json)
@@ -825,6 +859,10 @@ class JobRegistry:
             warnings.append(table_publish_warning)
         if vlm_tasks_warning:
             warnings.append(vlm_tasks_warning)
+        if vlm_review_warning:
+            warnings.append(vlm_review_warning)
+        if vlm_results_warning:
+            warnings.append(vlm_results_warning)
         if glossary_review_warning:
             warnings.append(glossary_review_warning)
         if glossary_retranslation_plan_warning:
@@ -956,6 +994,28 @@ class JobRegistry:
         vlm_fallback_structured_gate_task_count = self._as_int(
             vlm_tasks_summary.get("structured_gate_task_count")
         )
+        vlm_fallback_review_count = self._as_int(vlm_review_summary.get("review_count"))
+        vlm_fallback_review_required_count = self._as_int(vlm_review_summary.get("review_required_count"))
+        vlm_fallback_review_pending_count = self._as_int(vlm_review_summary.get("pending_review_count"))
+        vlm_fallback_review_human_reviewed_count = self._as_int(
+            vlm_review_summary.get("human_reviewed_count")
+        )
+        vlm_fallback_review_accepted_result_count = self._as_int(
+            vlm_review_summary.get("accepted_result_count")
+        )
+        vlm_fallback_review_marked_unusable_count = self._as_int(
+            vlm_review_summary.get("marked_unusable_count")
+        )
+        vlm_fallback_review_needs_revision_count = self._as_int(
+            vlm_review_summary.get("needs_revision_count")
+        )
+        vlm_fallback_review_ready_for_writeback_count = self._as_int(
+            vlm_review_summary.get("ready_for_writeback_count")
+        )
+        vlm_fallback_review_structured_result_count = self._as_int(
+            vlm_review_summary.get("structured_result_count")
+        )
+        vlm_fallback_results_result_count = self._as_int(vlm_results_summary.get("result_count"))
         glossary_review_term_count = self._as_int(glossary_review_summary.get("term_count"))
         glossary_review_active_term_count = self._as_int(
             glossary_review_summary.get("active_term_count")
@@ -1051,6 +1111,8 @@ class JobRegistry:
             warnings.append("table_structure_publish_blocking_items")
         if vlm_fallback_blocked_by_missing_visual_evidence_count > 0:
             warnings.append("vlm_fallback_missing_visual_evidence")
+        if vlm_fallback_review_required_count > 0:
+            warnings.append("vlm_fallback_review_required_items")
         if glossary_review_pending_count > 0:
             warnings.append("glossary_review_pending_items")
         if (
@@ -1313,6 +1375,22 @@ class JobRegistry:
                 vlm_fallback_ocr_candidate_gate_task_count
             ),
             "vlm_fallback_structured_gate_task_count": vlm_fallback_structured_gate_task_count,
+            "vlm_fallback_review_ready": vlm_review_json_bytes > 0 or vlm_review_md_bytes > 0,
+            "vlm_fallback_review_bytes": max(vlm_review_json_bytes, vlm_review_md_bytes),
+            "vlm_fallback_review_count": vlm_fallback_review_count,
+            "vlm_fallback_review_required_count": vlm_fallback_review_required_count,
+            "vlm_fallback_review_pending_count": vlm_fallback_review_pending_count,
+            "vlm_fallback_review_human_reviewed_count": vlm_fallback_review_human_reviewed_count,
+            "vlm_fallback_review_accepted_result_count": vlm_fallback_review_accepted_result_count,
+            "vlm_fallback_review_marked_unusable_count": vlm_fallback_review_marked_unusable_count,
+            "vlm_fallback_review_needs_revision_count": vlm_fallback_review_needs_revision_count,
+            "vlm_fallback_review_ready_for_writeback_count": (
+                vlm_fallback_review_ready_for_writeback_count
+            ),
+            "vlm_fallback_review_structured_result_count": vlm_fallback_review_structured_result_count,
+            "vlm_fallback_results_ready": vlm_results_json_bytes > 0,
+            "vlm_fallback_results_bytes": vlm_results_json_bytes,
+            "vlm_fallback_results_result_count": vlm_fallback_results_result_count,
             "repair_publish_confirmed": repair_publish_confirmed,
             "repair_publish_published": repair_publish_published,
             "repair_publish_status": repair_publish_status,
