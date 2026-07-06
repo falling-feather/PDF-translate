@@ -47,6 +47,7 @@ from pdf_translate.vision.vlm_review import (
     write_vlm_fallback_review_decision,
     write_vlm_review_ocr_results,
 )
+from pdf_translate.vision.vlm_apply import write_vlm_results_apply
 
 from pdf_translate.server.auth_deps import Principal, bearer_principal, mint_token, require_admin
 from pdf_translate.server import database
@@ -1473,6 +1474,26 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             headers={"Content-Disposition": cd},
         )
 
+    @api.get("/jobs/{job_id}/download/vlm-apply.md")
+    def download_vlm_fallback_apply(
+        job_id: str,
+        p: Principal = Depends(bearer_principal),
+    ) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "vlm_apply.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "VLM 回写应用报告尚未生成")
+        ascii_fallback = "vlm_apply.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_vlm_apply.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
     @api.get("/jobs/{job_id}/download/glossary-retranslation-plan.md")
     def download_glossary_retranslation_plan_md(
         job_id: str,
@@ -2243,6 +2264,55 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         d["vlm_fallback_results_summary"] = result_summary
         return d
 
+    @api.post("/jobs/{job_id}/vlm-fallback-results/apply")
+    def apply_vlm_fallback_results(
+        job_id: str,
+        request: Request,
+        p: Principal = Depends(bearer_principal),
+    ) -> dict:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        if rec.status != "done":
+            raise HTTPException(409, "任务尚未完成，暂不能应用 VLM 回写结果")
+        out_dir = rec.work_dir / "output"
+        required_artifacts = {
+            "document_ir.json": "文档结构 IR 尚未生成",
+            "ocr_tasks.json": "OCR 调度任务尚未生成",
+            "vlm_results.json": "VLM 复核回写结果尚未生成",
+        }
+        for filename, message in required_artifacts.items():
+            path = out_dir / filename
+            if not path.is_file() or path.stat().st_size == 0:
+                raise HTTPException(404, message)
+        try:
+            report = write_vlm_results_apply(rec.work_dir)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(409, "VLM 回写应用所需 JSON 产物无法解析") from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        app_registry.update(job_id, message="已应用 VLM 回写结果并刷新 OCR 晋级链路")
+        database.log_audit(
+            action="job_vlm_fallback_results_apply",
+            ip=client_ip(request),
+            user_id=p.user_id,
+            username=p.username,
+            job_id=job_id,
+            detail={
+                "status": summary.get("status"),
+                "vlm_result_count": summary.get("vlm_result_count"),
+                "merged_result_count": summary.get("merged_result_count"),
+                "writeback_accepted_result_count": summary.get("writeback_accepted_result_count"),
+                "promoted_candidate_count": summary.get("promoted_candidate_count"),
+                "canonical_structure_promotion_count": summary.get("canonical_structure_promotion_count"),
+            },
+        )
+        updated = app_registry.get(job_id) or rec
+        d = _job_dict(updated)
+        d["vlm_fallback_apply_summary"] = summary
+        return d
+
     @api.get("/jobs/{job_id}/repair-patch-review")
     def get_repair_patch_review(job_id: str, p: Principal = Depends(bearer_principal)) -> dict:
         rec = app_registry.get(job_id)
@@ -2815,6 +2885,15 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
                 filename="vlm_results.json",
                 media_type="application/json; charset=utf-8",
             )
+        if kind == "vlm_fallback_apply":
+            p = root / "output" / "vlm_apply.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "VLM 回写应用报告尚未生成")
+            return FileResponse(
+                p,
+                filename="vlm_apply.md",
+                media_type="text/markdown; charset=utf-8",
+            )
         if kind == "glossary_retranslation_plan_md":
             p = root / "output" / "glossary_retranslation_plan.md"
             if not p.is_file() or p.stat().st_size == 0:
@@ -2945,7 +3024,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             return Response(content=data, media_type="application/zip", headers={"Content-Disposition": cd})
         raise HTTPException(
             400,
-            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_effectiveness / repair_rollback / repair_formal_replace / repair_formal_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / vlm_fallback_tasks / vlm_fallback_review / vlm_fallback_results / glossary_retranslation_plan_md / glossary_retranslation_plan_json / glossary_retranslation_result_md / glossary_retranslation_result_json / glossary_retranslated_full / glossary_retranslation_publish / glossary_retranslation_published_full / glossary_retranslation_rollback / glossary_retranslation_rollback_full / repair_published_full / repair_rollback_full / repair_formal_full / repair_formal_backup_full / repair_formal_active_before_rollback_full / bundle_zip",
+            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_effectiveness / repair_rollback / repair_formal_replace / repair_formal_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / vlm_fallback_tasks / vlm_fallback_review / vlm_fallback_results / vlm_fallback_apply / glossary_retranslation_plan_md / glossary_retranslation_plan_json / glossary_retranslation_result_md / glossary_retranslation_result_json / glossary_retranslated_full / glossary_retranslation_publish / glossary_retranslation_published_full / glossary_retranslation_rollback / glossary_retranslation_rollback_full / repair_published_full / repair_rollback_full / repair_formal_full / repair_formal_backup_full / repair_formal_active_before_rollback_full / bundle_zip",
         )
 
     api.include_router(admin)

@@ -33,7 +33,9 @@ TRACE_ONLY_WARNINGS = {
     "structured_table_inferred_from_text",
     "cell_bboxes_estimated_from_region",
     "merged_cell_candidates_inferred_from_text",
+    "manual_vlm_review",
 }
+TRACE_ONLY_WARNING_PREFIXES = ("source_vlm_review_id:",)
 
 
 def _json_copy(value: Any) -> Any:
@@ -142,7 +144,17 @@ def _string_items(value: Any) -> list[str]:
 def _actionable_warnings(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
-    return [str(item) for item in value if str(item) and str(item) not in TRACE_ONLY_WARNINGS]
+    out: list[str] = []
+    for item in value:
+        warning = str(item)
+        if not warning:
+            continue
+        if warning in TRACE_ONLY_WARNINGS:
+            continue
+        if any(warning.startswith(prefix) for prefix in TRACE_ONLY_WARNING_PREFIXES):
+            continue
+        out.append(warning)
+    return out
 
 
 def _cell_text(cell: Any) -> str:

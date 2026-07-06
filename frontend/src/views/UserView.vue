@@ -186,6 +186,7 @@ function artifactSummary(j) {
   if (j.vlm_fallback_tasks_ready) ready.push("VLM复核");
   if (j.vlm_fallback_review_ready) ready.push("VLM审核");
   if (j.vlm_fallback_results_ready) ready.push("VLM回写结果");
+  if (j.vlm_fallback_apply_ready) ready.push("VLM应用报告");
   if (j.repair_patch_review_ready) ready.push("补丁审核");
   if (j.repair_effectiveness_report_ready) ready.push("修复效果");
   if (j.repair_publish_report_ready) ready.push("修复报告");
@@ -426,6 +427,29 @@ async function reviewTableMergedCell(jid) {
 
 async function reviewVlmFallback(jid) {
   vlmReviewJobId.value = jid;
+}
+
+async function applyVlmResults(jid) {
+  const job = taskMap.value[jid] || {};
+  const resultCount = Number(job.vlm_fallback_results_result_count || 0);
+  const msg = resultCount > 0
+    ? `确认应用 ${resultCount} 条 VLM 回写结果？系统会刷新 OCR 回写、候选 QA 和晋级 IR，但不会自动重翻全文。`
+    : "当前没有可应用的 VLM 回写结果，是否仍然刷新 OCR 回写、候选 QA 和晋级 IR？";
+  if (!window.confirm(msg)) return;
+  const r = await fetch(`/api/jobs/${jid}/vlm-fallback-results/apply`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatErrorPayload(data));
+    return;
+  }
+  if (data?.job_id) {
+    taskMap.value = { ...taskMap.value, [data.job_id]: data };
+  }
+  await loadMyJobs();
+  alert("已应用 VLM 回写结果");
 }
 
 async function onGlossaryReviewUpdated(job) {
@@ -1191,6 +1215,24 @@ onUnmounted(() => {
                   @click="downloadFrom(`/api/jobs/${tid}/download/vlm-results.json`, `${tid}_vlm_results.json`)"
                 >
                   VLM回写
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].vlm_fallback_results_ready || Number(taskMap[tid].vlm_fallback_results_result_count || 0) <= 0"
+                  @click="applyVlmResults(tid)"
+                >
+                  应用VLM
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].vlm_fallback_apply_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/vlm-apply.md`, `${tid}_vlm_apply.md`)"
+                >
+                  VLM应用报告
                 </button>
                 <button
                   v-if="taskMap[tid].status === 'done'"

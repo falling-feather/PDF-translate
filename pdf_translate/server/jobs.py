@@ -611,6 +611,19 @@ class JobRegistry:
         return summary, None
 
     @staticmethod
+    def _vlm_fallback_apply_summary(path: Path) -> tuple[dict[str, Any], str | None]:
+        if not path.is_file():
+            return {}, None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}, "vlm_fallback_apply_invalid"
+        summary = raw.get("summary")
+        if not isinstance(summary, dict):
+            return {}, "vlm_fallback_apply_summary_missing"
+        return summary, None
+
+    @staticmethod
     def _glossary_review_summary(memory_dir: Path) -> tuple[dict[str, Any], str | None]:
         if not memory_dir.is_dir():
             return {}, None
@@ -744,6 +757,8 @@ class JobRegistry:
         vlm_review_json = output_dir / "vlm_review.json"
         vlm_review_md = output_dir / "vlm_review.md"
         vlm_results_json = output_dir / "vlm_results.json"
+        vlm_apply_json = output_dir / "vlm_apply.json"
+        vlm_apply_md = output_dir / "vlm_apply.md"
         input_bytes = self._file_size(input_pdf)
         glossary_bytes = self._file_size(glossary_json)
         pending_review_bytes = self._file_size(pending_review_json)
@@ -793,6 +808,8 @@ class JobRegistry:
         vlm_review_json_bytes = self._file_size(vlm_review_json)
         vlm_review_md_bytes = self._file_size(vlm_review_md)
         vlm_results_json_bytes = self._file_size(vlm_results_json)
+        vlm_apply_json_bytes = self._file_size(vlm_apply_json)
+        vlm_apply_md_bytes = self._file_size(vlm_apply_md)
         repair_summary, repair_warning = self._repair_publish_summary(repair_publish_json)
         repair_rollback_summary, repair_rollback_warning = self._repair_rollback_summary(repair_rollback_json)
         repair_formal_replace_summary, repair_formal_replace_warning = self._repair_formal_replace_summary(
@@ -814,6 +831,7 @@ class JobRegistry:
         vlm_tasks_summary, vlm_tasks_warning = self._vlm_fallback_tasks_summary(vlm_tasks_json)
         vlm_review_summary, vlm_review_warning = self._vlm_fallback_review_summary(vlm_review_json)
         vlm_results_summary, vlm_results_warning = self._vlm_fallback_results_summary(vlm_results_json)
+        vlm_apply_summary, vlm_apply_warning = self._vlm_fallback_apply_summary(vlm_apply_json)
         glossary_review_summary, glossary_review_warning = self._glossary_review_summary(memory_dir)
         glossary_retranslation_plan_summary, glossary_retranslation_plan_warning = (
             self._glossary_retranslation_plan_summary(glossary_retranslation_plan_json)
@@ -863,6 +881,8 @@ class JobRegistry:
             warnings.append(vlm_review_warning)
         if vlm_results_warning:
             warnings.append(vlm_results_warning)
+        if vlm_apply_warning:
+            warnings.append(vlm_apply_warning)
         if glossary_review_warning:
             warnings.append(glossary_review_warning)
         if glossary_retranslation_plan_warning:
@@ -1016,6 +1036,18 @@ class JobRegistry:
             vlm_review_summary.get("structured_result_count")
         )
         vlm_fallback_results_result_count = self._as_int(vlm_results_summary.get("result_count"))
+        vlm_fallback_apply_status = str(vlm_apply_summary.get("status") or "")
+        vlm_fallback_apply_vlm_result_count = self._as_int(vlm_apply_summary.get("vlm_result_count"))
+        vlm_fallback_apply_merged_result_count = self._as_int(vlm_apply_summary.get("merged_result_count"))
+        vlm_fallback_apply_writeback_accepted_count = self._as_int(
+            vlm_apply_summary.get("writeback_accepted_result_count")
+        )
+        vlm_fallback_apply_promoted_candidate_count = self._as_int(
+            vlm_apply_summary.get("promoted_candidate_count")
+        )
+        vlm_fallback_apply_canonical_structure_promotion_count = self._as_int(
+            vlm_apply_summary.get("canonical_structure_promotion_count")
+        )
         glossary_review_term_count = self._as_int(glossary_review_summary.get("term_count"))
         glossary_review_active_term_count = self._as_int(
             glossary_review_summary.get("active_term_count")
@@ -1391,6 +1423,20 @@ class JobRegistry:
             "vlm_fallback_results_ready": vlm_results_json_bytes > 0,
             "vlm_fallback_results_bytes": vlm_results_json_bytes,
             "vlm_fallback_results_result_count": vlm_fallback_results_result_count,
+            "vlm_fallback_apply_ready": vlm_apply_json_bytes > 0 or vlm_apply_md_bytes > 0,
+            "vlm_fallback_apply_bytes": max(vlm_apply_json_bytes, vlm_apply_md_bytes),
+            "vlm_fallback_apply_status": vlm_fallback_apply_status,
+            "vlm_fallback_apply_vlm_result_count": vlm_fallback_apply_vlm_result_count,
+            "vlm_fallback_apply_merged_result_count": vlm_fallback_apply_merged_result_count,
+            "vlm_fallback_apply_writeback_accepted_count": (
+                vlm_fallback_apply_writeback_accepted_count
+            ),
+            "vlm_fallback_apply_promoted_candidate_count": (
+                vlm_fallback_apply_promoted_candidate_count
+            ),
+            "vlm_fallback_apply_canonical_structure_promotion_count": (
+                vlm_fallback_apply_canonical_structure_promotion_count
+            ),
             "repair_publish_confirmed": repair_publish_confirmed,
             "repair_publish_published": repair_publish_published,
             "repair_publish_status": repair_publish_status,

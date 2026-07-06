@@ -94,6 +94,7 @@ from pdf_translate.vision.vlm_review import (
     write_vlm_fallback_review_decision,
     write_vlm_review_ocr_results,
 )
+from pdf_translate.vision.vlm_apply import build_vlm_merged_ocr_results, write_vlm_results_apply
 from pdf_translate.vision.ocr_executor import execute_ocr_tasks
 from pdf_translate.vision.ocr_promotion import build_ocr_candidate_promotion, write_ocr_candidate_promotion
 from pdf_translate.vision.ocr_writeback import (
@@ -4928,6 +4929,127 @@ class StructureIRTests(unittest.TestCase):
             if parent.is_dir() and not any(parent.iterdir()):
                 shutil.rmtree(parent)
 
+    def test_vlm_results_apply_refreshes_ocr_writeback_and_promotion_chain(self) -> None:
+        root = Path.cwd() / "test-output" / "vlm-results-apply"
+        if root.exists():
+            shutil.rmtree(root)
+        try:
+            out = root / "output"
+            out.mkdir(parents=True)
+            doc_ir = DocumentIR(
+                doc_id="vlm-apply-sample",
+                source_pdf="paper.pdf",
+                pages=[
+                    PageIR(
+                        page_no=1,
+                        width=600,
+                        height=800,
+                        text="",
+                        blocks=[
+                            BlockIR(
+                                "p1-b0000",
+                                1,
+                                "table",
+                                "",
+                                (40, 80, 560, 200),
+                                0,
+                                meta={"table": {"row_count": 2, "column_count": 2}},
+                            )
+                        ],
+                    )
+                ],
+            )
+            doc_ir.write_json(out / "document_ir.json")
+            manifest = {
+                "schema_version": "ocr-task-manifest-v1",
+                "doc_id": "vlm-apply-sample",
+                "tasks": [
+                    {
+                        "task_id": "ocr-p1-table",
+                        "page_no": 1,
+                        "scope": "region",
+                        "status": "pending_engine",
+                        "priority": "P0",
+                        "block_id": "p1-b0000",
+                        "block_type": "table",
+                        "target_structure_type": "table",
+                        "bbox": [40, 80, 560, 200],
+                        "input_path": "vision_crops/page-0001/p1-b0000-table.png",
+                        "table_context": {"row_count": 2, "column_count": 2},
+                    }
+                ],
+            }
+            base_results = {
+                "schema_version": "ocr-results-v1",
+                "source": "unit_low_confidence_ocr",
+                "results": [
+                    {
+                        "task_id": "ocr-p1-table",
+                        "status": "succeeded",
+                        "text": "bad table",
+                        "confidence": 0.2,
+                        "engine": "unit_ocr",
+                    }
+                ],
+            }
+            vlm_results = {
+                "schema_version": "ocr-results-v1",
+                "source": "vlm_fallback_review",
+                "results": [
+                    {
+                        "task_id": "ocr-p1-table",
+                        "status": "succeeded",
+                        "text": "Metric | Score\nAccuracy | 91.2",
+                        "confidence": 0.95,
+                        "engine": "manual_vlm_review",
+                        "language": "eng",
+                        "bbox": [40, 80, 560, 200],
+                        "structured_cells": [
+                            {"row_index": 0, "column_index": 0, "text": "Metric"},
+                            {"row_index": 0, "column_index": 1, "text": "Score"},
+                            {"row_index": 1, "column_index": 0, "text": "Accuracy"},
+                            {"row_index": 1, "column_index": 1, "text": "91.2"},
+                        ],
+                        "cell_bboxes": [
+                            {"row_index": 0, "column_index": 0, "bbox": [40, 80, 300, 140]},
+                            {"row_index": 0, "column_index": 1, "bbox": [300, 80, 560, 140]},
+                            {"row_index": 1, "column_index": 0, "bbox": [40, 140, 300, 200]},
+                            {"row_index": 1, "column_index": 1, "bbox": [300, 140, 560, 200]},
+                        ],
+                    }
+                ],
+            }
+            (out / "ocr_tasks.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (out / "ocr_results.json").write_text(json.dumps(base_results), encoding="utf-8")
+            (out / "vlm_results.json").write_text(json.dumps(vlm_results), encoding="utf-8")
+
+            merged = build_vlm_merged_ocr_results(manifest, base_results, vlm_results)
+            self.assertEqual(merged["source"], "ocr_results_with_vlm_fallback_review")
+            self.assertEqual(merged["summary"]["base_result_count"], 1)
+            self.assertEqual(merged["summary"]["vlm_result_count"], 1)
+            self.assertEqual(merged["summary"]["replaced_result_count"], 1)
+            self.assertEqual(merged["results"][0]["engine"], "manual_vlm_review")
+
+            report = write_vlm_results_apply(root)
+            self.assertEqual(report["schema_version"], "vlm-results-apply-v1")
+            self.assertEqual(report["summary"]["status"], "applied")
+            self.assertEqual(report["summary"]["writeback_accepted_result_count"], 1)
+            self.assertEqual(report["summary"]["promoted_candidate_count"], 1)
+            self.assertEqual(report["summary"]["canonical_structure_promotion_count"], 1)
+            self.assertTrue((out / "vlm_apply.md").is_file())
+            stored_results = json.loads((out / "ocr_results.json").read_text(encoding="utf-8"))
+            self.assertEqual(stored_results["source"], "ocr_results_with_vlm_fallback_review")
+            promoted = json.loads((out / "document_ir_promoted.json").read_text(encoding="utf-8"))
+            promoted_table = promoted["pages"][0]["blocks"][0]["meta"]["table"]
+            self.assertEqual(promoted_table["rows"][1][1], "91.2")
+            self.assertIn("VLM Results Apply", (out / "vlm_apply.md").read_text(encoding="utf-8"))
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
     def test_local_ocr_executor_runs_ready_tasks_into_results_payload(self) -> None:
         root = Path.cwd() / "test-output" / "ocr-executor"
         if root.exists():
@@ -8869,6 +8991,11 @@ class StructureIRTests(unittest.TestCase):
                 "ocr_candidate_qa.json",
                 "ocr_candidate_qa.md",
                 "vlm_tasks.json",
+                "vlm_review.json",
+                "vlm_review.md",
+                "vlm_results.json",
+                "vlm_apply.json",
+                "vlm_apply.md",
                 "document_ir_ocr.json",
                 "ocr_candidate_promotion.json",
                 "ocr_candidate_promotion.md",
@@ -8954,6 +9081,11 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/ocr_candidate_qa.json", rels)
             self.assertIn("output/ocr_candidate_qa.md", rels)
             self.assertIn("output/vlm_tasks.json", rels)
+            self.assertIn("output/vlm_review.json", rels)
+            self.assertIn("output/vlm_review.md", rels)
+            self.assertIn("output/vlm_results.json", rels)
+            self.assertIn("output/vlm_apply.json", rels)
+            self.assertIn("output/vlm_apply.md", rels)
             self.assertIn("output/document_ir_ocr.json", rels)
             self.assertIn("output/ocr_candidate_promotion.json", rels)
             self.assertIn("output/ocr_candidate_promotion.md", rels)
@@ -9078,6 +9210,11 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(map_bundle_arcname("output/ocr_writeback.json"), "质量/OCR结果回写.json")
             self.assertEqual(map_bundle_arcname("output/ocr_candidate_qa.json"), "质量/OCR候选文本QA.json")
             self.assertEqual(map_bundle_arcname("output/ocr_candidate_qa.md"), "质量/OCR候选文本QA.md")
+            self.assertEqual(map_bundle_arcname("output/vlm_review.json"), "质量/VLM视觉复核报告.json")
+            self.assertEqual(map_bundle_arcname("output/vlm_review.md"), "质量/VLM视觉复核报告.md")
+            self.assertEqual(map_bundle_arcname("output/vlm_results.json"), "质量/VLM复核回写结果.json")
+            self.assertEqual(map_bundle_arcname("output/vlm_apply.json"), "质量/VLM回写应用报告.json")
+            self.assertEqual(map_bundle_arcname("output/vlm_apply.md"), "质量/VLM回写应用报告.md")
             self.assertEqual(map_bundle_arcname("output/document_ir_ocr.json"), "设置/OCR增强文档结构IR.json")
             self.assertEqual(map_bundle_arcname("output/ocr_candidate_promotion.json"), "质量/OCR候选文本晋级.json")
             self.assertEqual(map_bundle_arcname("output/ocr_candidate_promotion.md"), "质量/OCR候选文本晋级.md")
@@ -9113,6 +9250,7 @@ class StructureIRTests(unittest.TestCase):
 
     def test_vlm_fallback_tasks_bundle_arcname_is_named_for_review(self) -> None:
         self.assertEqual(map_bundle_arcname("output/vlm_tasks.json"), "质量/VLM视觉复核任务.json")
+        self.assertEqual(map_bundle_arcname("output/vlm_apply.md"), "质量/VLM回写应用报告.md")
 
 
 if __name__ == "__main__":

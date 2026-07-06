@@ -845,6 +845,23 @@ class JobStatusSnapshotTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        (out / "vlm_apply.md").write_text("# VLM apply", encoding="utf-8")
+        (out / "vlm_apply.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "vlm-results-apply-v1",
+                    "summary": {
+                        "status": "applied",
+                        "vlm_result_count": 1,
+                        "merged_result_count": 2,
+                        "writeback_accepted_result_count": 1,
+                        "promoted_candidate_count": 1,
+                        "canonical_structure_promotion_count": 1,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         registry.update(rec.job_id, status="done", phase="done")
 
         merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
@@ -916,6 +933,14 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertTrue(merged[0]["vlm_fallback_results_ready"])
         self.assertGreater(merged[0]["vlm_fallback_results_bytes"], 0)
         self.assertEqual(merged[0]["vlm_fallback_results_result_count"], 1)
+        self.assertTrue(merged[0]["vlm_fallback_apply_ready"])
+        self.assertGreater(merged[0]["vlm_fallback_apply_bytes"], 0)
+        self.assertEqual(merged[0]["vlm_fallback_apply_status"], "applied")
+        self.assertEqual(merged[0]["vlm_fallback_apply_vlm_result_count"], 1)
+        self.assertEqual(merged[0]["vlm_fallback_apply_merged_result_count"], 2)
+        self.assertEqual(merged[0]["vlm_fallback_apply_writeback_accepted_count"], 1)
+        self.assertEqual(merged[0]["vlm_fallback_apply_promoted_candidate_count"], 1)
+        self.assertEqual(merged[0]["vlm_fallback_apply_canonical_structure_promotion_count"], 1)
         self.assertTrue(merged[0]["repair_publish_confirmed"])
         self.assertTrue(merged[0]["repair_publish_published"])
         self.assertEqual(merged[0]["repair_publish_status"], "published_with_warnings")
@@ -982,6 +1007,83 @@ class JobStatusSnapshotTests(unittest.TestCase):
             ],
         }
         (out / "vlm_tasks.json").write_text(json.dumps(payload), encoding="utf-8")
+        (out / "document_ir.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "document-ir-v1",
+                    "doc_id": "vlm-api-sample",
+                    "source_pdf": "paper.pdf",
+                    "pages": [
+                        {
+                            "page_no": 1,
+                            "width": 600,
+                            "height": 800,
+                            "text": "",
+                            "link_count": 0,
+                            "image_count": 0,
+                            "warnings": [],
+                            "meta": {},
+                            "blocks": [
+                                {
+                                    "block_id": "p1-b0000",
+                                    "page_no": 1,
+                                    "type": "table",
+                                    "text": "",
+                                    "bbox": [40, 80, 560, 200],
+                                    "order": 0,
+                                    "parent_id": None,
+                                    "locked_tokens": [],
+                                    "meta": {"table": {"row_count": 2, "column_count": 2}},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (out / "ocr_tasks.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "ocr-task-manifest-v1",
+                    "doc_id": "vlm-api-sample",
+                    "tasks": [
+                        {
+                            "task_id": "ocr-p1-table",
+                            "page_no": 1,
+                            "scope": "region",
+                            "status": "pending_engine",
+                            "priority": "P0",
+                            "block_id": "p1-b0000",
+                            "block_type": "table",
+                            "target_structure_type": "table",
+                            "bbox": [40, 80, 560, 200],
+                            "input_path": "vision_crops/page-0001/p1-b0000-table.png",
+                            "table_context": {"row_count": 2, "column_count": 2},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (out / "ocr_results.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "ocr-results-v1",
+                    "source": "unit_low_confidence_ocr",
+                    "results": [
+                        {
+                            "task_id": "ocr-p1-table",
+                            "status": "succeeded",
+                            "text": "bad table",
+                            "confidence": 0.2,
+                            "engine": "unit_ocr",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
         registry.update(rec.job_id, status="done", phase="done")
 
         api = FastAPI()
@@ -1063,6 +1165,83 @@ class JobStatusSnapshotTests(unittest.TestCase):
             ],
         }
         (out / "vlm_tasks.json").write_text(json.dumps(payload), encoding="utf-8")
+        (out / "document_ir.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "document-ir-v1",
+                    "doc_id": "vlm-api-sample",
+                    "source_pdf": "paper.pdf",
+                    "pages": [
+                        {
+                            "page_no": 1,
+                            "width": 600,
+                            "height": 800,
+                            "text": "",
+                            "link_count": 0,
+                            "image_count": 0,
+                            "warnings": [],
+                            "meta": {},
+                            "blocks": [
+                                {
+                                    "block_id": "p1-b0000",
+                                    "page_no": 1,
+                                    "type": "table",
+                                    "text": "",
+                                    "bbox": [40, 80, 560, 200],
+                                    "order": 0,
+                                    "parent_id": None,
+                                    "locked_tokens": [],
+                                    "meta": {"table": {"row_count": 2, "column_count": 2}},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (out / "ocr_tasks.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "ocr-task-manifest-v1",
+                    "doc_id": "vlm-api-sample",
+                    "tasks": [
+                        {
+                            "task_id": "ocr-p1-table",
+                            "page_no": 1,
+                            "scope": "region",
+                            "status": "pending_engine",
+                            "priority": "P0",
+                            "block_id": "p1-b0000",
+                            "block_type": "table",
+                            "target_structure_type": "table",
+                            "bbox": [40, 80, 560, 200],
+                            "input_path": "vision_crops/page-0001/p1-b0000-table.png",
+                            "table_context": {"row_count": 2, "column_count": 2},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (out / "ocr_results.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "ocr-results-v1",
+                    "source": "unit_low_confidence_ocr",
+                    "results": [
+                        {
+                            "task_id": "ocr-p1-table",
+                            "status": "succeeded",
+                            "text": "bad table",
+                            "confidence": 0.2,
+                            "engine": "unit_ocr",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
         registry.update(rec.job_id, status="done", phase="done")
 
         api = FastAPI()
@@ -1101,7 +1280,13 @@ class JobStatusSnapshotTests(unittest.TestCase):
                         {"row_index": 0, "column_index": 1, "text": "Score"},
                         {"row_index": 1, "column_index": 0, "text": "Accuracy"},
                         {"row_index": 1, "column_index": 1, "text": "91.2"},
-                    ]
+                    ],
+                    "cell_bboxes": [
+                        {"row_index": 0, "column_index": 0, "bbox": [40, 80, 300, 140]},
+                        {"row_index": 0, "column_index": 1, "bbox": [300, 80, 560, 140]},
+                        {"row_index": 1, "column_index": 0, "bbox": [40, 140, 300, 200]},
+                        {"row_index": 1, "column_index": 1, "bbox": [300, 140, 560, 200]},
+                    ],
                 },
                 "comment": "manual visual check",
             },
@@ -1140,9 +1325,32 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(admin_download.status_code, 200)
         self.assertEqual(admin_download.json()["source"], "vlm_fallback_review")
 
+        apply_response = client.post(f"/api/jobs/{rec.job_id}/vlm-fallback-results/apply")
+        self.assertEqual(apply_response.status_code, 200)
+        applied = apply_response.json()
+        self.assertTrue(applied["vlm_fallback_apply_ready"])
+        self.assertEqual(applied["vlm_fallback_apply_status"], "applied")
+        self.assertEqual(applied["vlm_fallback_apply_writeback_accepted_count"], 1)
+        self.assertEqual(applied["vlm_fallback_apply_promoted_candidate_count"], 1)
+        self.assertTrue((out / "vlm_apply.json").is_file())
+        self.assertTrue((out / "vlm_apply.md").is_file())
+        merged_results = json.loads((out / "ocr_results.json").read_text(encoding="utf-8"))
+        self.assertEqual(merged_results["source"], "ocr_results_with_vlm_fallback_review")
+        promoted = json.loads((out / "document_ir_promoted.json").read_text(encoding="utf-8"))
+        self.assertEqual(promoted["pages"][0]["blocks"][0]["meta"]["table"]["rows"][1][1], "91.2")
+        apply_download = client.get(f"/api/jobs/{rec.job_id}/download/vlm-apply.md")
+        self.assertEqual(apply_download.status_code, 200)
+        self.assertIn("vlm_apply.md", apply_download.headers["content-disposition"])
+        admin_apply_download = client.get(
+            f"/api/admin/jobs/{rec.job_id}/artifact?kind=vlm_fallback_apply"
+        )
+        self.assertEqual(admin_apply_download.status_code, 200)
+        self.assertIn("VLM Results Apply", admin_apply_download.text)
+
         actions = [event["action"] for event in database.list_audit(limit=10)]
         self.assertIn("job_vlm_fallback_review_update", actions)
         self.assertIn("job_vlm_fallback_review_batch_update", actions)
+        self.assertIn("job_vlm_fallback_results_apply", actions)
 
     def test_artifact_summary_reports_glossary_review_status(self) -> None:
         root = self._case_root("glossary-review-artifacts")

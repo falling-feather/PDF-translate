@@ -188,6 +188,7 @@ function artifactReadySummary(job) {
   if (job.vlm_fallback_tasks_ready) ready.push("VLM复核");
   if (job.vlm_fallback_review_ready) ready.push("VLM审核");
   if (job.vlm_fallback_results_ready) ready.push("VLM回写");
+  if (job.vlm_fallback_apply_ready) ready.push("VLM应用");
   if (job.repair_patch_review_ready) ready.push("补丁审核");
   if (job.repair_effectiveness_report_ready) ready.push("修复效果");
   if (job.repair_publish_report_ready) ready.push("修复报告");
@@ -364,6 +365,26 @@ async function adminReviewTableMergedCell(job) {
 
 async function adminReviewVlmFallback(job) {
   vlmReviewJobId.value = job.job_id;
+}
+
+async function adminApplyVlmResults(job) {
+  const resultCount = Number(job.vlm_fallback_results_result_count || 0);
+  const msg = resultCount > 0
+    ? `确认应用 ${resultCount} 条 VLM 回写结果？系统会刷新 OCR 回写、候选 QA 和晋级 IR，但不会自动重翻全文。`
+    : "当前没有可应用的 VLM 回写结果，是否仍然刷新 OCR 回写、候选 QA 和晋级 IR？";
+  if (!window.confirm(msg)) return;
+  const r = await fetch(`/api/jobs/${job.job_id}/vlm-fallback-results/apply`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatAdminError(data));
+    return;
+  }
+  await loadJobs();
+  await loadAudit();
+  alert("已应用 VLM 回写结果");
 }
 
 async function onGlossaryReviewUpdated() {
@@ -806,6 +827,8 @@ onMounted(() => {
                 <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.vlm_fallback_tasks_ready" @click="adminReviewVlmFallback(j)">审核VLM</button>
                 <button type="button" class="linkish" :disabled="!j.vlm_fallback_review_ready" @click="adminDownload(j.job_id, 'vlm_fallback_review', 'vlm_review.md')">VLM审核报告</button>
                 <button type="button" class="linkish" :disabled="!j.vlm_fallback_results_ready" @click="adminDownload(j.job_id, 'vlm_fallback_results', 'vlm_results.json')">VLM回写</button>
+                <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.vlm_fallback_results_ready || Number(j.vlm_fallback_results_result_count || 0) <= 0" @click="adminApplyVlmResults(j)">应用VLM</button>
+                <button type="button" class="linkish" :disabled="!j.vlm_fallback_apply_ready" @click="adminDownload(j.job_id, 'vlm_fallback_apply', 'vlm_apply.md')">VLM应用报告</button>
                 <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.repair_publish_report_ready || j.repair_published_full_ready" @click="adminConfirmRepairPublish(j)">确认修复</button>
                 <button type="button" class="linkish" :disabled="!j.repair_published_full_ready" @click="adminDownload(j.job_id, 'repair_published_full', 'published_full.md')">修复稿</button>
                 <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.repair_published_full_ready || j.repair_rollback_full_ready" @click="adminConfirmRepairRollback(j)">回滚演练</button>

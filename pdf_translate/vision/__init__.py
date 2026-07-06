@@ -9,6 +9,10 @@ from pdf_translate.vision.vlm_review import (
     write_vlm_fallback_review_decision,
     write_vlm_review_ocr_results,
 )
+from pdf_translate.vision.vlm_apply import (
+    build_vlm_merged_ocr_results,
+    write_vlm_results_apply,
+)
 from pdf_translate.vision.ocr_executor import execute_ocr_tasks, write_ocr_execution_results
 from pdf_translate.vision.ocr_writeback import (
     build_ocr_results_payload,
@@ -31,6 +35,8 @@ __all__ = [
     "write_vlm_fallback_review_batch_decision",
     "write_vlm_fallback_review_decision",
     "write_vlm_review_ocr_results",
+    "build_vlm_merged_ocr_results",
+    "write_vlm_results_apply",
     "execute_ocr_tasks",
     "write_ocr_execution_results",
     "build_ocr_results_payload",
