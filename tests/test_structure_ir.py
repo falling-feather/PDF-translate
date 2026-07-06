@@ -30,7 +30,10 @@ from pdf_translate.extractors.document_ir import (
 )
 from pdf_translate.memory_store import MemoryStore
 from pdf_translate.qa.chunk_boundary import build_chunk_boundary_qa, build_chunk_strategy_comparison
-from pdf_translate.qa.glossary_retranslation import write_glossary_retranslation_plan
+from pdf_translate.qa.glossary_retranslation import (
+    execute_glossary_retranslation,
+    write_glossary_retranslation_plan,
+)
 from pdf_translate.qa.metrics import build_experiment_metrics
 from pdf_translate.qa.ocr_candidates import build_ocr_candidate_qa, write_ocr_candidate_qa
 from pdf_translate.qa.repair_effectiveness import (
@@ -6195,6 +6198,210 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("术语确认重译计划", md)
             self.assertIn("c0000", md)
             self.assertNotIn("c0001 |", md)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
+    def test_glossary_retranslation_plan_reads_source_text_path(self) -> None:
+        root = Path.cwd() / "test-output" / "glossary-retranslation-source-path"
+        if root.exists():
+            shutil.rmtree(root)
+        try:
+            mem = MemoryStore(root / "memory")
+            mem.ensure_files()
+            mem.merge_glossary_terms_from_survey(
+                [{"en": "Accuracy", "zh": "准确率"}],
+                first_page_1based=1,
+            )
+            mem.merge_glossary_terms_from_survey(
+                [{"en": "Accuracy", "zh": "精度"}],
+                first_page_1based=1,
+            )
+            conflict = next(
+                item
+                for item in mem.load_pending_review()["items"]
+                if item["type"] == "glossary_conflict"
+            )
+            mem.apply_glossary_review_decision(
+                conflict["dedupe_key"],
+                "confirm_candidate",
+                candidate_zh="分类准确率",
+                reviewer="导师",
+            )
+
+            out = root / "output"
+            chunk_dir = out / "chunks"
+            source_dir = out / "source_chunks"
+            chunk_dir.mkdir(parents=True)
+            source_dir.mkdir(parents=True)
+            (source_dir / "c0000.txt").write_text(
+                "Accuracy improves under domain shift.",
+                encoding="utf-8",
+            )
+            (out / "chunks_manifest.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "chunk_id": "c0000",
+                            "pages_1based": [1, 1],
+                            "source_text_path": "output/source_chunks/c0000.txt",
+                            "section_scopes": [],
+                            "block_ids": [],
+                            "block_types": {"paragraph": 1},
+                        }
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            (chunk_dir / "c0000.md").write_text(
+                "---\n{}\n---\n\n准确率在领域偏移下提升。\n",
+                encoding="utf-8",
+            )
+
+            plan = write_glossary_retranslation_plan(out, root / "memory")
+
+            self.assertEqual(plan["summary"]["status"], "needs_retranslation")
+            self.assertEqual(plan["summary"]["matched_chunk_count"], 1)
+            self.assertEqual(plan["chunks"][0]["source_text_path"], "output/source_chunks/c0000.txt")
+            self.assertEqual(plan["chunks"][0]["recommended_action"], "retranslate_chunk")
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
+    def test_glossary_retranslation_execution_writes_candidate_artifacts(self) -> None:
+        root = Path.cwd() / "test-output" / "glossary-retranslation-execution"
+        if root.exists():
+            shutil.rmtree(root)
+
+        class FakeGlossaryTranslator:
+            name = "fake_glossary"
+
+            def __init__(self) -> None:
+                self.requests = []
+
+            def translate(self, req) -> str:
+                self.requests.append(req)
+                return "分类准确率在领域偏移下提升。\n\n| 指标 | 值 |\n| --- | --- |\n| Accuracy | 0.91 |"
+
+        try:
+            mem = MemoryStore(root / "memory")
+            mem.ensure_files()
+            mem.merge_glossary_terms_from_survey(
+                [{"en": "Accuracy", "zh": "准确率"}],
+                first_page_1based=1,
+            )
+            mem.merge_glossary_terms_from_survey(
+                [{"en": "Accuracy", "zh": "精度"}],
+                first_page_1based=1,
+            )
+            conflict = next(
+                item
+                for item in mem.load_pending_review()["items"]
+                if item["type"] == "glossary_conflict"
+            )
+            mem.apply_glossary_review_decision(
+                conflict["dedupe_key"],
+                "confirm_candidate",
+                candidate_zh="分类准确率",
+                reviewer="导师",
+            )
+
+            out = root / "output"
+            chunk_dir = out / "chunks"
+            source_dir = out / "source_chunks"
+            chunk_dir.mkdir(parents=True)
+            source_dir.mkdir(parents=True)
+            (source_dir / "c0000.txt").write_text(
+                "Accuracy improves under domain shift.",
+                encoding="utf-8",
+            )
+            (source_dir / "c0001.txt").write_text(
+                "Recall is reported in the ablation.",
+                encoding="utf-8",
+            )
+            (out / "chunks_manifest.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "chunk_id": "c0000",
+                            "pages_1based": [1, 1],
+                            "source_text_path": "output/source_chunks/c0000.txt",
+                            "section_scopes": [],
+                            "block_ids": ["p1-b0001"],
+                            "block_types": {"paragraph": 1, "table": 1},
+                            "link_count": 0,
+                            "image_count": 0,
+                        },
+                        {
+                            "chunk_id": "c0001",
+                            "pages_1based": [2, 2],
+                            "source_text_path": "output/source_chunks/c0001.txt",
+                            "section_scopes": [],
+                            "block_ids": ["p2-b0001"],
+                            "block_types": {"paragraph": 1},
+                            "link_count": 0,
+                            "image_count": 0,
+                        },
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            (out / "structure_hints_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "chunks": [
+                            {
+                                "chunk_id": "c0000",
+                                "hint_text": "表格 p1-b0001：保持 Markdown 表格。",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            (chunk_dir / "c0000.md").write_text(
+                "---\n{}\n---\n\n准确率在领域偏移下提升。\n",
+                encoding="utf-8",
+            )
+            (chunk_dir / "c0001.md").write_text(
+                "---\n{}\n---\n\n召回率在消融实验中报告。\n",
+                encoding="utf-8",
+            )
+            translator = FakeGlossaryTranslator()
+
+            result = execute_glossary_retranslation(
+                out,
+                root / "memory",
+                translator,
+                backend="fake",
+            )
+
+            self.assertEqual(result["schema_version"], "glossary-retranslation-execution-v1")
+            self.assertEqual(result["summary"]["status"], "executed")
+            self.assertEqual(result["summary"]["executed_chunk_count"], 1)
+            self.assertEqual(result["chunks"][0]["confirmed_term_present_count"], 1)
+            self.assertIn("分类准确率", (out / "glossary_retranslated_chunks" / "c0000.md").read_text(encoding="utf-8"))
+            self.assertIn("准确率在领域偏移下提升", (chunk_dir / "c0000.md").read_text(encoding="utf-8"))
+            full = (out / "glossary_retranslated_full.md").read_text(encoding="utf-8")
+            self.assertIn("分类准确率在领域偏移下提升", full)
+            self.assertIn("召回率在消融实验中报告", full)
+            self.assertTrue((out / "glossary_retranslation_result.json").is_file())
+            self.assertTrue((out / "glossary_retranslation_result.md").is_file())
+            self.assertEqual(len(translator.requests), 1)
+            self.assertIn("Accuracy → 分类准确率", translator.requests[0].glossary_excerpt)
+            self.assertIn("保持 Markdown 表格", translator.requests[0].structure_hints)
         finally:
             if root.exists():
                 shutil.rmtree(root)

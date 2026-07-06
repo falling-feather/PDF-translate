@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pdf_translate.memory_store import _pending_dedupe_key, _term_scope_matches
+from pdf_translate.chunking import TextChunk
+from pdf_translate.deferral_markers import finalize_merged_translation_markdown, strip_yaml_front_matter
+from pdf_translate.memory_store import MemoryStore, _pending_dedupe_key, _term_scope_matches
+from pdf_translate.translators.base import TranslationRequest, Translator
+from pdf_translate.translators.openai_compatible import SYSTEM_PROMPT_VERSION, prompt_fingerprint
 
 SCHEMA_VERSION = "glossary-retranslation-plan-v1"
+EXECUTION_SCHEMA_VERSION = "glossary-retranslation-execution-v1"
 
 
 def _read_json_dict(path: Path, default: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -82,6 +88,33 @@ def _read_chunk_translation(chunk_dir: Path, chunk_id: str) -> tuple[str, str]:
         return "", ""
     rel_path = f"output/chunks/{chunk_id}.md"
     return _strip_markdown_frontmatter(path.read_text(encoding="utf-8")), rel_path
+
+
+def _entry_source_text(entry: dict[str, Any], output_dir: Path) -> tuple[str, str]:
+    """Return source text and a stable relative path when the manifest points to one."""
+    inline_text = str(entry.get("text") or "")
+    if inline_text:
+        return inline_text, "chunks_manifest.text"
+
+    raw_path = str(entry.get("source_text_path") or entry.get("source_path") or "").strip()
+    if not raw_path:
+        return "", ""
+    work_dir = output_dir.parent.resolve()
+    candidate = Path(raw_path)
+    if not candidate.is_absolute():
+        candidate = work_dir / raw_path
+    try:
+        resolved = candidate.resolve()
+        resolved.relative_to(work_dir)
+    except (OSError, ValueError):
+        return "", ""
+    if not resolved.is_file():
+        return "", raw_path.replace("\\", "/")
+    try:
+        rel = resolved.relative_to(work_dir).as_posix()
+    except ValueError:
+        rel = raw_path.replace("\\", "/")
+    return resolved.read_text(encoding="utf-8"), rel
 
 
 def _confirmed_review_terms(memory_dir: Path) -> list[dict[str, Any]]:
@@ -225,7 +258,7 @@ def build_glossary_retranslation_plan(
             chunk_id = str(entry.get("chunk_id") or "").strip()
             if not chunk_id or not _term_scope_matches_entry(term, entry):
                 continue
-            source_text = str(entry.get("text") or "")
+            source_text, source_text_path = _entry_source_text(entry, output_dir)
             if not _contains_source_term(source_text, en):
                 continue
 
@@ -252,6 +285,7 @@ def build_glossary_retranslation_plan(
                     "section_scopes": _entry_section_scopes(entry),
                     "structure_types": _entry_structure_types(entry),
                     "block_ids": _entry_block_ids(entry),
+                    "source_text_path": source_text_path,
                     "translation_path": translation_path,
                     "matched_terms": [],
                     "recommended_action": "keep_translation",
@@ -414,10 +448,388 @@ def glossary_retranslation_plan_to_markdown(plan: dict[str, Any]) -> str:
             "## 使用说明",
             "",
             "- `retranslate_chunk` 表示该分块命中已确认术语，且译文缺少确认译名、仍含旧译名，或缺少分块译文。",
-            "- 该报告只生成重译计划，不会自动覆盖当前译文；后续自动重译可直接消费 `chunks[].chunk_id`。",
+            "- 该报告只生成重译计划，不会自动覆盖当前译文；自动重译执行器会生成候选重译稿与执行报告。",
         ]
     )
     return "\n".join(lines) + "\n"
+
+
+def _load_structure_hints_by_chunk(output_dir: Path) -> dict[str, str]:
+    raw = _read_json_dict(output_dir / "structure_hints_manifest.json", {"chunks": []})
+    out: dict[str, str] = {}
+    for item in raw.get("chunks") or []:
+        if not isinstance(item, dict):
+            continue
+        chunk_id = str(item.get("chunk_id") or "").strip()
+        if chunk_id:
+            out[chunk_id] = str(item.get("hint_text") or "")
+    return out
+
+
+def _entry_pages_0based(entry: dict[str, Any]) -> list[int]:
+    pages = _entry_pages(entry)
+    if len(pages) >= 2:
+        start = max(1, pages[0])
+        end = max(start, pages[-1])
+        return list(range(start - 1, end))
+    if len(pages) == 1:
+        return [max(0, pages[0] - 1)]
+    return [0]
+
+
+def _text_chunk_from_entry(entry: dict[str, Any], source_text: str) -> TextChunk:
+    chunk = TextChunk(
+        chunk_id=str(entry.get("chunk_id") or "").strip(),
+        pages_0based=_entry_pages_0based(entry),
+        text=source_text,
+        link_count=int(entry.get("link_count") or 0),
+        image_count=int(entry.get("image_count") or 0),
+    )
+    chunk.block_ids = _entry_block_ids(entry)  # type: ignore[attr-defined]
+    chunk.block_types = entry.get("block_types") if isinstance(entry.get("block_types"), dict) else {}  # type: ignore[attr-defined]
+    return chunk
+
+
+def _chunk_body_and_meta(
+    chunk: TextChunk,
+    zh: str,
+    translator_name: str,
+    *,
+    extra_meta: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    p0 = chunk.pages_0based[0] + 1
+    p1 = chunk.pages_0based[-1] + 1
+    meta: dict[str, Any] = {
+        "chunk_id": chunk.chunk_id,
+        "pages_1based": [p0, p1],
+        "link_count": chunk.link_count,
+        "image_count": chunk.image_count,
+        "translator": translator_name,
+        "prompt_version": SYSTEM_PROMPT_VERSION,
+        "prompt_fingerprint": prompt_fingerprint(),
+        "glossary_retranslation": True,
+    }
+    if extra_meta:
+        meta.update(extra_meta)
+    body = f"---\n{json.dumps(meta, ensure_ascii=False, indent=2)}\n---\n\n{zh}\n"
+    return body, meta
+
+
+def _merge_candidate_full(
+    output_dir: Path,
+    entries: list[dict[str, Any]],
+    retranslated_dir: Path,
+    target: Path,
+) -> dict[str, Any]:
+    base_dir = output_dir / "chunks"
+    parts: list[str] = []
+    used_retranslated: list[str] = []
+    used_base: list[str] = []
+    missing: list[str] = []
+    for entry in entries:
+        chunk_id = str(entry.get("chunk_id") or "").strip()
+        if not chunk_id:
+            continue
+        candidate = retranslated_dir / f"{chunk_id}.md"
+        base = base_dir / f"{chunk_id}.md"
+        source = candidate if candidate.is_file() else base
+        if not source.is_file():
+            missing.append(chunk_id)
+            continue
+        body = strip_yaml_front_matter(source.read_text(encoding="utf-8")).strip()
+        if body:
+            parts.append(body)
+        if source == candidate:
+            used_retranslated.append(chunk_id)
+        else:
+            used_base.append(chunk_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    merged = finalize_merged_translation_markdown("\n\n".join(parts))
+    target.write_text(merged, encoding="utf-8")
+    return {
+        "target_path": "output/glossary_retranslated_full.md",
+        "used_retranslated_chunk_ids": used_retranslated,
+        "used_base_chunk_ids": used_base,
+        "missing_chunk_ids": missing,
+    }
+
+
+def glossary_retranslation_execution_to_markdown(result: dict[str, Any]) -> str:
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    artifacts = result.get("artifacts") if isinstance(result.get("artifacts"), dict) else {}
+    lines = [
+        "# 术语确认重译执行报告",
+        "",
+        "## 摘要",
+        "",
+        f"- 状态：{summary.get('status') or '-'}",
+        f"- 后端：{summary.get('backend') or '-'}",
+        f"- 翻译器：{summary.get('translator') or '-'}",
+        f"- 请求分块：{summary.get('requested_chunk_count', 0)}",
+        f"- 已重译分块：{summary.get('executed_chunk_count', 0)}",
+        f"- 失败分块：{summary.get('failed_chunk_count', 0)}",
+        f"- 候选全文：{artifacts.get('retranslated_full_path') or '-'}",
+        "",
+        "## 分块结果",
+        "",
+        "| chunk | 页码 | 状态 | 命中术语 | 确认译名覆盖 | 输出 | 错误 |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for chunk in result.get("chunks") or []:
+        if not isinstance(chunk, dict):
+            continue
+        terms = [
+            f"{item.get('en')}->{item.get('confirmed_zh')}"
+            for item in chunk.get("matched_terms") or []
+            if isinstance(item, dict)
+        ]
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _md_cell(chunk.get("chunk_id")),
+                    _md_cell(", ".join(str(item) for item in chunk.get("pages_1based") or [])),
+                    _md_cell(chunk.get("status")),
+                    _md_cell(", ".join(terms)),
+                    _md_cell(f"{chunk.get('confirmed_term_present_count', 0)}/{len(terms)}"),
+                    _md_cell(chunk.get("retranslated_path")),
+                    _md_cell(chunk.get("error")),
+                ]
+            )
+            + " |"
+        )
+    if not result.get("chunks"):
+        lines.append("| - | - | - | - | - | - | - |")
+    lines.extend(
+        [
+            "",
+            "## 使用说明",
+            "",
+            "- 本执行器默认生成候选重译稿，不覆盖原始 `output/chunks/` 和 `translated_full.md`。",
+            "- 候选全文由重译 chunk 与原始 chunk 按原 manifest 顺序合并，可用于人工验收、对比实验和后续显式发布。",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def execute_glossary_retranslation(
+    output_dir: Path,
+    memory_dir: Path,
+    translator: Translator,
+    *,
+    backend: str = "",
+    mode: str = "stale_only",
+    chunk_ids: list[str] | None = None,
+    max_chunks: int | None = None,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Retranslate chunks affected by confirmed glossary decisions into safe candidate artifacts."""
+    output_dir = output_dir.resolve()
+    memory_dir = memory_dir.resolve()
+    if mode not in {"stale_only", "selected"}:
+        raise ValueError("mode must be 'stale_only' or 'selected'")
+    if mode == "selected" and not chunk_ids:
+        raise ValueError("selected mode requires chunk_ids")
+
+    generated_at = generated_at or datetime.now(timezone.utc).isoformat()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    plan = write_glossary_retranslation_plan(output_dir, memory_dir)
+    entries = _read_json_list(output_dir / "chunks_manifest.json")
+    entries_by_id = {
+        str(entry.get("chunk_id") or "").strip(): entry
+        for entry in entries
+        if str(entry.get("chunk_id") or "").strip()
+    }
+    plan_chunks = [
+        item for item in plan.get("chunks") or [] if isinstance(item, dict) and str(item.get("chunk_id") or "")
+    ]
+    plan_by_id = {str(item.get("chunk_id")): item for item in plan_chunks}
+    requested_ids = [
+        str(item.get("chunk_id"))
+        for item in plan_chunks
+        if item.get("recommended_action") == "retranslate_chunk"
+    ]
+    if mode == "selected":
+        requested_ids = [
+            str(item).strip()
+            for item in chunk_ids or []
+            if str(item or "").strip()
+        ]
+    requested_ids = list(dict.fromkeys(requested_ids))
+    skipped_by_limit: list[str] = []
+    if max_chunks is not None and max_chunks > 0 and len(requested_ids) > max_chunks:
+        skipped_by_limit = requested_ids[max_chunks:]
+        requested_ids = requested_ids[:max_chunks]
+
+    mem = MemoryStore(memory_dir)
+    style_text = ""
+    if mem.style_path.is_file():
+        style_text = mem.style_path.read_text(encoding="utf-8").strip()
+    hints_by_chunk = _load_structure_hints_by_chunk(output_dir)
+    retranslated_dir = output_dir / "glossary_retranslated_chunks"
+    retranslated_dir.mkdir(parents=True, exist_ok=True)
+
+    chunk_results: list[dict[str, Any]] = []
+    for chunk_id in requested_ids:
+        entry = entries_by_id.get(chunk_id)
+        plan_chunk = plan_by_id.get(chunk_id, {})
+        if not entry:
+            chunk_results.append(
+                {
+                    "chunk_id": chunk_id,
+                    "status": "failed",
+                    "error": "chunk_not_found_in_manifest",
+                    "matched_terms": plan_chunk.get("matched_terms") or [],
+                }
+            )
+            continue
+        source_text, source_text_path = _entry_source_text(entry, output_dir)
+        if not source_text.strip():
+            chunk_results.append(
+                {
+                    "chunk_id": chunk_id,
+                    "pages_1based": _entry_pages(entry),
+                    "status": "failed",
+                    "error": "source_text_missing",
+                    "source_text_path": source_text_path,
+                    "matched_terms": plan_chunk.get("matched_terms") or [],
+                }
+            )
+            continue
+        chunk = _text_chunk_from_entry(entry, source_text)
+        pages = _entry_pages(entry)
+        start_page = pages[0] if pages else chunk.pages_0based[0] + 1
+        end_page = pages[-1] if pages else chunk.pages_0based[-1] + 1
+        glossary_excerpt = mem.glossary_snippet_for_pages(
+            start_page,
+            end_page,
+            section_scope=_entry_section_scopes(entry),
+            structure_types=_entry_structure_types(entry),
+            block_ids=_entry_block_ids(entry),
+        )
+        request = TranslationRequest(
+            source_text=source_text,
+            glossary_excerpt=glossary_excerpt,
+            prior_summaries="",
+            style_notes=style_text,
+            structure_hints=hints_by_chunk.get(chunk_id, ""),
+        )
+        started = time.perf_counter()
+        try:
+            translated = translator.translate(request).strip()
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            matched_terms = [
+                item for item in plan_chunk.get("matched_terms") or [] if isinstance(item, dict)
+            ]
+            confirmed_present_count = sum(
+                1
+                for item in matched_terms
+                if _contains_translation(translated, str(item.get("confirmed_zh") or ""))
+            )
+            body, meta = _chunk_body_and_meta(
+                chunk,
+                translated,
+                getattr(translator, "name", "translator"),
+                extra_meta={
+                    "source_text_path": source_text_path,
+                    "base_translation_path": f"output/chunks/{chunk_id}.md",
+                    "matched_terms": matched_terms,
+                    "retranslation_mode": mode,
+                },
+            )
+            out_path = retranslated_dir / f"{chunk_id}.md"
+            out_path.write_text(body, encoding="utf-8")
+            chunk_results.append(
+                {
+                    "chunk_id": chunk_id,
+                    "pages_1based": _entry_pages(entry),
+                    "status": "executed",
+                    "source_text_path": source_text_path,
+                    "base_translation_path": f"output/chunks/{chunk_id}.md",
+                    "retranslated_path": f"output/glossary_retranslated_chunks/{chunk_id}.md",
+                    "matched_terms": matched_terms,
+                    "confirmed_term_present_count": confirmed_present_count,
+                    "source_char_count": len(source_text),
+                    "translated_char_count": len(translated),
+                    "elapsed_ms": elapsed_ms,
+                    "metadata": meta,
+                }
+            )
+        except Exception as exc:  # pragma: no cover - defensive around external translators
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            chunk_results.append(
+                {
+                    "chunk_id": chunk_id,
+                    "pages_1based": _entry_pages(entry),
+                    "status": "failed",
+                    "source_text_path": source_text_path,
+                    "matched_terms": plan_chunk.get("matched_terms") or [],
+                    "elapsed_ms": elapsed_ms,
+                    "error": str(exc),
+                }
+            )
+
+    for chunk_id in skipped_by_limit:
+        chunk_results.append(
+            {
+                "chunk_id": chunk_id,
+                "status": "skipped",
+                "error": "max_chunks_limit",
+                "matched_terms": (plan_by_id.get(chunk_id) or {}).get("matched_terms") or [],
+            }
+        )
+
+    executed_count = sum(1 for item in chunk_results if item.get("status") == "executed")
+    failed_count = sum(1 for item in chunk_results if item.get("status") == "failed")
+    skipped_count = sum(1 for item in chunk_results if item.get("status") == "skipped")
+    if not requested_ids:
+        status = "nothing_to_retranslate"
+    elif failed_count and executed_count:
+        status = "partial_failed"
+    elif failed_count:
+        status = "failed"
+    else:
+        status = "executed"
+
+    merge_info = _merge_candidate_full(
+        output_dir,
+        entries,
+        retranslated_dir,
+        output_dir / "glossary_retranslated_full.md",
+    )
+    result = {
+        "schema_version": EXECUTION_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "summary": {
+            "status": status,
+            "backend": backend,
+            "translator": getattr(translator, "name", "translator"),
+            "mode": mode,
+            "requested_chunk_count": len(requested_ids),
+            "executed_chunk_count": executed_count,
+            "failed_chunk_count": failed_count,
+            "skipped_chunk_count": skipped_count,
+            "plan_status": (plan.get("summary") or {}).get("status") if isinstance(plan.get("summary"), dict) else "",
+        },
+        "artifacts": {
+            "plan_json_path": "output/glossary_retranslation_plan.json",
+            "plan_md_path": "output/glossary_retranslation_plan.md",
+            "retranslated_chunk_dir": "output/glossary_retranslated_chunks",
+            "retranslated_full_path": merge_info["target_path"],
+            "result_json_path": "output/glossary_retranslation_result.json",
+            "result_md_path": "output/glossary_retranslation_result.md",
+            "merge": merge_info,
+        },
+        "requested_chunk_ids": requested_ids,
+        "chunks": chunk_results,
+    }
+    (output_dir / "glossary_retranslation_result.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (output_dir / "glossary_retranslation_result.md").write_text(
+        glossary_retranslation_execution_to_markdown(result), encoding="utf-8"
+    )
+    return result
 
 
 def write_glossary_retranslation_plan(

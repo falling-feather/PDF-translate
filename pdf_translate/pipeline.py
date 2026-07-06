@@ -484,6 +484,10 @@ def run_translate(
         raise ValueError("chunk_strategy must be 'page' or 'structure'")
 
     with run_metrics.stage("chunk_manifest"):
+        source_chunk_dir = out_dir / "source_chunks"
+        source_chunk_dir.mkdir(parents=True, exist_ok=True)
+        for c in chunks:
+            (source_chunk_dir / f"{c.chunk_id}.txt").write_text(c.text, encoding="utf-8")
         chunk_manifest = [
             {
                 "chunk_id": c.chunk_id,
@@ -491,6 +495,8 @@ def run_translate(
                 "link_count": c.link_count,
                 "image_count": c.image_count,
                 "strategy": chunk_strategy,
+                "source_text_path": f"output/source_chunks/{c.chunk_id}.txt",
+                "approx_chars": len(c.text),
                 "block_ids": getattr(c, "block_ids", []),
                 "block_types": getattr(c, "block_types", {}),
                 "section_scopes": _chunk_section_scopes(c, doc_ir),

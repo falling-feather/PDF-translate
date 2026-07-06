@@ -18,7 +18,10 @@ from pdf_translate.exporters.translated_pdf import write_translated_pdf
 from pdf_translate.export_filename import suggest_md_download_name, suggest_zip_bundle_name
 from pdf_translate.memory_store import MemoryStore
 from pdf_translate.pipeline_cancel import cancel_flag_path
-from pdf_translate.qa.glossary_retranslation import write_glossary_retranslation_plan
+from pdf_translate.qa.glossary_retranslation import (
+    execute_glossary_retranslation,
+    write_glossary_retranslation_plan,
+)
 from pdf_translate.qa.repair import (
     write_repair_formal_replace,
     write_repair_formal_rollback,
@@ -399,6 +402,44 @@ def _refresh_glossary_retranslation_plan_for_record(rec: JobRecord) -> dict[str,
         return write_glossary_retranslation_plan(rec.work_dir / "output", rec.work_dir / "memory")
     except (json.JSONDecodeError, OSError) as exc:
         raise HTTPException(409, "术语重译计划无法生成") from exc
+
+
+def _execute_glossary_retranslation_for_record(
+    rec: JobRecord,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    if rec.status != "done":
+        raise HTTPException(409, "任务尚未完成，不能执行术语重译")
+    cfg = settings_service.effective_app_config()
+    try:
+        backend = settings_service.assert_backend_allowed(
+            str(payload.get("backend") or rec.backend or ""),
+            cfg.default_translator,
+        )
+        translator = build_translator(backend, cfg)
+        mode = str(payload.get("mode") or "stale_only").strip() or "stale_only"
+        raw_chunk_ids = payload.get("chunk_ids")
+        chunk_ids = (
+            [str(item).strip() for item in raw_chunk_ids if str(item or "").strip()]
+            if isinstance(raw_chunk_ids, list)
+            else None
+        )
+        max_chunks: int | None = None
+        if payload.get("max_chunks") is not None:
+            max_chunks = max(1, int(payload.get("max_chunks")))
+        return execute_glossary_retranslation(
+            rec.work_dir / "output",
+            rec.work_dir / "memory",
+            translator,
+            backend=backend,
+            mode=mode,
+            chunk_ids=chunk_ids,
+            max_chunks=max_chunks,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(409, "术语重译执行产物无法生成") from exc
 
 
 def _confirm_repair_publish_for_record(rec: JobRecord) -> dict[str, Any]:
@@ -1344,6 +1385,104 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             headers={"Content-Disposition": cd},
         )
 
+    @api.get("/jobs/{job_id}/download/glossary-retranslation-result.md")
+    def download_glossary_retranslation_result_md(
+        job_id: str,
+        p: Principal = Depends(bearer_principal),
+    ) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "glossary_retranslation_result.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "术语重译执行报告尚未生成")
+        ascii_fallback = "glossary_retranslation_result.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_glossary_retranslation_result.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
+    @api.get("/jobs/{job_id}/download/glossary-retranslation-result.json")
+    def download_glossary_retranslation_result_json(
+        job_id: str,
+        p: Principal = Depends(bearer_principal),
+    ) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "glossary_retranslation_result.json"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "术语重译执行报告尚未生成")
+        ascii_fallback = "glossary_retranslation_result.json"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_glossary_retranslation_result.json"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
+    @api.get("/jobs/{job_id}/download/glossary-retranslated-full.md")
+    def download_glossary_retranslated_full(
+        job_id: str,
+        p: Principal = Depends(bearer_principal),
+    ) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "glossary_retranslated_full.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "术语候选重译全文尚未生成")
+        ascii_fallback = "glossary_retranslated_full.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_glossary_retranslated_full.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
+    @api.post("/jobs/{job_id}/glossary-retranslation/execute")
+    def execute_glossary_retranslation_for_job(
+        job_id: str,
+        request: Request,
+        payload: dict[str, Any] | None = Body(default=None),
+        p: Principal = Depends(bearer_principal),
+    ) -> dict[str, Any]:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        result = _execute_glossary_retranslation_for_record(rec, payload or {})
+        summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        app_registry.update(
+            job_id,
+            message=f"术语候选重译已执行：{summary.get('executed_chunk_count', 0)} 个分块",
+        )
+        database.log_audit(
+            action="job_glossary_retranslation_execute",
+            ip=client_ip(request),
+            user_id=p.user_id,
+            username=p.username,
+            job_id=job_id,
+            detail={
+                "backend": summary.get("backend"),
+                "mode": summary.get("mode"),
+                "status": summary.get("status"),
+                "requested_chunk_count": summary.get("requested_chunk_count"),
+                "executed_chunk_count": summary.get("executed_chunk_count"),
+                "failed_chunk_count": summary.get("failed_chunk_count"),
+                "skipped_chunk_count": summary.get("skipped_chunk_count"),
+            },
+        )
+        updated = app_registry.get(job_id) or rec
+        d = _job_dict(updated)
+        d["glossary_retranslation_execution_summary"] = summary
+        d["glossary_retranslation_execution"] = result
+        return d
+
     @api.get("/jobs/{job_id}/glossary-review")
     def get_glossary_review(job_id: str, p: Principal = Depends(bearer_principal)) -> dict[str, Any]:
         rec = app_registry.get(job_id)
@@ -2250,6 +2389,33 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
                 filename="glossary_retranslation_plan.json",
                 media_type="application/json; charset=utf-8",
             )
+        if kind == "glossary_retranslation_result_md":
+            p = root / "output" / "glossary_retranslation_result.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "术语重译执行报告尚未生成")
+            return FileResponse(
+                p,
+                filename="glossary_retranslation_result.md",
+                media_type="text/markdown; charset=utf-8",
+            )
+        if kind == "glossary_retranslation_result_json":
+            p = root / "output" / "glossary_retranslation_result.json"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "术语重译执行报告尚未生成")
+            return FileResponse(
+                p,
+                filename="glossary_retranslation_result.json",
+                media_type="application/json; charset=utf-8",
+            )
+        if kind == "glossary_retranslated_full":
+            p = root / "output" / "glossary_retranslated_full.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "术语候选重译全文尚未生成")
+            return FileResponse(
+                p,
+                filename="glossary_retranslated_full.md",
+                media_type="text/markdown; charset=utf-8",
+            )
         if kind == "repair_published_full":
             p = root / "output" / "published_full.md"
             if not p.is_file() or p.stat().st_size == 0:
@@ -2299,7 +2465,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             return Response(content=data, media_type="application/zip", headers={"Content-Disposition": cd})
         raise HTTPException(
             400,
-            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_effectiveness / repair_rollback / repair_formal_replace / repair_formal_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / glossary_retranslation_plan_md / glossary_retranslation_plan_json / repair_published_full / repair_rollback_full / repair_formal_full / repair_formal_backup_full / repair_formal_active_before_rollback_full / bundle_zip",
+            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_effectiveness / repair_rollback / repair_formal_replace / repair_formal_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / glossary_retranslation_plan_md / glossary_retranslation_plan_json / glossary_retranslation_result_md / glossary_retranslation_result_json / glossary_retranslated_full / repair_published_full / repair_rollback_full / repair_formal_full / repair_formal_backup_full / repair_formal_active_before_rollback_full / bundle_zip",
         )
 
     api.include_router(admin)

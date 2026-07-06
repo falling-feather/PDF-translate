@@ -175,6 +175,8 @@ function artifactReadySummary(job) {
   if (job.bilingual_html_ready) ready.push("HTML");
   if (job.glossary_review_ready) ready.push("术语确认");
   if (job.glossary_retranslation_plan_ready) ready.push("术语重译计划");
+  if (job.glossary_retranslation_result_ready) ready.push("术语重译报告");
+  if (job.glossary_retranslated_full_ready) ready.push("术语候选稿");
   if (job.table_merged_cell_review_ready) ready.push("表格确认");
   if (job.table_structure_publish_ready) ready.push("表格发布");
   if (job.repair_patch_review_ready) ready.push("补丁审核");
@@ -385,6 +387,28 @@ async function adminConfirmTableStructurePublish(job) {
   await loadJobs();
   await loadAudit();
   alert("已生成表格结构副本");
+}
+
+async function adminExecuteGlossaryRetranslation(job) {
+  const count = Number(job.glossary_retranslation_plan_retranslate_chunk_count || 0);
+  if (count <= 0) {
+    alert("当前没有需要重译的术语分块。");
+    return;
+  }
+  if (!window.confirm(`确认执行 ${count} 个术语影响分块的候选重译？原始译文仍会保留。`)) return;
+  const r = await fetch(`/api/jobs/${job.job_id}/glossary-retranslation/execute`, {
+    method: "POST",
+    headers: authHeaders(true),
+    body: JSON.stringify({ mode: "stale_only" }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatAdminError(data));
+    return;
+  }
+  await loadJobs();
+  await loadAudit();
+  alert("已生成术语候选重译稿");
 }
 
 async function adminConfirmRepairPublish(job) {
@@ -700,6 +724,9 @@ onMounted(() => {
                 <button type="button" class="linkish" :disabled="!j.translated_pdf_ready" @click="adminDownload(j.job_id, 'output_pdf', 'translated.pdf')">译PDF</button>
                 <button type="button" class="linkish" :disabled="!j.glossary_retranslation_plan_ready" @click="adminDownload(j.job_id, 'glossary_retranslation_plan_md', 'glossary_retranslation_plan.md')">重译计划</button>
                 <button type="button" class="linkish" :disabled="!j.glossary_retranslation_plan_ready" @click="adminDownload(j.job_id, 'glossary_retranslation_plan_json', 'glossary_retranslation_plan.json')">计划JSON</button>
+                <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.glossary_retranslation_plan_ready || Number(j.glossary_retranslation_plan_retranslate_chunk_count || 0) <= 0" @click="adminExecuteGlossaryRetranslation(j)">执行重译</button>
+                <button type="button" class="linkish" :disabled="!j.glossary_retranslation_result_ready" @click="adminDownload(j.job_id, 'glossary_retranslation_result_md', 'glossary_retranslation_result.md')">重译报告</button>
+                <button type="button" class="linkish" :disabled="!j.glossary_retranslated_full_ready" @click="adminDownload(j.job_id, 'glossary_retranslated_full', 'glossary_retranslated_full.md')">候选译文</button>
                 <button type="button" class="linkish" :disabled="!j.repair_publish_report_ready" @click="adminDownload(j.job_id, 'repair_publish', 'repair_publish.md')">修复报告</button>
                 <button type="button" class="linkish" :disabled="!j.repair_effectiveness_report_ready" @click="adminDownload(j.job_id, 'repair_effectiveness', 'repair_effectiveness.md')">修复效果</button>
                 <button type="button" class="linkish" :disabled="!j.repair_rollback_report_ready" @click="adminDownload(j.job_id, 'repair_rollback', 'repair_rollback.md')">回滚报告</button>

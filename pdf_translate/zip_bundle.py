@@ -19,6 +19,9 @@ def map_bundle_arcname(rel_posix: str) -> str:
         "output/chunks_manifest.json": "设置/分段清单.json",
         "output/glossary_retranslation_plan.json": "质量/术语确认重译计划.json",
         "output/glossary_retranslation_plan.md": "质量/术语确认重译计划.md",
+        "output/glossary_retranslation_result.json": "质量/术语重译执行报告.json",
+        "output/glossary_retranslation_result.md": "质量/术语重译执行报告.md",
+        "output/glossary_retranslated_full.md": "译文/术语候选重译全文.md",
         "output/document_ir.json": "设置/文档结构IR.json",
         "output/structure_chunks_manifest.json": "设置/结构分段清单.json",
         "output/structure_hints_manifest.json": "设置/结构提示清单.json",
@@ -86,6 +89,12 @@ def map_bundle_arcname(rel_posix: str) -> str:
     if rel.startswith("output/repaired_chunks/"):
         name = rel.split("/")[-1]
         return f"译文/局部修复分块/{name}"
+    if rel.startswith("output/glossary_retranslated_chunks/"):
+        name = rel.split("/")[-1]
+        return f"译文/术语候选重译分块/{name}"
+    if rel.startswith("output/source_chunks/"):
+        name = rel.split("/")[-1]
+        return f"设置/源文分块/{name}"
     if rel.startswith("output/vision_pages/"):
         name = rel.split("/")[-1]
         return f"质量/图像OCR页面预览/{name}"
@@ -174,6 +183,9 @@ def iter_bundle_files(root: Path) -> list[Path]:
         root / "output" / "chunks_manifest.json",
         root / "output" / "glossary_retranslation_plan.json",
         root / "output" / "glossary_retranslation_plan.md",
+        root / "output" / "glossary_retranslation_result.json",
+        root / "output" / "glossary_retranslation_result.md",
+        root / "output" / "glossary_retranslated_full.md",
         root / "output" / "document_ir.json",
         root / "output" / "structure_chunks_manifest.json",
         root / "output" / "structure_hints_manifest.json",
@@ -247,6 +259,12 @@ def iter_bundle_files(root: Path) -> list[Path]:
     repaired_chunks = root / "output" / "repaired_chunks"
     if repaired_chunks.is_dir():
         _iter_dir_files(repaired_chunks, root, out)
+    glossary_retranslated_chunks = root / "output" / "glossary_retranslated_chunks"
+    if glossary_retranslated_chunks.is_dir():
+        _iter_dir_files(glossary_retranslated_chunks, root, out)
+    source_chunks = root / "output" / "source_chunks"
+    if source_chunks.is_dir():
+        _iter_dir_files(source_chunks, root, out)
     vision_pages = root / "output" / "vision_pages"
     if vision_pages.is_dir():
         _iter_dir_files(vision_pages, root, out)

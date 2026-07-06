@@ -980,6 +980,7 @@ class JobStatusSnapshotTests(unittest.TestCase):
             "---\n{}\n---\n\n召回率在领域偏移下提升。\n",
             encoding="utf-8",
         )
+        registry.update(rec.job_id, status="done", phase="done")
 
         api = FastAPI()
         api.include_router(register_web_routes(registry))
@@ -1120,6 +1121,36 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertTrue(payload["glossary_retranslation_plan_ready"])
         self.assertEqual(payload["glossary_retranslation_plan_retranslate_chunk_count"], 2)
 
+        execute = client.post(
+            f"/api/jobs/{rec.job_id}/glossary-retranslation/execute",
+            json={"backend": "echo", "mode": "stale_only", "max_chunks": 1},
+        )
+        self.assertEqual(execute.status_code, 200)
+        execute_payload = execute.json()
+        self.assertTrue(execute_payload["glossary_retranslation_result_ready"])
+        self.assertEqual(execute_payload["glossary_retranslation_execution_status"], "executed")
+        self.assertEqual(execute_payload["glossary_retranslation_execution_requested_count"], 1)
+        self.assertEqual(execute_payload["glossary_retranslation_execution_executed_count"], 1)
+        self.assertTrue(execute_payload["glossary_retranslated_full_ready"])
+        self.assertTrue((out / "glossary_retranslated_chunks" / "c0000.md").is_file())
+        self.assertIn(
+            "[ECHO 未翻译预览]",
+            (out / "glossary_retranslated_full.md").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "准确率在领域偏移下提升",
+            (chunk_dir / "c0000.md").read_text(encoding="utf-8"),
+        )
+        result_md = client.get(f"/api/jobs/{rec.job_id}/download/glossary-retranslation-result.md")
+        self.assertEqual(result_md.status_code, 200)
+        self.assertIn("术语确认重译执行报告", result_md.text)
+        result_json = client.get(f"/api/jobs/{rec.job_id}/download/glossary-retranslation-result.json")
+        self.assertEqual(result_json.status_code, 200)
+        self.assertEqual(result_json.json()["schema_version"], "glossary-retranslation-execution-v1")
+        candidate_full = client.get(f"/api/jobs/{rec.job_id}/download/glossary-retranslated-full.md")
+        self.assertEqual(candidate_full.status_code, 200)
+        self.assertIn("[ECHO 未翻译预览]", candidate_full.text)
+
         terms = MemoryStore(rec.work_dir / "memory").load_glossary()["terms"]
         accuracy = next(term for term in terms if term["en"] == "Accuracy")
         self.assertEqual(accuracy["zh"], "分类准确率")
@@ -1148,12 +1179,15 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(precision_review["status"], "rejected")
 
         events = database.list_audit(limit=10)
-        self.assertEqual(events[0]["action"], "job_glossary_review_batch_update")
-        self.assertEqual(events[0]["detail"]["decision"], "mixed")
-        self.assertEqual(events[0]["detail"]["batch_schema"], "items")
-        self.assertEqual(events[0]["detail"]["candidate_zh_changed_count"], 1)
-        self.assertEqual(events[1]["action"], "job_glossary_review_update")
-        self.assertTrue(events[1]["detail"]["candidate_zh_changed"])
+        execute_event = next(event for event in events if event["action"] == "job_glossary_retranslation_execute")
+        self.assertEqual(execute_event["detail"]["backend"], "echo")
+        self.assertEqual(execute_event["detail"]["executed_chunk_count"], 1)
+        batch_event = next(event for event in events if event["action"] == "job_glossary_review_batch_update")
+        self.assertEqual(batch_event["detail"]["decision"], "mixed")
+        self.assertEqual(batch_event["detail"]["batch_schema"], "items")
+        self.assertEqual(batch_event["detail"]["candidate_zh_changed_count"], 1)
+        single_event = next(event for event in events if event["action"] == "job_glossary_review_update")
+        self.assertTrue(single_event["detail"]["candidate_zh_changed"])
 
     def test_confirm_repair_publish_for_completed_job_writes_publish_copy(self) -> None:
         root = self._case_root("repair-publish-confirm")
