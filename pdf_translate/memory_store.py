@@ -73,6 +73,17 @@ def _normalize_confidence(value: float | int | str | None) -> float | None:
     return round(number, 4)
 
 
+def _normalize_candidate_zh_override(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        raise ValueError("candidate_zh must not be empty when provided")
+    if len(normalized) > 120:
+        raise ValueError("candidate_zh must be at most 120 characters")
+    return normalized
+
+
 class MemoryStore:
     """memory/ 目录：glossary、entities、chunk_summaries、style_notes、pending_review。"""
 
@@ -314,6 +325,7 @@ class MemoryStore:
         comment: str = "",
         confidence: float | int | str | None = None,
         section_scope: str = "",
+        candidate_zh: Any = None,
     ) -> dict[str, Any]:
         """Apply a human decision for a pending glossary review item.
 
@@ -341,10 +353,18 @@ class MemoryStore:
             item = dict(items[match_index])
             if item.get("type") != "glossary_conflict":
                 raise ValueError("only glossary_conflict review items are supported")
+            if str(item.get("status") or "pending").strip() != "pending":
+                raise ValueError("pending glossary review item has already been reviewed")
 
             en = str(item.get("en") or "").strip()
-            candidate_zh = str(item.get("candidate_zh") or "").strip()
-            if normalized_decision == "confirm_candidate" and (not en or not candidate_zh):
+            original_candidate_zh = str(item.get("candidate_zh") or "").strip()
+            edited_candidate_zh = (
+                _normalize_candidate_zh_override(candidate_zh)
+                if normalized_decision == "confirm_candidate"
+                else None
+            )
+            confirmed_zh = edited_candidate_zh or original_candidate_zh
+            if normalized_decision == "confirm_candidate" and (not en or not confirmed_zh):
                 raise ValueError("glossary_conflict item must contain en and candidate_zh")
 
             review_meta = {
@@ -360,15 +380,19 @@ class MemoryStore:
                 review_meta["section_scope"] = normalized_section_scope
 
             if normalized_decision == "confirm_candidate":
+                if edited_candidate_zh and edited_candidate_zh != original_candidate_zh:
+                    review_meta["original_candidate_zh"] = original_candidate_zh
+                    review_meta["edited_candidate_zh"] = edited_candidate_zh
                 self._confirm_glossary_candidate_locked(
                     en,
-                    candidate_zh,
+                    confirmed_zh,
                     first_page=item.get("first_page"),
                     source=item.get("source") or "human_review",
                     review_meta=review_meta,
                 )
                 item["status"] = "confirmed"
-                item["confirmed_zh"] = candidate_zh
+                item["confirmed_zh"] = confirmed_zh
+                item["candidate_zh"] = confirmed_zh
             else:
                 item["status"] = "rejected"
 

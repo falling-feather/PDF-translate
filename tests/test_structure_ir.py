@@ -5882,6 +5882,13 @@ class StructureIRTests(unittest.TestCase):
                 if item["type"] == "glossary_conflict" and item["candidate_zh"] == "精度"
             )
 
+            with self.assertRaisesRegex(ValueError, "candidate_zh must not be empty"):
+                mem.apply_glossary_review_decision(
+                    conflict["dedupe_key"],
+                    "confirm_candidate",
+                    candidate_zh=" ",
+                )
+
             reviewed = mem.apply_glossary_review_decision(
                 conflict["dedupe_key"],
                 "confirm_candidate",
@@ -5890,10 +5897,14 @@ class StructureIRTests(unittest.TestCase):
                 comment="按导师术语表确认",
                 confidence=0.93,
                 section_scope="Methods",
+                candidate_zh="分类准确率",
             )
 
             self.assertEqual(reviewed["status"], "confirmed")
-            self.assertEqual(reviewed["confirmed_zh"], "精度")
+            self.assertEqual(reviewed["candidate_zh"], "分类准确率")
+            self.assertEqual(reviewed["confirmed_zh"], "分类准确率")
+            self.assertEqual(reviewed["original_candidate_zh"], "精度")
+            self.assertEqual(reviewed["edited_candidate_zh"], "分类准确率")
             self.assertEqual(reviewed["reviewed_by"], "导师")
             self.assertEqual(reviewed["confidence"], 0.93)
             self.assertEqual(reviewed["section_scope"], "Methods")
@@ -5903,12 +5914,20 @@ class StructureIRTests(unittest.TestCase):
             ]
             self.assertEqual(len(active_terms), 1)
             self.assertEqual(active_terms[0]["en"], "Accuracy")
-            self.assertEqual(active_terms[0]["zh"], "精度")
+            self.assertEqual(active_terms[0]["zh"], "分类准确率")
             self.assertEqual(active_terms[0]["status"], "confirmed")
+            self.assertEqual(active_terms[0]["original_candidate_zh"], "精度")
+            self.assertEqual(active_terms[0]["edited_candidate_zh"], "分类准确率")
             self.assertEqual(active_terms[0]["confidence"], 0.93)
             self.assertEqual(active_terms[0]["section_scope"], "Methods")
-            self.assertIn("Accuracy → 精度", mem.glossary_snippet_for_pages(1, 2))
-            self.assertNotIn("准确率", mem.glossary_snippet_for_pages(1, 2))
+            self.assertIn("Accuracy → 分类准确率", mem.glossary_snippet_for_pages(1, 2))
+            self.assertNotIn("Accuracy → 准确率", mem.glossary_snippet_for_pages(1, 2))
+
+            with self.assertRaisesRegex(ValueError, "already been reviewed"):
+                mem.apply_glossary_review_decision(
+                    conflict["dedupe_key"],
+                    "confirm_candidate",
+                )
 
             chunk_dir = root / "chunks"
             chunk_dir.mkdir(parents=True)
@@ -5920,7 +5939,7 @@ class StructureIRTests(unittest.TestCase):
                 image_count=0,
             )
             (chunk_dir / "c0000.md").write_text(
-                "---\n{}\n---\n\n精度在领域偏移下提升。\n",
+                "---\n{}\n---\n\n分类准确率在领域偏移下提升。\n",
                 encoding="utf-8",
             )
             report = build_translation_qa(
@@ -5956,7 +5975,7 @@ class StructureIRTests(unittest.TestCase):
                 for issue in missing_report["chunks"][0]["issues"]
                 if issue["type"] == "missing_glossary_terms"
             )
-            self.assertEqual(missing_issue["terms"][0]["expected_zh"], "精度")
+            self.assertEqual(missing_issue["terms"][0]["expected_zh"], "分类准确率")
             self.assertEqual(missing_issue["terms"][0]["confidence"], 0.93)
             self.assertEqual(missing_issue["terms"][0]["section_scope"], "Methods")
 

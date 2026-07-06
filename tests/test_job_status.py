@@ -952,13 +952,16 @@ class JobStatusSnapshotTests(unittest.TestCase):
         report = response.json()
         self.assertEqual(report["schema_version"], "glossary-review-v1")
         self.assertEqual(report["summary"]["pending_count"], 2)
-        review_ids = [item["review_id"] for item in report["pending_reviews"]]
+        review_by_en = {item["en"].lower(): item["review_id"] for item in report["pending_reviews"]}
+        accuracy_review_id = review_by_en["accuracy"]
+        recall_review_id = review_by_en["recall"]
 
         single = client.post(
-            f"/api/jobs/{rec.job_id}/glossary-review/{quote(review_ids[0], safe='')}",
+            f"/api/jobs/{rec.job_id}/glossary-review/{quote(accuracy_review_id, safe='')}",
             json={
                 "decision": "confirm_candidate",
                 "comment": "按项目术语表确认",
+                "candidate_zh": "分类准确率",
                 "confidence": 0.93,
                 "section_scope": "Methods",
             },
@@ -967,7 +970,7 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(single.json()["glossary_review_summary"]["confirmed_count"], 1)
 
         repeat = client.post(
-            f"/api/jobs/{rec.job_id}/glossary-review/{quote(review_ids[0], safe='')}",
+            f"/api/jobs/{rec.job_id}/glossary-review/{quote(accuracy_review_id, safe='')}",
             json={
                 "decision": "reject_candidate",
                 "comment": "重复处理应被拒绝",
@@ -976,10 +979,31 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(repeat.status_code, 400)
         self.assertIn("已处理", repeat.json()["detail"])
 
+        empty_candidate = client.post(
+            f"/api/jobs/{rec.job_id}/glossary-review/{quote(recall_review_id, safe='')}",
+            json={
+                "decision": "confirm_candidate",
+                "candidate_zh": " ",
+            },
+        )
+        self.assertEqual(empty_candidate.status_code, 400)
+        self.assertIn("candidate_zh must not be empty", empty_candidate.json()["detail"])
+
+        batch_with_candidate = client.post(
+            f"/api/jobs/{rec.job_id}/glossary-review/batch",
+            json={
+                "review_ids": [recall_review_id],
+                "decision": "confirm_candidate",
+                "candidate_zh": "统一译名",
+            },
+        )
+        self.assertEqual(batch_with_candidate.status_code, 400)
+        self.assertIn("批量接口暂不支持改写候选译名", batch_with_candidate.json()["detail"])
+
         batch = client.post(
             f"/api/jobs/{rec.job_id}/glossary-review/batch",
             json={
-                "review_ids": [review_ids[1]],
+                "review_ids": [recall_review_id],
                 "decision": "reject_candidate",
                 "comment": "保持原译名",
             },
@@ -995,8 +1019,10 @@ class JobStatusSnapshotTests(unittest.TestCase):
 
         terms = MemoryStore(rec.work_dir / "memory").load_glossary()["terms"]
         accuracy = next(term for term in terms if term["en"] == "Accuracy")
-        self.assertEqual(accuracy["zh"], "精度")
+        self.assertEqual(accuracy["zh"], "分类准确率")
         self.assertEqual(accuracy["status"], "confirmed")
+        self.assertEqual(accuracy["original_candidate_zh"], "精度")
+        self.assertEqual(accuracy["edited_candidate_zh"], "分类准确率")
         self.assertEqual(accuracy["reviewed_by"], "alice")
         self.assertEqual(accuracy["confidence"], 0.93)
         self.assertEqual(accuracy["section_scope"], "Methods")
@@ -1004,6 +1030,7 @@ class JobStatusSnapshotTests(unittest.TestCase):
         events = database.list_audit(limit=10)
         self.assertEqual(events[0]["action"], "job_glossary_review_batch_update")
         self.assertEqual(events[1]["action"], "job_glossary_review_update")
+        self.assertTrue(events[1]["detail"]["candidate_zh_changed"])
 
     def test_confirm_repair_publish_for_completed_job_writes_publish_copy(self) -> None:
         root = self._case_root("repair-publish-confirm")

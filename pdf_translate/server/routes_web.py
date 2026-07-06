@@ -267,6 +267,11 @@ def _apply_glossary_review_decision(
     payload: dict[str, Any],
     reviewer: str,
 ) -> dict[str, Any]:
+    candidate_zh = None
+    if "candidate_zh" in payload:
+        candidate_zh = payload.get("candidate_zh")
+    elif "confirmed_zh" in payload:
+        candidate_zh = payload.get("confirmed_zh")
     try:
         return _glossary_memory_store_for_record(rec).apply_glossary_review_decision(
             review_id,
@@ -275,6 +280,7 @@ def _apply_glossary_review_decision(
             comment=str(payload.get("comment") or ""),
             confidence=payload.get("confidence"),
             section_scope=str(payload.get("section_scope") or ""),
+            candidate_zh=candidate_zh,
         )
     except ValueError as exc:
         message = str(exc)
@@ -1208,6 +1214,8 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         review_ids = _normalize_glossary_review_ids(
             payload.get("review_ids") if "review_ids" in payload else payload.get("pending_keys")
         )
+        if "candidate_zh" in payload or "confirmed_zh" in payload:
+            raise HTTPException(400, "批量接口暂不支持改写候选译名")
         before_report = _glossary_review_report_for_record(rec)
         _validate_glossary_review_ids(before_report, review_ids)
         updated_items = [
@@ -1251,7 +1259,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             raise HTTPException(404, "任务不存在或无权访问")
         before_report = _glossary_review_report_for_record(rec)
         _validate_glossary_review_ids(before_report, [review_id])
-        _apply_glossary_review_decision(rec, review_id, payload, p.username)
+        updated_item = _apply_glossary_review_decision(rec, review_id, payload, p.username)
         report = _glossary_review_report_for_record(rec)
         summary = _glossary_review_summary(report)
         app_registry.update(job_id, message="已更新术语审核项")
@@ -1264,6 +1272,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             detail={
                 "review_id": review_id,
                 "decision": payload.get("decision"),
+                "candidate_zh_changed": bool(updated_item.get("edited_candidate_zh")),
                 "pending_count": summary.get("pending_count"),
                 "confirmed_count": summary.get("confirmed_count"),
                 "rejected_count": summary.get("rejected_count"),

@@ -19,6 +19,9 @@ const loading = ref(false);
 const errorText = ref("");
 const report = ref(null);
 const comments = ref({});
+const candidateEdits = ref({});
+const sectionScopes = ref({});
+const confidences = ref({});
 const workingId = ref("");
 const selectedReviewId = ref("");
 const selectedReviewIds = ref({});
@@ -78,6 +81,8 @@ function reviewMatchesFilters(item) {
     item.en,
     item.candidate_zh,
     item.confirmed_zh,
+    item.section_scope,
+    item.confidence,
     item.reason,
     item.source,
     item.review_comment,
@@ -120,6 +125,21 @@ function pageText(item) {
 function existingText(item) {
   const values = Array.isArray(item?.existing_zh) ? item.existing_zh : [];
   return values.length ? values.join(" / ") : "-";
+}
+
+function candidateText(item) {
+  if (!item?.review_id) return item?.candidate_zh || item?.confirmed_zh || "";
+  return candidateEdits.value[item.review_id] ?? item.candidate_zh ?? item.confirmed_zh ?? "";
+}
+
+function confidenceText(item) {
+  if (!item?.review_id) return "";
+  return confidences.value[item.review_id] ?? "";
+}
+
+function sectionScopeText(item) {
+  if (!item?.review_id) return "";
+  return sectionScopes.value[item.review_id] ?? "";
 }
 
 function isActionable(item) {
@@ -184,11 +204,21 @@ async function loadReport() {
       return;
     }
     report.value = data;
-    const next = {};
+    const nextComments = {};
+    const nextCandidates = {};
+    const nextScopes = {};
+    const nextConfidences = {};
     for (const item of Array.isArray(data.pending_reviews) ? data.pending_reviews : []) {
-      next[item.review_id] = item.review_comment || "";
+      nextComments[item.review_id] = item.review_comment || "";
+      nextCandidates[item.review_id] = item.confirmed_zh || item.candidate_zh || "";
+      nextScopes[item.review_id] = item.section_scope || "";
+      nextConfidences[item.review_id] =
+        item.confidence === undefined || item.confidence === null ? "" : String(item.confidence);
     }
-    comments.value = next;
+    comments.value = nextComments;
+    candidateEdits.value = nextCandidates;
+    sectionScopes.value = nextScopes;
+    confidences.value = nextConfidences;
     pruneSelection(reviews.value);
     const visible = filteredReviews.value;
     if (!visible.find((item) => item.review_id === selectedReviewId.value)) {
@@ -214,6 +244,9 @@ async function submitDecision(item, decision) {
         body: JSON.stringify({
           decision,
           comment: comments.value[item.review_id] || "",
+          candidate_zh: candidateEdits.value[item.review_id] || "",
+          section_scope: sectionScopes.value[item.review_id] || "",
+          confidence: confidences.value[item.review_id] || null,
         }),
       },
     );
@@ -339,7 +372,35 @@ onMounted(loadReport);
                 <dt>当前译名</dt>
                 <dd>{{ existingText(selectedReview) }}</dd>
                 <dt>候选译名</dt>
-                <dd>{{ selectedReview.candidate_zh || selectedReview.confirmed_zh || "-" }}</dd>
+                <dd v-if="isActionable(selectedReview)" class="editable-field">
+                  <input
+                    v-model.trim="candidateEdits[selectedReview.review_id]"
+                    type="text"
+                    placeholder="确认采用的中文译名"
+                  />
+                  <span class="muted small">原候选：{{ selectedReview.candidate_zh || selectedReview.confirmed_zh || "-" }}</span>
+                </dd>
+                <dd v-else>{{ selectedReview.confirmed_zh || selectedReview.candidate_zh || "-" }}</dd>
+                <dt>作用域 / 置信度</dt>
+                <dd v-if="isActionable(selectedReview)" class="review-meta-fields">
+                  <input
+                    v-model.trim="sectionScopes[selectedReview.review_id]"
+                    type="text"
+                    placeholder="例如 Methods / 全文"
+                  />
+                  <input
+                    v-model.trim="confidences[selectedReview.review_id]"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    placeholder="0-1"
+                  />
+                </dd>
+                <dd v-else>
+                  {{ sectionScopeText(selectedReview) || "-" }}
+                  <span v-if="confidenceText(selectedReview)"> · {{ confidenceText(selectedReview) }}</span>
+                </dd>
                 <dt>页面 / 来源</dt>
                 <dd>{{ pageText(selectedReview) }} · {{ selectedReview.source || "-" }}</dd>
                 <dt>原因</dt>
@@ -400,7 +461,11 @@ onMounted(loadReport);
                   </td>
                   <td class="term-cell">
                     <span class="block">当前：{{ existingText(item) }}</span>
-                    <span class="candidate block">候选：{{ item.candidate_zh || item.confirmed_zh || "-" }}</span>
+                    <span class="candidate block">候选：{{ candidateText(item) || "-" }}</span>
+                    <span v-if="sectionScopeText(item) || confidenceText(item)" class="muted block">
+                      {{ sectionScopeText(item) || "未设作用域" }}
+                      <span v-if="confidenceText(item)"> · 置信度 {{ confidenceText(item) }}</span>
+                    </span>
                     <span class="muted block">{{ shortText(item.reason) }}</span>
                   </td>
                   <td>{{ typeLabel(item.type) }}</td>
@@ -505,6 +570,8 @@ onMounted(loadReport);
 }
 .review-toolbar select,
 .review-toolbar input,
+.editable-field input,
+.review-meta-fields input,
 .batch-bar input {
   min-height: 32px;
   border-radius: 8px;
@@ -535,6 +602,19 @@ onMounted(loadReport);
 .batch-bar input {
   min-width: min(280px, 100%);
   flex: 1;
+}
+.editable-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+}
+.editable-field input {
+  width: 100%;
+}
+.review-meta-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px;
+  gap: 0.4rem;
 }
 .review-body {
   display: grid;
