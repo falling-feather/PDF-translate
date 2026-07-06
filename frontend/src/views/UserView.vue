@@ -172,6 +172,7 @@ function artifactSummary(j) {
   if (j.translated_pdf_ready) ready.push("译文 PDF");
   if (j.bilingual_html_ready) ready.push("双语 HTML");
   if (j.glossary_review_ready) ready.push("术语确认");
+  if (j.glossary_retranslation_plan_ready) ready.push("术语重译计划");
   if (j.table_merged_cell_review_ready) ready.push("表格确认");
   if (j.table_structure_publish_ready) ready.push("表格发布");
   if (j.repair_patch_review_ready) ready.push("补丁审核");
@@ -883,6 +884,24 @@ onUnmounted(() => {
                   @click="reviewGlossary(tid)"
                 >
                   确认术语
+                </button>
+                <button
+                  v-if="taskMap[tid].glossary_retranslation_plan_ready"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].glossary_retranslation_plan_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/glossary-retranslation-plan.md`, `${tid}_glossary_retranslation_plan.md`)"
+                >
+                  重译计划
+                </button>
+                <button
+                  v-if="taskMap[tid].glossary_retranslation_plan_ready"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].glossary_retranslation_plan_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/glossary-retranslation-plan.json`, `${tid}_glossary_retranslation_plan.json`)"
+                >
+                  计划 JSON
                 </button>
                 <button
                   v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"

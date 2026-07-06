@@ -174,6 +174,7 @@ function artifactReadySummary(job) {
   if (job.translated_pdf_ready) ready.push("译文PDF");
   if (job.bilingual_html_ready) ready.push("HTML");
   if (job.glossary_review_ready) ready.push("术语确认");
+  if (job.glossary_retranslation_plan_ready) ready.push("术语重译计划");
   if (job.table_merged_cell_review_ready) ready.push("表格确认");
   if (job.table_structure_publish_ready) ready.push("表格发布");
   if (job.repair_patch_review_ready) ready.push("补丁审核");
@@ -697,6 +698,8 @@ onMounted(() => {
                 <button type="button" class="linkish" :disabled="!j.input_pdf_ready" @click="adminDownload(j.job_id, 'input', 'input.pdf')">原PDF</button>
                 <button type="button" class="linkish" :disabled="!j.partial_output_ready" @click="adminDownload(j.job_id, 'output_md', 'translated.md')">MD</button>
                 <button type="button" class="linkish" :disabled="!j.translated_pdf_ready" @click="adminDownload(j.job_id, 'output_pdf', 'translated.pdf')">译PDF</button>
+                <button type="button" class="linkish" :disabled="!j.glossary_retranslation_plan_ready" @click="adminDownload(j.job_id, 'glossary_retranslation_plan_md', 'glossary_retranslation_plan.md')">重译计划</button>
+                <button type="button" class="linkish" :disabled="!j.glossary_retranslation_plan_ready" @click="adminDownload(j.job_id, 'glossary_retranslation_plan_json', 'glossary_retranslation_plan.json')">计划JSON</button>
                 <button type="button" class="linkish" :disabled="!j.repair_publish_report_ready" @click="adminDownload(j.job_id, 'repair_publish', 'repair_publish.md')">修复报告</button>
                 <button type="button" class="linkish" :disabled="!j.repair_effectiveness_report_ready" @click="adminDownload(j.job_id, 'repair_effectiveness', 'repair_effectiveness.md')">修复效果</button>
                 <button type="button" class="linkish" :disabled="!j.repair_rollback_report_ready" @click="adminDownload(j.job_id, 'repair_rollback', 'repair_rollback.md')">回滚报告</button>

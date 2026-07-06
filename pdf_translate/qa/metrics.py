@@ -24,6 +24,7 @@ DEFAULT_EVIDENCE_FILES = {
     "document_ir_promoted": "output/document_ir_promoted.json",
     "chunk_boundary_qa": "output/chunk_boundary_qa.json",
     "chunk_strategy_comparison": "output/chunk_strategy_comparison.json",
+    "glossary_retranslation_plan": "output/glossary_retranslation_plan.json",
     "translation_qa": "output/qa_report.json",
     "repair_plan": "output/repair_plan.json",
     "repair_requests": "output/repair_requests.json",

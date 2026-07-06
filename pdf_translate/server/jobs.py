@@ -585,6 +585,19 @@ class JobRegistry:
         return summary, None
 
     @staticmethod
+    def _glossary_retranslation_plan_summary(path: Path) -> tuple[dict[str, Any], str | None]:
+        if not path.is_file():
+            return {}, None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}, "glossary_retranslation_plan_invalid"
+        summary = raw.get("summary")
+        if not isinstance(summary, dict):
+            return {}, "glossary_retranslation_plan_summary_missing"
+        return summary, None
+
+    @staticmethod
     def _as_int(value: Any) -> int:
         if isinstance(value, bool):
             return int(value)
@@ -615,6 +628,8 @@ class JobRegistry:
         translated_md = output_dir / "translated_full.md"
         translated_pdf = output_dir / "translated_full.pdf"
         bilingual_html = output_dir / "bilingual.html"
+        glossary_retranslation_plan_json = output_dir / "glossary_retranslation_plan.json"
+        glossary_retranslation_plan_md = output_dir / "glossary_retranslation_plan.md"
         repair_publish_json = output_dir / "repair_publish.json"
         repair_publish_md = output_dir / "repair_publish.md"
         repair_rollback_json = output_dir / "repair_rollback.json"
@@ -644,6 +659,8 @@ class JobRegistry:
         translated_bytes = self._file_size(translated_md)
         pdf_bytes = self._file_size(translated_pdf)
         html_bytes = self._file_size(bilingual_html)
+        glossary_retranslation_plan_json_bytes = self._file_size(glossary_retranslation_plan_json)
+        glossary_retranslation_plan_md_bytes = self._file_size(glossary_retranslation_plan_md)
         repair_publish_json_bytes = self._file_size(repair_publish_json)
         repair_publish_md_bytes = self._file_size(repair_publish_md)
         repair_rollback_json_bytes = self._file_size(repair_rollback_json)
@@ -687,6 +704,9 @@ class JobRegistry:
             table_structure_publish_json
         )
         glossary_review_summary, glossary_review_warning = self._glossary_review_summary(memory_dir)
+        glossary_retranslation_plan_summary, glossary_retranslation_plan_warning = (
+            self._glossary_retranslation_plan_summary(glossary_retranslation_plan_json)
+        )
 
         warnings: list[str] = []
         if not rec.work_dir.is_dir():
@@ -719,6 +739,8 @@ class JobRegistry:
             warnings.append(table_publish_warning)
         if glossary_review_warning:
             warnings.append(glossary_review_warning)
+        if glossary_retranslation_plan_warning:
+            warnings.append(glossary_retranslation_plan_warning)
         if (
             rec.status == "done"
             and table_reconstruction_json.is_file()
@@ -839,6 +861,21 @@ class JobRegistry:
             or glossary_review_confirmed_count > 0
             or glossary_review_rejected_count > 0
         )
+        glossary_retranslation_plan_status = str(
+            glossary_retranslation_plan_summary.get("status") or ""
+        )
+        glossary_retranslation_plan_confirmed_term_count = self._as_int(
+            glossary_retranslation_plan_summary.get("confirmed_review_count")
+        )
+        glossary_retranslation_plan_affected_chunk_count = self._as_int(
+            glossary_retranslation_plan_summary.get("matched_chunk_count")
+        )
+        glossary_retranslation_plan_retranslate_chunk_count = self._as_int(
+            glossary_retranslation_plan_summary.get("stale_chunk_count")
+        )
+        glossary_retranslation_plan_ready_chunk_count = self._as_int(
+            glossary_retranslation_plan_summary.get("ready_chunk_count")
+        )
         if repair_publish_open_issue_count > 0:
             warnings.append("repair_publish_open_issues")
         if repair_patch_review_blocking_count > 0:
@@ -849,6 +886,12 @@ class JobRegistry:
             warnings.append("table_structure_publish_blocking_items")
         if glossary_review_pending_count > 0:
             warnings.append("glossary_review_pending_items")
+        if (
+            glossary_review_confirmed_count > 0
+            and glossary_retranslation_plan_json_bytes <= 0
+            and glossary_retranslation_plan_md_bytes <= 0
+        ):
+            warnings.append("glossary_retranslation_plan_missing_for_confirmed_terms")
         if table_structure_publish_confirmed and not table_structure_publish_published:
             warnings.append("table_structure_publish_requested_not_published")
         if table_structure_publish_published and table_reconstruction_confirmed_bytes <= 0:
@@ -914,6 +957,26 @@ class JobRegistry:
             "glossary_review_shared_translation_count": glossary_review_shared_translation_count,
             "glossary_review_confirmed_count": glossary_review_confirmed_count,
             "glossary_review_rejected_count": glossary_review_rejected_count,
+            "glossary_retranslation_plan_ready": (
+                glossary_retranslation_plan_json_bytes > 0 or glossary_retranslation_plan_md_bytes > 0
+            ),
+            "glossary_retranslation_plan_bytes": max(
+                glossary_retranslation_plan_json_bytes,
+                glossary_retranslation_plan_md_bytes,
+            ),
+            "glossary_retranslation_plan_status": glossary_retranslation_plan_status,
+            "glossary_retranslation_plan_confirmed_term_count": (
+                glossary_retranslation_plan_confirmed_term_count
+            ),
+            "glossary_retranslation_plan_affected_chunk_count": (
+                glossary_retranslation_plan_affected_chunk_count
+            ),
+            "glossary_retranslation_plan_retranslate_chunk_count": (
+                glossary_retranslation_plan_retranslate_chunk_count
+            ),
+            "glossary_retranslation_plan_ready_chunk_count": (
+                glossary_retranslation_plan_ready_chunk_count
+            ),
             "repair_publish_report_ready": repair_publish_json_bytes > 0 or repair_publish_md_bytes > 0,
             "repair_publish_report_bytes": max(repair_publish_json_bytes, repair_publish_md_bytes),
             "repair_rollback_report_ready": repair_rollback_json_bytes > 0 or repair_rollback_md_bytes > 0,
@@ -1389,6 +1452,13 @@ class JobRegistry:
                 "glossary_review_shared_translation_count": 0,
                 "glossary_review_confirmed_count": 0,
                 "glossary_review_rejected_count": 0,
+                "glossary_retranslation_plan_ready": False,
+                "glossary_retranslation_plan_bytes": 0,
+                "glossary_retranslation_plan_status": "",
+                "glossary_retranslation_plan_confirmed_term_count": 0,
+                "glossary_retranslation_plan_affected_chunk_count": 0,
+                "glossary_retranslation_plan_retranslate_chunk_count": 0,
+                "glossary_retranslation_plan_ready_chunk_count": 0,
                 "repair_publish_report_ready": False,
                 "repair_publish_report_bytes": 0,
                 "repair_rollback_report_ready": False,

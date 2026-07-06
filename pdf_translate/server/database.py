@@ -410,6 +410,11 @@ def log_job_finished(
         "repair_effectiveness": str((root / "output" / "repair_effectiveness.json").resolve())
         if (root / "output" / "repair_effectiveness.json").is_file()
         else None,
+        "glossary_retranslation_plan": str(
+            (root / "output" / "glossary_retranslation_plan.json").resolve()
+        )
+        if (root / "output" / "glossary_retranslation_plan.json").is_file()
+        else None,
         "table_merged_cell_review": str((root / "output" / "table_merged_cell_review.json").resolve())
         if (root / "output" / "table_merged_cell_review.json").is_file()
         else None,

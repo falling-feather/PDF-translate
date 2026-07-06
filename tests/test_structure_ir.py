@@ -30,6 +30,7 @@ from pdf_translate.extractors.document_ir import (
 )
 from pdf_translate.memory_store import MemoryStore
 from pdf_translate.qa.chunk_boundary import build_chunk_boundary_qa, build_chunk_strategy_comparison
+from pdf_translate.qa.glossary_retranslation import write_glossary_retranslation_plan
 from pdf_translate.qa.metrics import build_experiment_metrics
 from pdf_translate.qa.ocr_candidates import build_ocr_candidate_qa, write_ocr_candidate_qa
 from pdf_translate.qa.repair_effectiveness import (
@@ -6112,6 +6113,95 @@ class StructureIRTests(unittest.TestCase):
             if parent.is_dir() and not any(parent.iterdir()):
                 shutil.rmtree(parent)
 
+    def test_glossary_retranslation_plan_detects_stale_scoped_chunks(self) -> None:
+        root = Path.cwd() / "test-output" / "glossary-retranslation-plan"
+        if root.exists():
+            shutil.rmtree(root)
+        try:
+            mem = MemoryStore(root / "memory")
+            mem.ensure_files()
+            mem.merge_glossary_terms_from_survey(
+                [{"en": "Accuracy", "zh": "准确率"}],
+                first_page_1based=1,
+            )
+            mem.merge_glossary_terms_from_survey(
+                [{"en": "Accuracy", "zh": "精度"}],
+                first_page_1based=1,
+            )
+            conflict = next(
+                item
+                for item in mem.load_pending_review()["items"]
+                if item["type"] == "glossary_conflict"
+            )
+            mem.apply_glossary_review_decision(
+                conflict["dedupe_key"],
+                "confirm_candidate",
+                candidate_zh="分类准确率",
+                section_scope="Methods",
+                reviewer="导师",
+            )
+
+            out = root / "output"
+            chunk_dir = out / "chunks"
+            chunk_dir.mkdir(parents=True)
+            (out / "chunks_manifest.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "chunk_id": "c0000",
+                            "pages_1based": [1],
+                            "text": "Accuracy improves under domain shift.",
+                            "section_scopes": ["2 Methods"],
+                            "block_ids": ["p1-b0001"],
+                            "block_types": {"paragraph": 1},
+                        },
+                        {
+                            "chunk_id": "c0001",
+                            "pages_1based": [2],
+                            "text": "Accuracy is reported in the ablation.",
+                            "section_scopes": ["3 Results"],
+                            "block_ids": ["p2-b0001"],
+                            "block_types": {"paragraph": 1},
+                        },
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            (chunk_dir / "c0000.md").write_text(
+                "---\n{}\n---\n\n准确率在领域偏移下提升。\n",
+                encoding="utf-8",
+            )
+            (chunk_dir / "c0001.md").write_text(
+                "---\n{}\n---\n\n准确率在消融实验中报告。\n",
+                encoding="utf-8",
+            )
+
+            plan = write_glossary_retranslation_plan(out, root / "memory")
+
+            self.assertEqual(plan["schema_version"], "glossary-retranslation-plan-v1")
+            self.assertEqual(plan["summary"]["status"], "needs_retranslation")
+            self.assertEqual(plan["summary"]["confirmed_review_count"], 1)
+            self.assertEqual(plan["summary"]["matched_chunk_count"], 1)
+            self.assertEqual(plan["summary"]["stale_chunk_count"], 1)
+            self.assertEqual(plan["terms"][0]["matched_chunk_ids"], ["c0000"])
+            self.assertEqual(plan["terms"][0]["stale_chunk_ids"], ["c0000"])
+            self.assertEqual(plan["chunks"][0]["recommended_action"], "retranslate_chunk")
+            self.assertIn("contains_previous_translation", plan["chunks"][0]["stale_reasons"])
+            self.assertIn("missing_confirmed_translation", plan["chunks"][0]["stale_reasons"])
+            self.assertTrue((out / "glossary_retranslation_plan.json").is_file())
+            md = (out / "glossary_retranslation_plan.md").read_text(encoding="utf-8")
+            self.assertIn("术语确认重译计划", md)
+            self.assertIn("c0000", md)
+            self.assertNotIn("c0001 |", md)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
     def test_translation_qa_reports_glossary_conflicts(self) -> None:
         root = Path.cwd() / "test-output" / "translation-qa-glossary-conflict"
         if root.exists():
@@ -7433,6 +7523,8 @@ class StructureIRTests(unittest.TestCase):
                 "translated_pdf_report.json",
                 "repaired_full.md",
                 "bilingual.html",
+                "glossary_retranslation_plan.json",
+                "glossary_retranslation_plan.md",
                 "document_ir.json",
                 "structure_chunks_manifest.json",
                 "structure_hints_manifest.json",
@@ -7539,6 +7631,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/translated_full.pdf", rels)
             self.assertIn("output/translated_pdf_report.json", rels)
             self.assertIn("output/bilingual.html", rels)
+            self.assertIn("output/glossary_retranslation_plan.json", rels)
+            self.assertIn("output/glossary_retranslation_plan.md", rels)
             self.assertIn("output/qa_report.md", rels)
             self.assertIn("output/document_ir.json", rels)
             self.assertIn("output/table_reconstruction.json", rels)
@@ -7561,6 +7655,14 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(map_bundle_arcname("output/formal_full.before_repair.md"), "译文/正式译文修复前备份.md")
             self.assertEqual(map_bundle_arcname("output/formal_full.repair_applied.md"), "译文/正式译文回滚前修复稿.md")
             self.assertEqual(map_bundle_arcname("output/bilingual.html"), "译文/双语对照.html")
+            self.assertEqual(
+                map_bundle_arcname("output/glossary_retranslation_plan.json"),
+                "质量/术语确认重译计划.json",
+            )
+            self.assertEqual(
+                map_bundle_arcname("output/glossary_retranslation_plan.md"),
+                "质量/术语确认重译计划.md",
+            )
             self.assertEqual(map_bundle_arcname("output/translated_full.pdf"), "译文/结构化译文.pdf")
             self.assertEqual(map_bundle_arcname("output/translated_pdf_report.json"), "质量/PDF译文生成报告.json")
             self.assertEqual(map_bundle_arcname("output/repaired_full.md"), "译文/局部修复合并译文.md")

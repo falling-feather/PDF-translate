@@ -936,6 +936,42 @@ class JobStatusSnapshotTests(unittest.TestCase):
             [{"en": "Recall", "zh": "查全率"}],
             first_page_1based=2,
         )
+        out = rec.work_dir / "output"
+        chunk_dir = out / "chunks"
+        chunk_dir.mkdir(parents=True)
+        (out / "chunks_manifest.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "chunk_id": "c0000",
+                        "pages_1based": [1],
+                        "text": "Accuracy improves under domain shift.",
+                        "section_scopes": ["2 Methods"],
+                        "block_ids": ["p1-b0001"],
+                        "block_types": {"paragraph": 1},
+                    },
+                    {
+                        "chunk_id": "c0001",
+                        "pages_1based": [1],
+                        "text": "Recall improves under domain shift.",
+                        "section_scopes": ["2 Methods"],
+                        "block_ids": ["p1-b0002"],
+                        "block_types": {"paragraph": 1},
+                    },
+                ],
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        (chunk_dir / "c0000.md").write_text(
+            "---\n{}\n---\n\n准确率在领域偏移下提升。\n",
+            encoding="utf-8",
+        )
+        (chunk_dir / "c0001.md").write_text(
+            "---\n{}\n---\n\n召回率在领域偏移下提升。\n",
+            encoding="utf-8",
+        )
 
         api = FastAPI()
         api.include_router(register_web_routes(registry))
@@ -967,7 +1003,26 @@ class JobStatusSnapshotTests(unittest.TestCase):
             },
         )
         self.assertEqual(single.status_code, 200)
-        self.assertEqual(single.json()["glossary_review_summary"]["confirmed_count"], 1)
+        single_payload = single.json()
+        self.assertEqual(single_payload["glossary_review_summary"]["confirmed_count"], 1)
+        self.assertTrue(single_payload["glossary_retranslation_plan_ready"])
+        self.assertEqual(single_payload["glossary_retranslation_plan_status"], "needs_retranslation")
+        self.assertEqual(single_payload["glossary_retranslation_plan_affected_chunk_count"], 1)
+        self.assertEqual(single_payload["glossary_retranslation_plan_retranslate_chunk_count"], 1)
+        self.assertGreater(single_payload["glossary_retranslation_plan_bytes"], 0)
+        plan_path = out / "glossary_retranslation_plan.json"
+        self.assertTrue(plan_path.is_file())
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(plan["summary"]["stale_chunk_count"], 1)
+        self.assertEqual(plan["terms"][0]["stale_chunk_ids"], ["c0000"])
+        self.assertTrue((out / "glossary_retranslation_plan.md").is_file())
+
+        plan_md = client.get(f"/api/jobs/{rec.job_id}/download/glossary-retranslation-plan.md")
+        self.assertEqual(plan_md.status_code, 200)
+        self.assertIn("术语确认重译计划", plan_md.text)
+        plan_json = client.get(f"/api/jobs/{rec.job_id}/download/glossary-retranslation-plan.json")
+        self.assertEqual(plan_json.status_code, 200)
+        self.assertEqual(plan_json.json()["schema_version"], "glossary-retranslation-plan-v1")
 
         repeat = client.post(
             f"/api/jobs/{rec.job_id}/glossary-review/{quote(accuracy_review_id, safe='')}",
@@ -1016,6 +1071,8 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(payload["glossary_review_pending_count"], 0)
         self.assertEqual(payload["glossary_review_confirmed_count"], 1)
         self.assertEqual(payload["glossary_review_rejected_count"], 1)
+        self.assertTrue(payload["glossary_retranslation_plan_ready"])
+        self.assertEqual(payload["glossary_retranslation_plan_retranslate_chunk_count"], 1)
 
         terms = MemoryStore(rec.work_dir / "memory").load_glossary()["terms"]
         accuracy = next(term for term in terms if term["en"] == "Accuracy")

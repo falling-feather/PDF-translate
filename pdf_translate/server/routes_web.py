@@ -18,6 +18,7 @@ from pdf_translate.exporters.translated_pdf import write_translated_pdf
 from pdf_translate.export_filename import suggest_md_download_name, suggest_zip_bundle_name
 from pdf_translate.memory_store import MemoryStore
 from pdf_translate.pipeline_cancel import cancel_flag_path
+from pdf_translate.qa.glossary_retranslation import write_glossary_retranslation_plan
 from pdf_translate.qa.repair import (
     write_repair_formal_replace,
     write_repair_formal_rollback,
@@ -289,6 +290,13 @@ def _apply_glossary_review_decision(
         raise HTTPException(400, message) from exc
     except (json.JSONDecodeError, OSError) as exc:
         raise HTTPException(409, "术语审核文件无法写入") from exc
+
+
+def _refresh_glossary_retranslation_plan_for_record(rec: JobRecord) -> dict[str, Any]:
+    try:
+        return write_glossary_retranslation_plan(rec.work_dir / "output", rec.work_dir / "memory")
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(409, "术语重译计划无法生成") from exc
 
 
 def _confirm_repair_publish_for_record(rec: JobRecord) -> dict[str, Any]:
@@ -1194,6 +1202,46 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             headers={"Content-Disposition": cd},
         )
 
+    @api.get("/jobs/{job_id}/download/glossary-retranslation-plan.md")
+    def download_glossary_retranslation_plan_md(
+        job_id: str,
+        p: Principal = Depends(bearer_principal),
+    ) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "glossary_retranslation_plan.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "术语确认重译计划尚未生成")
+        ascii_fallback = "glossary_retranslation_plan.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_glossary_retranslation_plan.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
+    @api.get("/jobs/{job_id}/download/glossary-retranslation-plan.json")
+    def download_glossary_retranslation_plan_json(
+        job_id: str,
+        p: Principal = Depends(bearer_principal),
+    ) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "glossary_retranslation_plan.json"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "术语确认重译计划尚未生成")
+        ascii_fallback = "glossary_retranslation_plan.json"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_glossary_retranslation_plan.json"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
     @api.get("/jobs/{job_id}/glossary-review")
     def get_glossary_review(job_id: str, p: Principal = Depends(bearer_principal)) -> dict[str, Any]:
         rec = app_registry.get(job_id)
@@ -1222,6 +1270,12 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             _apply_glossary_review_decision(rec, review_id, payload, p.username)
             for review_id in review_ids
         ]
+        retranslation_plan = _refresh_glossary_retranslation_plan_for_record(rec)
+        plan_summary = (
+            retranslation_plan.get("summary")
+            if isinstance(retranslation_plan.get("summary"), dict)
+            else {}
+        )
         report = _glossary_review_report_for_record(rec)
         summary = _glossary_review_summary(report)
         app_registry.update(job_id, message=f"已批量更新 {len(updated_items)} 个术语审核项")
@@ -1238,12 +1292,15 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
                 "pending_count": summary.get("pending_count"),
                 "confirmed_count": summary.get("confirmed_count"),
                 "rejected_count": summary.get("rejected_count"),
+                "glossary_retranslation_plan_status": plan_summary.get("status"),
+                "glossary_retranslation_plan_stale_chunk_count": plan_summary.get("stale_chunk_count"),
             },
         )
         updated = app_registry.get(job_id) or rec
         d = _job_dict(updated)
         d["glossary_review_summary"] = summary
         d["glossary_review"] = report
+        d["glossary_retranslation_plan_summary"] = plan_summary
         return d
 
     @api.post("/jobs/{job_id}/glossary-review/{review_id:path}")
@@ -1260,6 +1317,12 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         before_report = _glossary_review_report_for_record(rec)
         _validate_glossary_review_ids(before_report, [review_id])
         updated_item = _apply_glossary_review_decision(rec, review_id, payload, p.username)
+        retranslation_plan = _refresh_glossary_retranslation_plan_for_record(rec)
+        plan_summary = (
+            retranslation_plan.get("summary")
+            if isinstance(retranslation_plan.get("summary"), dict)
+            else {}
+        )
         report = _glossary_review_report_for_record(rec)
         summary = _glossary_review_summary(report)
         app_registry.update(job_id, message="已更新术语审核项")
@@ -1276,12 +1339,15 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
                 "pending_count": summary.get("pending_count"),
                 "confirmed_count": summary.get("confirmed_count"),
                 "rejected_count": summary.get("rejected_count"),
+                "glossary_retranslation_plan_status": plan_summary.get("status"),
+                "glossary_retranslation_plan_stale_chunk_count": plan_summary.get("stale_chunk_count"),
             },
         )
         updated = app_registry.get(job_id) or rec
         d = _job_dict(updated)
         d["glossary_review_summary"] = summary
         d["glossary_review"] = report
+        d["glossary_retranslation_plan_summary"] = plan_summary
         return d
 
     @api.get("/jobs/{job_id}/table-merged-cell-review")
@@ -2055,6 +2121,24 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
                 filename="table_reconstruction_confirmed.json",
                 media_type="application/json; charset=utf-8",
             )
+        if kind == "glossary_retranslation_plan_md":
+            p = root / "output" / "glossary_retranslation_plan.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "术语确认重译计划尚未生成")
+            return FileResponse(
+                p,
+                filename="glossary_retranslation_plan.md",
+                media_type="text/markdown; charset=utf-8",
+            )
+        if kind == "glossary_retranslation_plan_json":
+            p = root / "output" / "glossary_retranslation_plan.json"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "术语确认重译计划尚未生成")
+            return FileResponse(
+                p,
+                filename="glossary_retranslation_plan.json",
+                media_type="application/json; charset=utf-8",
+            )
         if kind == "repair_published_full":
             p = root / "output" / "published_full.md"
             if not p.is_file() or p.stat().st_size == 0:
@@ -2104,7 +2188,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             return Response(content=data, media_type="application/zip", headers={"Content-Disposition": cd})
         raise HTTPException(
             400,
-            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_effectiveness / repair_rollback / repair_formal_replace / repair_formal_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / repair_published_full / repair_rollback_full / repair_formal_full / repair_formal_backup_full / repair_formal_active_before_rollback_full / bundle_zip",
+            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_effectiveness / repair_rollback / repair_formal_replace / repair_formal_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / glossary_retranslation_plan_md / glossary_retranslation_plan_json / repair_published_full / repair_rollback_full / repair_formal_full / repair_formal_backup_full / repair_formal_active_before_rollback_full / bundle_zip",
         )
 
     api.include_router(admin)
