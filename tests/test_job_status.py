@@ -792,6 +792,27 @@ class JobStatusSnapshotTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        (out / "vlm_tasks.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "vlm-fallback-tasks-v1",
+                    "summary": {
+                        "task_count": 3,
+                        "after_ocr_gate_task_count": 3,
+                        "ready_task_count": 2,
+                        "blocked_by_missing_visual_evidence_count": 1,
+                        "ocr_missing_result_task_count": 1,
+                        "ocr_failed_result_task_count": 1,
+                        "ocr_empty_text_task_count": 1,
+                        "ocr_low_confidence_task_count": 2,
+                        "ocr_candidate_gate_task_count": 2,
+                        "structured_gate_task_count": 1,
+                    },
+                    "tasks": [],
+                }
+            ),
+            encoding="utf-8",
+        )
         registry.update(rec.job_id, status="done", phase="done")
 
         merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
@@ -837,6 +858,18 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertTrue(merged[0]["table_structure_publish_rollback_available"])
         self.assertTrue(merged[0]["table_reconstruction_confirmed_ready"])
         self.assertGreater(merged[0]["table_reconstruction_confirmed_bytes"], 0)
+        self.assertTrue(merged[0]["vlm_fallback_tasks_ready"])
+        self.assertGreater(merged[0]["vlm_fallback_tasks_bytes"], 0)
+        self.assertEqual(merged[0]["vlm_fallback_task_count"], 3)
+        self.assertEqual(merged[0]["vlm_fallback_after_ocr_gate_task_count"], 3)
+        self.assertEqual(merged[0]["vlm_fallback_ready_task_count"], 2)
+        self.assertEqual(merged[0]["vlm_fallback_blocked_by_missing_visual_evidence_count"], 1)
+        self.assertEqual(merged[0]["vlm_fallback_ocr_missing_result_task_count"], 1)
+        self.assertEqual(merged[0]["vlm_fallback_ocr_failed_result_task_count"], 1)
+        self.assertEqual(merged[0]["vlm_fallback_ocr_empty_text_task_count"], 1)
+        self.assertEqual(merged[0]["vlm_fallback_ocr_low_confidence_task_count"], 2)
+        self.assertEqual(merged[0]["vlm_fallback_ocr_candidate_gate_task_count"], 2)
+        self.assertEqual(merged[0]["vlm_fallback_structured_gate_task_count"], 1)
         self.assertTrue(merged[0]["repair_publish_confirmed"])
         self.assertTrue(merged[0]["repair_publish_published"])
         self.assertEqual(merged[0]["repair_publish_status"], "published_with_warnings")
@@ -875,6 +908,60 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertIn("repair_publish_open_issues", merged[0]["artifact_warnings"])
         self.assertIn("repair_patch_review_blocking_items", merged[0]["artifact_warnings"])
         self.assertIn("table_merged_cell_review_required_items", merged[0]["artifact_warnings"])
+        self.assertIn("vlm_fallback_missing_visual_evidence", merged[0]["artifact_warnings"])
+
+    def test_vlm_fallback_tasks_downloads_for_user_and_admin(self) -> None:
+        root = self._case_root("vlm-fallback-download")
+        registry = JobRegistry(root)
+        rec = registry.create_job(
+            owner_user_id=7,
+            owner_username="alice",
+            original_filename="paper.pdf",
+        )
+        out = rec.work_dir / "output"
+        out.mkdir()
+        payload = {
+            "schema_version": "vlm-fallback-tasks-v1",
+            "summary": {
+                "task_count": 1,
+                "ready_task_count": 1,
+            },
+            "tasks": [
+                {
+                    "task_id": "vlm-p1-table",
+                    "source_ocr_task_id": "ocr-p1-table",
+                    "status": "pending_vlm",
+                }
+            ],
+        }
+        (out / "vlm_tasks.json").write_text(json.dumps(payload), encoding="utf-8")
+        registry.update(rec.job_id, status="done", phase="done")
+
+        api = FastAPI()
+        api.include_router(register_web_routes(registry))
+        api.dependency_overrides[bearer_principal] = lambda: Principal(
+            user_id=7,
+            username="alice",
+            role="user",
+        )
+        api.dependency_overrides[require_admin] = lambda: Principal(
+            user_id=1,
+            username="admin",
+            role="admin",
+        )
+        self.addCleanup(api.dependency_overrides.clear)
+        client = TestClient(api)
+
+        user_download = client.get(f"/api/jobs/{rec.job_id}/download/vlm-tasks.json")
+        self.assertEqual(user_download.status_code, 200)
+        self.assertEqual(user_download.json()["schema_version"], "vlm-fallback-tasks-v1")
+        self.assertIn("vlm_tasks.json", user_download.headers["content-disposition"])
+
+        admin_download = client.get(
+            f"/api/admin/jobs/{rec.job_id}/artifact?kind=vlm_fallback_tasks"
+        )
+        self.assertEqual(admin_download.status_code, 200)
+        self.assertEqual(admin_download.json()["tasks"][0]["source_ocr_task_id"], "ocr-p1-table")
 
     def test_artifact_summary_reports_glossary_review_status(self) -> None:
         root = self._case_root("glossary-review-artifacts")

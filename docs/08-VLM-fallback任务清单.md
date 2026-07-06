@@ -2,16 +2,18 @@
 
 > 文档定位：记录 OCR 后置视觉复核任务清单的设计、验收方式和后续规划。  
 > 最后更新：2026-07-06  
-> 关联产物：`output/vlm_tasks.json`、`output/experiment_metrics.json`、ZIP 资料包。
+> 关联产物：`output/vlm_tasks.json`、`output/experiment_metrics.json`、Web 任务产物摘要与下载入口、ZIP 资料包。
 
 ## 当前状态
 
-本轮已新增 `vlm_tasks.json` 产物。它不直接调用外部 VLM，也不修改正式译文，而是在本地 OCR 执行、OCR 回写和 OCR 候选 QA 之后，把确实需要视觉复核的任务物化出来。
+本轮已新增 `vlm_tasks.json` 产物，并已接入 Web 任务状态、用户端下载入口和管理端 artifact 下载入口。它不直接调用外部 VLM，也不修改正式译文，而是在本地 OCR 执行、OCR 回写和 OCR 候选 QA 之后，把确实需要视觉复核的任务物化出来。
 
 这一步解决的是“路由阶段只是预估需要 VLM，但 OCR 之后没有明确待办”的问题。现在系统可以区分：
 
 - `ocr_tasks.json`：路由期调度任务，说明哪些页面或区域需要 OCR。
 - `vlm_tasks.json`：OCR 后置复核任务，说明哪些 OCR 任务失败、低置信、缺结果或结构门禁异常，需要交给 VLM 或人工复核。
+
+Web 工作台现在会在任务产物摘要中显示 `VLM复核`，用户可通过 `/api/jobs/{job_id}/download/vlm-tasks.json` 下载，管理员可通过 `kind=vlm_fallback_tasks` 下载同一份 JSON。任务完成审计详情也会记录 `vlm_fallback_tasks` 路径，方便后续整理专利证据链。
 
 ## 触发条件
 
@@ -64,6 +66,7 @@
 1. OCR 后确实产生 `output/vlm_tasks.json`。
 2. 低置信、空文本、缺失结果、结构门禁异常能被归入明确原因。
 3. 普通文本 warning 不会被误判为 VLM fallback 任务。
+4. Web 用户端和管理端都能看到 `VLM复核` 产物，并能下载 `vlm_tasks.json`。
 
 ## 专利价值
 
@@ -85,6 +88,6 @@
 
 - 接入真实 VLM executor，但保持默认不自动调用外部模型。
 - 支持把 VLM 返回结果转换为 `ocr-results-v1`。
-- 增加人工复核界面，允许用户查看 `vlm_tasks.json` 中的页面预览、bbox 和建议输出字段。
+- 下载入口已完成；后续增加人工复核界面，允许用户直接查看 `vlm_tasks.json` 中的页面预览、bbox 和建议输出字段并写回复核结论。
 - 用真实扫描论文、图片型表格和公式密集样本校准触发阈值。
 - 将 VLM fallback 成功率、误触发率和结构修复率纳入批量实验报告。

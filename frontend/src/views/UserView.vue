@@ -181,6 +181,7 @@ function artifactSummary(j) {
   if (j.glossary_retranslation_rollback_full_ready) ready.push("术语重译回滚稿");
   if (j.table_merged_cell_review_ready) ready.push("表格确认");
   if (j.table_structure_publish_ready) ready.push("表格发布");
+  if (j.vlm_fallback_tasks_ready) ready.push("VLM复核");
   if (j.repair_patch_review_ready) ready.push("补丁审核");
   if (j.repair_effectiveness_report_ready) ready.push("修复效果");
   if (j.repair_publish_report_ready) ready.push("修复报告");
@@ -1139,6 +1140,15 @@ onUnmounted(() => {
                   @click="downloadFrom(`/api/jobs/${tid}/download/table-reconstruction-confirmed.json`, `${tid}_table_reconstruction_confirmed.json`)"
                 >
                   表格副本
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].vlm_fallback_tasks_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/vlm-tasks.json`, `${tid}_vlm_tasks.json`)"
+                >
+                  VLM复核
                 </button>
                 <button
                   v-if="taskMap[tid].status === 'done'"

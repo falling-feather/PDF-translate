@@ -424,6 +424,9 @@ def log_job_finished(
         "table_reconstruction_confirmed": str((root / "output" / "table_reconstruction_confirmed.json").resolve())
         if (root / "output" / "table_reconstruction_confirmed.json").is_file()
         else None,
+        "vlm_fallback_tasks": str((root / "output" / "vlm_tasks.json").resolve())
+        if (root / "output" / "vlm_tasks.json").is_file()
+        else None,
         "repair_published_full": str((root / "output" / "published_full.md").resolve())
         if (root / "output" / "published_full.md").is_file()
         else None,

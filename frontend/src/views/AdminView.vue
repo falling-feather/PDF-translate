@@ -183,6 +183,7 @@ function artifactReadySummary(job) {
   if (job.glossary_retranslation_rollback_full_ready) ready.push("术语回滚稿");
   if (job.table_merged_cell_review_ready) ready.push("表格确认");
   if (job.table_structure_publish_ready) ready.push("表格发布");
+  if (job.vlm_fallback_tasks_ready) ready.push("VLM复核");
   if (job.repair_patch_review_ready) ready.push("补丁审核");
   if (job.repair_effectiveness_report_ready) ready.push("修复效果");
   if (job.repair_publish_report_ready) ready.push("修复报告");
@@ -788,6 +789,7 @@ onMounted(() => {
                 <button type="button" class="linkish" :disabled="!j.table_merged_cell_review_ready" @click="adminDownload(j.job_id, 'table_merged_cell_review', 'table_merged_cell_review.md')">表格确认</button>
                 <button type="button" class="linkish" :disabled="!j.table_structure_publish_ready" @click="adminDownload(j.job_id, 'table_structure_publish', 'table_structure_publish.md')">表格发布</button>
                 <button type="button" class="linkish" :disabled="!j.table_reconstruction_confirmed_ready" @click="adminDownload(j.job_id, 'table_reconstruction_confirmed', 'table_reconstruction_confirmed.json')">表格副本</button>
+                <button type="button" class="linkish" :disabled="!j.vlm_fallback_tasks_ready" @click="adminDownload(j.job_id, 'vlm_fallback_tasks', 'vlm_tasks.json')">VLM复核</button>
                 <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.repair_publish_report_ready || j.repair_published_full_ready" @click="adminConfirmRepairPublish(j)">确认修复</button>
                 <button type="button" class="linkish" :disabled="!j.repair_published_full_ready" @click="adminDownload(j.job_id, 'repair_published_full', 'published_full.md')">修复稿</button>
                 <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.repair_published_full_ready || j.repair_rollback_full_ready" @click="adminConfirmRepairRollback(j)">回滚演练</button>

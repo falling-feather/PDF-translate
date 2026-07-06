@@ -572,6 +572,19 @@ class JobRegistry:
         return summary, None
 
     @staticmethod
+    def _vlm_fallback_tasks_summary(path: Path) -> tuple[dict[str, Any], str | None]:
+        if not path.is_file():
+            return {}, None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}, "vlm_fallback_tasks_invalid"
+        summary = raw.get("summary")
+        if not isinstance(summary, dict):
+            return {}, "vlm_fallback_tasks_summary_missing"
+        return summary, None
+
+    @staticmethod
     def _glossary_review_summary(memory_dir: Path) -> tuple[dict[str, Any], str | None]:
         if not memory_dir.is_dir():
             return {}, None
@@ -701,6 +714,7 @@ class JobRegistry:
         table_structure_publish_json = output_dir / "table_structure_publish.json"
         table_structure_publish_md = output_dir / "table_structure_publish.md"
         table_reconstruction_confirmed_json = output_dir / "table_reconstruction_confirmed.json"
+        vlm_tasks_json = output_dir / "vlm_tasks.json"
         input_bytes = self._file_size(input_pdf)
         glossary_bytes = self._file_size(glossary_json)
         pending_review_bytes = self._file_size(pending_review_json)
@@ -746,6 +760,7 @@ class JobRegistry:
         table_structure_publish_json_bytes = self._file_size(table_structure_publish_json)
         table_structure_publish_md_bytes = self._file_size(table_structure_publish_md)
         table_reconstruction_confirmed_bytes = self._file_size(table_reconstruction_confirmed_json)
+        vlm_tasks_json_bytes = self._file_size(vlm_tasks_json)
         repair_summary, repair_warning = self._repair_publish_summary(repair_publish_json)
         repair_rollback_summary, repair_rollback_warning = self._repair_rollback_summary(repair_rollback_json)
         repair_formal_replace_summary, repair_formal_replace_warning = self._repair_formal_replace_summary(
@@ -764,6 +779,7 @@ class JobRegistry:
         table_publish_summary, table_publish_warning = self._table_structure_publish_summary(
             table_structure_publish_json
         )
+        vlm_tasks_summary, vlm_tasks_warning = self._vlm_fallback_tasks_summary(vlm_tasks_json)
         glossary_review_summary, glossary_review_warning = self._glossary_review_summary(memory_dir)
         glossary_retranslation_plan_summary, glossary_retranslation_plan_warning = (
             self._glossary_retranslation_plan_summary(glossary_retranslation_plan_json)
@@ -807,6 +823,8 @@ class JobRegistry:
             warnings.append(table_review_warning)
         if table_publish_warning:
             warnings.append(table_publish_warning)
+        if vlm_tasks_warning:
+            warnings.append(vlm_tasks_warning)
         if glossary_review_warning:
             warnings.append(glossary_review_warning)
         if glossary_retranslation_plan_warning:
@@ -912,6 +930,32 @@ class JobRegistry:
             table_publish_summary.get("structure_patch_covered_cell_count")
         )
         table_structure_publish_rollback_available = bool(table_publish_summary.get("rollback_available"))
+        vlm_fallback_task_count = self._as_int(vlm_tasks_summary.get("task_count"))
+        vlm_fallback_after_ocr_gate_task_count = self._as_int(
+            vlm_tasks_summary.get("after_ocr_gate_task_count")
+        )
+        vlm_fallback_ready_task_count = self._as_int(vlm_tasks_summary.get("ready_task_count"))
+        vlm_fallback_blocked_by_missing_visual_evidence_count = self._as_int(
+            vlm_tasks_summary.get("blocked_by_missing_visual_evidence_count")
+        )
+        vlm_fallback_ocr_missing_result_task_count = self._as_int(
+            vlm_tasks_summary.get("ocr_missing_result_task_count")
+        )
+        vlm_fallback_ocr_failed_result_task_count = self._as_int(
+            vlm_tasks_summary.get("ocr_failed_result_task_count")
+        )
+        vlm_fallback_ocr_empty_text_task_count = self._as_int(
+            vlm_tasks_summary.get("ocr_empty_text_task_count")
+        )
+        vlm_fallback_ocr_low_confidence_task_count = self._as_int(
+            vlm_tasks_summary.get("ocr_low_confidence_task_count")
+        )
+        vlm_fallback_ocr_candidate_gate_task_count = self._as_int(
+            vlm_tasks_summary.get("ocr_candidate_gate_task_count")
+        )
+        vlm_fallback_structured_gate_task_count = self._as_int(
+            vlm_tasks_summary.get("structured_gate_task_count")
+        )
         glossary_review_term_count = self._as_int(glossary_review_summary.get("term_count"))
         glossary_review_active_term_count = self._as_int(
             glossary_review_summary.get("active_term_count")
@@ -1005,6 +1049,8 @@ class JobRegistry:
             warnings.append("table_merged_cell_review_required_items")
         if table_structure_publish_blocking_count > 0:
             warnings.append("table_structure_publish_blocking_items")
+        if vlm_fallback_blocked_by_missing_visual_evidence_count > 0:
+            warnings.append("vlm_fallback_missing_visual_evidence")
         if glossary_review_pending_count > 0:
             warnings.append("glossary_review_pending_items")
         if (
@@ -1243,6 +1289,30 @@ class JobRegistry:
             "table_structure_publish_rollback_available": table_structure_publish_rollback_available,
             "table_reconstruction_confirmed_ready": table_reconstruction_confirmed_bytes > 0,
             "table_reconstruction_confirmed_bytes": table_reconstruction_confirmed_bytes,
+            "vlm_fallback_tasks_ready": vlm_tasks_json_bytes > 0,
+            "vlm_fallback_tasks_bytes": vlm_tasks_json_bytes,
+            "vlm_fallback_task_count": vlm_fallback_task_count,
+            "vlm_fallback_after_ocr_gate_task_count": vlm_fallback_after_ocr_gate_task_count,
+            "vlm_fallback_ready_task_count": vlm_fallback_ready_task_count,
+            "vlm_fallback_blocked_by_missing_visual_evidence_count": (
+                vlm_fallback_blocked_by_missing_visual_evidence_count
+            ),
+            "vlm_fallback_ocr_missing_result_task_count": (
+                vlm_fallback_ocr_missing_result_task_count
+            ),
+            "vlm_fallback_ocr_failed_result_task_count": (
+                vlm_fallback_ocr_failed_result_task_count
+            ),
+            "vlm_fallback_ocr_empty_text_task_count": (
+                vlm_fallback_ocr_empty_text_task_count
+            ),
+            "vlm_fallback_ocr_low_confidence_task_count": (
+                vlm_fallback_ocr_low_confidence_task_count
+            ),
+            "vlm_fallback_ocr_candidate_gate_task_count": (
+                vlm_fallback_ocr_candidate_gate_task_count
+            ),
+            "vlm_fallback_structured_gate_task_count": vlm_fallback_structured_gate_task_count,
             "repair_publish_confirmed": repair_publish_confirmed,
             "repair_publish_published": repair_publish_published,
             "repair_publish_status": repair_publish_status,

@@ -1395,6 +1395,26 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             headers={"Content-Disposition": cd},
         )
 
+    @api.get("/jobs/{job_id}/download/vlm-tasks.json")
+    def download_vlm_fallback_tasks(
+        job_id: str,
+        p: Principal = Depends(bearer_principal),
+    ) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "vlm_tasks.json"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "VLM 复核任务清单尚未生成")
+        ascii_fallback = "vlm_tasks.json"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_vlm_tasks.json"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
     @api.get("/jobs/{job_id}/download/glossary-retranslation-plan.md")
     def download_glossary_retranslation_plan_md(
         job_id: str,
@@ -2560,6 +2580,15 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
                 filename="table_reconstruction_confirmed.json",
                 media_type="application/json; charset=utf-8",
             )
+        if kind == "vlm_fallback_tasks":
+            p = root / "output" / "vlm_tasks.json"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "VLM 复核任务清单尚未生成")
+            return FileResponse(
+                p,
+                filename="vlm_tasks.json",
+                media_type="application/json; charset=utf-8",
+            )
         if kind == "glossary_retranslation_plan_md":
             p = root / "output" / "glossary_retranslation_plan.md"
             if not p.is_file() or p.stat().st_size == 0:
@@ -2690,7 +2719,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             return Response(content=data, media_type="application/zip", headers={"Content-Disposition": cd})
         raise HTTPException(
             400,
-            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_effectiveness / repair_rollback / repair_formal_replace / repair_formal_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / glossary_retranslation_plan_md / glossary_retranslation_plan_json / glossary_retranslation_result_md / glossary_retranslation_result_json / glossary_retranslated_full / glossary_retranslation_publish / glossary_retranslation_published_full / glossary_retranslation_rollback / glossary_retranslation_rollback_full / repair_published_full / repair_rollback_full / repair_formal_full / repair_formal_backup_full / repair_formal_active_before_rollback_full / bundle_zip",
+            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_effectiveness / repair_rollback / repair_formal_replace / repair_formal_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / vlm_fallback_tasks / glossary_retranslation_plan_md / glossary_retranslation_plan_json / glossary_retranslation_result_md / glossary_retranslation_result_json / glossary_retranslated_full / glossary_retranslation_publish / glossary_retranslation_published_full / glossary_retranslation_rollback / glossary_retranslation_rollback_full / repair_published_full / repair_rollback_full / repair_formal_full / repair_formal_backup_full / repair_formal_active_before_rollback_full / bundle_zip",
         )
 
     api.include_router(admin)
