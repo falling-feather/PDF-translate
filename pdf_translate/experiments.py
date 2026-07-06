@@ -1176,6 +1176,48 @@ def _format_counter(value: Any) -> str:
     return "; ".join(f"{key}:{count}" for key, count in sorted(value.items()))
 
 
+def _extend_sample_coverage_markdown(lines: list[str], coverage: Any, *, heading: str) -> None:
+    if not isinstance(coverage, dict) or not coverage:
+        return
+    requirements = coverage.get("requirements", [])
+    if not isinstance(requirements, list):
+        requirements = []
+    missing = _format_counter(coverage.get("missing_counts")) or "none"
+    ready_label = "yes" if coverage.get("ready_for_patent_batch") else "no"
+    lines.extend(
+        [
+            "",
+            f"## {heading}",
+            "",
+            f"- Requirements met: {coverage.get('met_requirement_count', 0)}/{coverage.get('requirement_count', 0)}",
+            f"- Ready for patent batch: {ready_label}",
+            f"- Missing counts: {missing}",
+            "",
+            "| Category | Current samples | Suggested minimum | Missing | Status |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+    )
+    for item in requirements:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "")
+        category = str(item.get("category") or "")
+        display = category if not label or label == category else f"{category} ({label})"
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_cell(display),
+                    _format_number(item.get("count", 0)),
+                    _format_number(item.get("minimum", 0)),
+                    _format_number(item.get("missing", 0)),
+                    str(item.get("status", "")),
+                ]
+            )
+            + " |"
+        )
+
+
 def write_batch_experiment_markdown(report: dict[str, Any], path: Path) -> Path:
     sample_filter = report.get("sample_filter", {}) if isinstance(report.get("sample_filter"), dict) else {}
     lines = [
@@ -1220,6 +1262,12 @@ def write_batch_experiment_markdown(report: dict[str, Any], path: Path) -> Path:
             )
             + " |"
         )
+
+    _extend_sample_coverage_markdown(
+        lines,
+        sample_filter.get("selected_coverage"),
+        heading="Confirmed patent-batch sample coverage",
+    )
 
     lines.extend(
         [
@@ -2127,6 +2175,12 @@ def build_batch_experiment_evidence(
         or _review_number(row.get("repair_effectiveness_issue_reduction_rate")) is not None
         or _review_text(row.get("repair_effectiveness_status_counts"))
     ]
+    sample_filter = report.get("sample_filter", {}) if isinstance(report.get("sample_filter"), dict) else {}
+    patent_batch_coverage = (
+        sample_filter.get("selected_coverage")
+        if isinstance(sample_filter.get("selected_coverage"), dict)
+        else {}
+    )
 
     return {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
@@ -2135,6 +2189,8 @@ def build_batch_experiment_evidence(
         "source_review_file": review_file,
         "batch_schema_version": report.get("schema_version"),
         "sample_count": report.get("sample_count", 0),
+        "sample_filter": sample_filter,
+        "patent_batch_coverage": patent_batch_coverage,
         "run_count": report.get("run_count", len(review_rows)),
         "succeeded_count": report.get("succeeded_count", 0),
         "failed_count": report.get("failed_count", len(run_failures)),
@@ -2296,6 +2352,12 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
             )
             + " |"
         )
+
+    _extend_sample_coverage_markdown(
+        lines,
+        evidence.get("patent_batch_coverage"),
+        heading="Confirmed patent-batch sample coverage",
+    )
 
     lines.extend(
         [
@@ -2495,6 +2557,18 @@ def run_batch_experiment(
             "no samples selected for batch experiment; fill include_in_patent_batch "
             "or disable patent_batch_only"
         )
+    selected_coverage = _build_sample_coverage(
+        [
+            {
+                "sample_id": sample.sample_id,
+                "source_pdf": str(sample.source_pdf),
+                "pdf_type": sample.pdf_type,
+                "tags": list(sample.tags),
+                "include_in_patent_batch": sample.include_in_patent_batch,
+            }
+            for sample in samples
+        ]
+    )
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -2507,6 +2581,7 @@ def run_batch_experiment(
             "input_sample_count": len(all_samples),
             "selected_sample_count": len(samples),
             "skipped_sample_count": len(all_samples) - len(samples),
+            "selected_coverage": selected_coverage,
         },
         "pages_per_chunk": pages_per_chunk,
         "overlap_pages": overlap_pages,
@@ -2600,6 +2675,7 @@ def run_batch_experiment(
         "input_pdf_count": len(pdfs),
         "sample_count": len(samples),
         "sample_filter": manifest["sample_filter"],
+        "patent_batch_coverage": selected_coverage,
         "variant_count": len(variants),
         "run_count": len(records),
         "succeeded_count": sum(1 for record in records if record.get("status") == "succeeded"),
