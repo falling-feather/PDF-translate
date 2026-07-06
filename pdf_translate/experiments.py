@@ -122,6 +122,14 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "repair_patch_review_required_count",
         "repair_patch_review_blocking_count",
         "repair_patch_review_table_count",
+        "repair_effectiveness_before_issue_count",
+        "repair_effectiveness_after_issue_count",
+        "repair_effectiveness_issue_delta",
+        "repair_effectiveness_resolved_issue_count",
+        "repair_effectiveness_persisted_issue_count",
+        "repair_effectiveness_new_issue_count",
+        "repair_effectiveness_improved_chunk_count",
+        "repair_effectiveness_regressed_chunk_count",
         "repair_publish_confirmed",
         "repair_publish_published",
         "repair_publish_open_issue_count",
@@ -199,6 +207,7 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "repair_merge_table_targeted_patch_rate",
         "repair_patch_review_safe_rate",
         "repair_patch_review_required_rate",
+        "repair_effectiveness_issue_reduction_rate",
         "repair_publish_rate",
         "repair_rollback_success_rate",
         "repair_formal_replace_success_rate",
@@ -243,6 +252,7 @@ SUMMARY_FIELDS: dict[str, list[str]] = {
         "repair_merge_applied_strategy_counts",
         "repair_patch_review_default_decision_counts",
         "repair_patch_review_risk_counts",
+        "repair_effectiveness_status_counts",
         "repair_publish_status_counts",
         "repair_rollback_status_counts",
         "repair_formal_replace_status_counts",
@@ -268,6 +278,7 @@ COMPARISON_FIELDS = [
     ("rates", "ocr_structured_formula_gate_pass_rate"),
     ("rates", "ocr_structured_formula_promotion_rate"),
     ("rates", "repair_patch_review_required_rate"),
+    ("rates", "repair_effectiveness_issue_reduction_rate"),
     ("rates", "repair_publish_rate"),
     ("rates", "repair_rollback_success_rate"),
     ("rates", "repair_formal_replace_success_rate"),
@@ -1118,6 +1129,8 @@ def _record_paths(work_dir: Path, output_dir: Path) -> dict[str, str]:
         "bilingual_html": work_dir / "output" / "bilingual.html",
         "repair_patch_review": work_dir / "output" / "repair_patch_review.json",
         "repair_patch_review_md": work_dir / "output" / "repair_patch_review.md",
+        "repair_effectiveness": work_dir / "output" / "repair_effectiveness.json",
+        "repair_effectiveness_md": work_dir / "output" / "repair_effectiveness.md",
         "repair_publish": work_dir / "output" / "repair_publish.json",
         "repair_publish_md": work_dir / "output" / "repair_publish.md",
         "repair_rollback": work_dir / "output" / "repair_rollback.json",
@@ -1407,6 +1420,17 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
         "repair_patch_review_default_decision_counts",
         "repair_patch_review_risk_counts",
         "repair_patch_review_report",
+        "repair_effectiveness_before_issue_count",
+        "repair_effectiveness_after_issue_count",
+        "repair_effectiveness_issue_delta",
+        "repair_effectiveness_resolved_issue_count",
+        "repair_effectiveness_persisted_issue_count",
+        "repair_effectiveness_new_issue_count",
+        "repair_effectiveness_improved_chunk_count",
+        "repair_effectiveness_regressed_chunk_count",
+        "repair_effectiveness_issue_reduction_rate",
+        "repair_effectiveness_status_counts",
+        "repair_effectiveness_report",
         "repair_publish_confirmed",
         "repair_publish_published",
         "repair_publish_open_issue_count",
@@ -1570,6 +1594,46 @@ def write_batch_experiment_review_csv(report: dict[str, Any], path: Path) -> Pat
                         breakdowns.get("repair_patch_review_risk_counts", {})
                     ),
                     "repair_patch_review_report": files.get("repair_patch_review", ""),
+                    "repair_effectiveness_before_issue_count": quality.get(
+                        "repair_effectiveness_before_issue_count",
+                        "",
+                    ),
+                    "repair_effectiveness_after_issue_count": quality.get(
+                        "repair_effectiveness_after_issue_count",
+                        "",
+                    ),
+                    "repair_effectiveness_issue_delta": quality.get(
+                        "repair_effectiveness_issue_delta",
+                        "",
+                    ),
+                    "repair_effectiveness_resolved_issue_count": quality.get(
+                        "repair_effectiveness_resolved_issue_count",
+                        "",
+                    ),
+                    "repair_effectiveness_persisted_issue_count": quality.get(
+                        "repair_effectiveness_persisted_issue_count",
+                        "",
+                    ),
+                    "repair_effectiveness_new_issue_count": quality.get(
+                        "repair_effectiveness_new_issue_count",
+                        "",
+                    ),
+                    "repair_effectiveness_improved_chunk_count": quality.get(
+                        "repair_effectiveness_improved_chunk_count",
+                        "",
+                    ),
+                    "repair_effectiveness_regressed_chunk_count": quality.get(
+                        "repair_effectiveness_regressed_chunk_count",
+                        "",
+                    ),
+                    "repair_effectiveness_issue_reduction_rate": rates.get(
+                        "repair_effectiveness_issue_reduction_rate",
+                        "",
+                    ),
+                    "repair_effectiveness_status_counts": _format_counter(
+                        breakdowns.get("repair_effectiveness_status_counts", {})
+                    ),
+                    "repair_effectiveness_report": files.get("repair_effectiveness", ""),
                     "repair_publish_confirmed": quality.get("repair_publish_confirmed", ""),
                     "repair_publish_published": quality.get("repair_publish_published", ""),
                     "repair_publish_open_issue_count": quality.get("repair_publish_open_issue_count", ""),
@@ -1793,6 +1857,11 @@ def _selected_record_metrics(record: dict[str, Any]) -> dict[str, Any]:
         "repair_patch_review_required_count": quality.get("repair_patch_review_required_count"),
         "repair_patch_review_blocking_count": quality.get("repair_patch_review_blocking_count"),
         "repair_patch_review_required_rate": rates.get("repair_patch_review_required_rate"),
+        "repair_effectiveness_issue_delta": quality.get("repair_effectiveness_issue_delta"),
+        "repair_effectiveness_resolved_issue_count": quality.get("repair_effectiveness_resolved_issue_count"),
+        "repair_effectiveness_new_issue_count": quality.get("repair_effectiveness_new_issue_count"),
+        "repair_effectiveness_regressed_chunk_count": quality.get("repair_effectiveness_regressed_chunk_count"),
+        "repair_effectiveness_issue_reduction_rate": rates.get("repair_effectiveness_issue_reduction_rate"),
         "split_boundary_rate": rates.get("split_boundary_rate"),
         "protected_boundary_rate": rates.get("protected_boundary_rate"),
         "total_elapsed_ms": performance.get("total_elapsed_ms"),
@@ -1960,6 +2029,21 @@ def build_batch_experiment_evidence(
                     "report_file": _review_text(row.get("repair_patch_review_report"))
                     or str(files.get("repair_patch_review", "")),
                 },
+                "repair_effectiveness": {
+                    "before_issue_count": _review_number(row.get("repair_effectiveness_before_issue_count")),
+                    "after_issue_count": _review_number(row.get("repair_effectiveness_after_issue_count")),
+                    "issue_delta": _review_number(row.get("repair_effectiveness_issue_delta")),
+                    "resolved_issue_count": _review_number(row.get("repair_effectiveness_resolved_issue_count")),
+                    "persisted_issue_count": _review_number(row.get("repair_effectiveness_persisted_issue_count")),
+                    "new_issue_count": _review_number(row.get("repair_effectiveness_new_issue_count")),
+                    "improved_chunk_count": _review_number(row.get("repair_effectiveness_improved_chunk_count")),
+                    "regressed_chunk_count": _review_number(row.get("repair_effectiveness_regressed_chunk_count")),
+                    "issue_reduction_rate": _review_number(row.get("repair_effectiveness_issue_reduction_rate")),
+                    "status_counts": _parse_counter_text(row.get("repair_effectiveness_status_counts")),
+                    "report_file": _review_text(row.get("repair_effectiveness_report"))
+                    or str(files.get("repair_effectiveness", "")),
+                    "markdown_file": str(files.get("repair_effectiveness_md", "")),
+                },
                 "metrics": _selected_record_metrics(record) if isinstance(record, dict) else {},
                 "files": files if isinstance(files, dict) else {},
             }
@@ -2033,6 +2117,15 @@ def build_batch_experiment_evidence(
         or _review_number(row.get("repair_patch_review_required_rate")) is not None
         or _review_text(row.get("repair_patch_review_default_decision_counts"))
         or _review_text(row.get("repair_patch_review_risk_counts"))
+    ]
+    repair_effectiveness_rows = [
+        row
+        for row in review_rows
+        if _review_number(row.get("repair_effectiveness_before_issue_count")) is not None
+        or _review_number(row.get("repair_effectiveness_after_issue_count")) is not None
+        or _review_number(row.get("repair_effectiveness_issue_delta")) is not None
+        or _review_number(row.get("repair_effectiveness_issue_reduction_rate")) is not None
+        or _review_text(row.get("repair_effectiveness_status_counts"))
     ]
 
     return {
@@ -2152,6 +2245,22 @@ def build_batch_experiment_evidence(
             ),
             "risk_counts": _merge_counter_texts(review_rows, "repair_patch_review_risk_counts"),
         },
+        "repair_effectiveness_summary": {
+            "row_count": len(repair_effectiveness_rows),
+            "before_issue_count_total": _review_sum(review_rows, "repair_effectiveness_before_issue_count"),
+            "after_issue_count_total": _review_sum(review_rows, "repair_effectiveness_after_issue_count"),
+            "issue_delta_total": _review_sum(review_rows, "repair_effectiveness_issue_delta"),
+            "resolved_issue_count_total": _review_sum(review_rows, "repair_effectiveness_resolved_issue_count"),
+            "persisted_issue_count_total": _review_sum(review_rows, "repair_effectiveness_persisted_issue_count"),
+            "new_issue_count_total": _review_sum(review_rows, "repair_effectiveness_new_issue_count"),
+            "improved_chunk_count_total": _review_sum(review_rows, "repair_effectiveness_improved_chunk_count"),
+            "regressed_chunk_count_total": _review_sum(review_rows, "repair_effectiveness_regressed_chunk_count"),
+            "issue_reduction_rate": _score_average(
+                repair_effectiveness_rows,
+                "repair_effectiveness_issue_reduction_rate",
+            ),
+            "status_counts": _merge_counter_texts(review_rows, "repair_effectiveness_status_counts"),
+        },
         "run_failures": run_failures,
         "evidence_candidates": evidence_candidates,
     }
@@ -2225,6 +2334,7 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
     formal_replace_summary = evidence.get("repair_formal_replace_summary", {})
     formal_rollback_summary = evidence.get("repair_formal_rollback_summary", {})
     patch_review_summary = evidence.get("repair_patch_review_summary", {})
+    effectiveness_summary = evidence.get("repair_effectiveness_summary", {})
     lines.extend(
         [
             "",
@@ -2269,11 +2379,20 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
             f"- 阻断发布补丁数：{patch_review_summary.get('blocking_count_total', 0)}",
             f"- 默认审核结论分布：{_format_counter(patch_review_summary.get('default_decision_counts'))}",
             f"- 风险分布：{_format_counter(patch_review_summary.get('risk_counts'))}",
+            f"- 修复效果对比记录行数：{effectiveness_summary.get('row_count', 0)}",
+            f"- 修复前问题总数：{effectiveness_summary.get('before_issue_count_total', 0)}",
+            f"- 修复后问题总数：{effectiveness_summary.get('after_issue_count_total', 0)}",
+            f"- 问题减少总数：{effectiveness_summary.get('issue_delta_total', 0)}",
+            f"- 问题减少率均值：{_format_number((effectiveness_summary.get('issue_reduction_rate') or {}).get('average', 0))}",
+            f"- 已解决问题总数：{effectiveness_summary.get('resolved_issue_count_total', 0)}",
+            f"- 新增问题总数：{effectiveness_summary.get('new_issue_count_total', 0)}",
+            f"- 回归 chunk 总数：{effectiveness_summary.get('regressed_chunk_count_total', 0)}",
+            f"- 修复效果状态分布：{_format_counter(effectiveness_summary.get('status_counts'))}",
             "",
             "## 纳入证据候选",
             "",
-            "| 样本 | 策略 | 类型 | 总分 | 修复发布 | 证据说明 | 译文 PDF |",
-            "| --- | --- | --- | --- | --- | --- | --- |",
+            "| 样本 | 策略 | 类型 | 总分 | 修复发布 | 修复效果 | 证据说明 | 译文 PDF |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for item in evidence.get("evidence_candidates", []):
@@ -2282,10 +2401,18 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
         files = item.get("files", {}) if isinstance(item.get("files"), dict) else {}
         scores = item.get("scores", {}) if isinstance(item.get("scores"), dict) else {}
         repair_publish = item.get("repair_publish", {}) if isinstance(item.get("repair_publish"), dict) else {}
+        repair_effectiveness = (
+            item.get("repair_effectiveness", {}) if isinstance(item.get("repair_effectiveness"), dict) else {}
+        )
         repair_status = (
             "已发布"
             if repair_publish.get("published") is True
             else "已请求" if repair_publish.get("confirmed") is True else "待确认"
+        )
+        repair_effect = (
+            f"减少 {_format_number(repair_effectiveness.get('issue_delta', ''))}"
+            if repair_effectiveness.get("issue_delta") is not None
+            else ""
         )
         lines.append(
             "| "
@@ -2296,6 +2423,7 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
                     str(item.get("pdf_type", "")),
                     _format_number(scores.get("human_score", "")),
                     repair_status,
+                    repair_effect,
                     str(item.get("patent_evidence_notes", "")),
                     str(files.get("translated_pdf", "")),
                 ]
@@ -2303,7 +2431,7 @@ def write_batch_experiment_evidence_markdown(evidence: dict[str, Any], path: Pat
             + " |"
         )
     if not evidence.get("evidence_candidates"):
-        lines.append("|  |  |  |  |  | 暂无显式纳入专利证据的评分行 |  |")
+        lines.append("|  |  |  |  |  |  | 暂无显式纳入专利证据的评分行 |  |")
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

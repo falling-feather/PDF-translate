@@ -295,6 +295,12 @@ class BatchExperimentTests(unittest.TestCase):
                 "repair_patch_review_default_decision_counts",
                 loaded["records"][0]["metrics"]["breakdowns"],
             )
+            self.assertIn("repair_effectiveness_issue_delta", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("repair_effectiveness_issue_reduction_rate", loaded["records"][0]["metrics"]["rates"])
+            self.assertIn(
+                "repair_effectiveness_status_counts",
+                loaded["records"][0]["metrics"]["breakdowns"],
+            )
             self.assertIn("repair_publish_confirmed", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("repair_publish_published", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("repair_publish_open_issue_count", loaded["records"][0]["metrics"]["quality"])
@@ -344,6 +350,7 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("table_merged_cell_candidate_type_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("repair_merge_strategy_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("repair_patch_review_default_decision_counts", loaded["aggregates"][0]["breakdowns"])
+            self.assertIn("repair_effectiveness_status_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("repair_publish_status_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("repair_rollback_status_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("repair_formal_replace_status_counts", loaded["aggregates"][0]["breakdowns"])
@@ -363,6 +370,7 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("rates.ocr_structured_formula_gate_pass_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.ocr_structured_formula_promotion_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.repair_patch_review_required_rate", loaded["comparisons"][0]["deltas"])
+            self.assertIn("rates.repair_effectiveness_issue_reduction_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.repair_publish_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.repair_rollback_success_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.repair_formal_replace_success_rate", loaded["comparisons"][0]["deltas"])
@@ -391,6 +399,16 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("repair_patch_review", loaded["records"][0]["files"])
             self.assertIn(
                 "runs/sample-table/page/output/repair_patch_review.json",
+                summary_json.read_text(encoding="utf-8"),
+            )
+            self.assertIn("repair_effectiveness", loaded["records"][0]["files"])
+            self.assertIn("repair_effectiveness_md", loaded["records"][0]["files"])
+            self.assertIn(
+                "runs/sample-table/page/output/repair_effectiveness.json",
+                summary_json.read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "runs/sample-table/page/output/repair_effectiveness.md",
                 summary_json.read_text(encoding="utf-8"),
             )
             summary_text = summary_md.read_text(encoding="utf-8")
@@ -427,6 +445,10 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("repair_patch_review_required_count", review_text)
             self.assertIn("repair_patch_review_default_decision_counts", review_text)
             self.assertIn("repair_patch_review_report", review_text)
+            self.assertIn("repair_effectiveness_issue_delta", review_text)
+            self.assertIn("repair_effectiveness_issue_reduction_rate", review_text)
+            self.assertIn("repair_effectiveness_status_counts", review_text)
+            self.assertIn("repair_effectiveness_report", review_text)
             self.assertIn("repair_publish_confirmed", review_text)
             self.assertIn("repair_publish_published", review_text)
             self.assertIn("repair_publish_open_issue_count", review_text)
@@ -478,6 +500,11 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("repair_patch_review_count", review_rows[0])
             self.assertIn("repair_patch_review_report", review_rows[0])
             self.assertTrue(review_rows[0]["repair_patch_review_report"].endswith("output/repair_patch_review.json"))
+            self.assertIn("repair_effectiveness_issue_delta", review_rows[0])
+            self.assertIn("repair_effectiveness_report", review_rows[0])
+            self.assertTrue(
+                review_rows[0]["repair_effectiveness_report"].endswith("output/repair_effectiveness.json")
+            )
             self.assertIn("repair_publish_confirmed", review_rows[0])
             self.assertIn("repair_publish_report", review_rows[0])
             self.assertTrue(review_rows[0]["repair_publish_report"].endswith("output/repair_publish.json"))
@@ -525,6 +552,17 @@ class BatchExperimentTests(unittest.TestCase):
                     "repair_patch_review_required_rate": "0.333",
                     "repair_patch_review_default_decision_counts": "approve_candidate:2; manual_review_required:1",
                     "repair_patch_review_risk_counts": "low:2; high:1",
+                    "repair_effectiveness_before_issue_count": "6",
+                    "repair_effectiveness_after_issue_count": "3",
+                    "repair_effectiveness_issue_delta": "3",
+                    "repair_effectiveness_resolved_issue_count": "4",
+                    "repair_effectiveness_persisted_issue_count": "2",
+                    "repair_effectiveness_new_issue_count": "1",
+                    "repair_effectiveness_improved_chunk_count": "2",
+                    "repair_effectiveness_regressed_chunk_count": "1",
+                    "repair_effectiveness_issue_reduction_rate": "0.5",
+                    "repair_effectiveness_status_counts": "improved_with_regressions:1",
+                    "repair_effectiveness_report": "runs/sample-table/page/output/repair_effectiveness.json",
                     "repair_publish_confirmed": "是",
                     "repair_publish_published": "否",
                     "repair_publish_open_issue_count": "2",
@@ -568,6 +606,17 @@ class BatchExperimentTests(unittest.TestCase):
                 "repair_patch_review_required_rate",
                 "repair_patch_review_default_decision_counts",
                 "repair_patch_review_risk_counts",
+                "repair_effectiveness_before_issue_count",
+                "repair_effectiveness_after_issue_count",
+                "repair_effectiveness_issue_delta",
+                "repair_effectiveness_resolved_issue_count",
+                "repair_effectiveness_persisted_issue_count",
+                "repair_effectiveness_new_issue_count",
+                "repair_effectiveness_improved_chunk_count",
+                "repair_effectiveness_regressed_chunk_count",
+                "repair_effectiveness_issue_reduction_rate",
+                "repair_effectiveness_status_counts",
+                "repair_effectiveness_report",
                 "repair_rollback_available",
                 "repair_rollback_confirmed",
                 "repair_rollback_applied",
@@ -675,6 +724,20 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertEqual(evidence["repair_patch_review_summary"]["blocking_count_total"], 1)
             self.assertEqual(evidence["repair_patch_review_summary"]["default_decision_counts"]["approve_candidate"], 2)
             self.assertEqual(evidence["repair_patch_review_summary"]["risk_counts"]["high"], 1)
+            self.assertEqual(evidence["repair_effectiveness_summary"]["row_count"], 1)
+            self.assertEqual(evidence["repair_effectiveness_summary"]["before_issue_count_total"], 6)
+            self.assertEqual(evidence["repair_effectiveness_summary"]["after_issue_count_total"], 3)
+            self.assertEqual(evidence["repair_effectiveness_summary"]["issue_delta_total"], 3)
+            self.assertEqual(evidence["repair_effectiveness_summary"]["resolved_issue_count_total"], 4)
+            self.assertEqual(evidence["repair_effectiveness_summary"]["persisted_issue_count_total"], 2)
+            self.assertEqual(evidence["repair_effectiveness_summary"]["new_issue_count_total"], 1)
+            self.assertEqual(evidence["repair_effectiveness_summary"]["improved_chunk_count_total"], 2)
+            self.assertEqual(evidence["repair_effectiveness_summary"]["regressed_chunk_count_total"], 1)
+            self.assertEqual(evidence["repair_effectiveness_summary"]["issue_reduction_rate"]["average"], 0.5)
+            self.assertEqual(
+                evidence["repair_effectiveness_summary"]["status_counts"]["improved_with_regressions"],
+                1,
+            )
             self.assertEqual(
                 evidence["evidence_candidates"][0]["ocr"]["structured_formula_candidate_count"],
                 3.0,
@@ -684,6 +747,17 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertTrue(
                 evidence["evidence_candidates"][0]["repair_patch_review"]["report_file"].endswith(
                     "output/repair_patch_review.json"
+                )
+            )
+            self.assertEqual(evidence["evidence_candidates"][0]["repair_effectiveness"]["issue_delta"], 3.0)
+            self.assertEqual(evidence["evidence_candidates"][0]["repair_effectiveness"]["new_issue_count"], 1.0)
+            self.assertEqual(
+                evidence["evidence_candidates"][0]["repair_effectiveness"]["regressed_chunk_count"],
+                1.0,
+            )
+            self.assertTrue(
+                evidence["evidence_candidates"][0]["repair_effectiveness"]["report_file"].endswith(
+                    "output/repair_effectiveness.json"
                 )
             )
             self.assertEqual(evidence["evidence_candidates"][0]["repair_publish"]["confirmed"], True)
@@ -767,6 +841,9 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("局部修复发布审核", evidence_text)
             self.assertIn("补丁审核记录行数：1", evidence_text)
             self.assertIn("approve_candidate:2", evidence_text)
+            self.assertIn("修复效果对比记录行数：1", evidence_text)
+            self.assertIn("问题减少率均值：0.5", evidence_text)
+            self.assertIn("improved_with_regressions:1", evidence_text)
             self.assertIn("开放合并问题总数：2", evidence_text)
             self.assertIn("pending_confirmation:2", evidence_text)
             self.assertIn("replaced:1", evidence_text)
