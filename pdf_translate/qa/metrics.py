@@ -737,6 +737,24 @@ def build_experiment_metrics(
     post_repair_missing_table_locked_token_count = _as_int(
         repair_merge_qa_summary.get("missing_table_locked_token_count")
     )
+    translation_structure_relation_check_count = _as_int(
+        translation_summary.get("structure_relation_check_count")
+    )
+    translation_structure_relation_mismatch_count = _as_int(
+        translation_summary.get("structure_relation_mismatch_count")
+    )
+    translation_structure_relation_missing_anchor_count = _as_int(
+        translation_summary.get("structure_relation_missing_anchor_count")
+    )
+    translation_table_footnote_binding_check_count = _as_int(
+        translation_summary.get("table_footnote_binding_check_count")
+    )
+    translation_table_footnote_binding_mismatch_count = _as_int(
+        translation_summary.get("table_footnote_binding_mismatch_count")
+    )
+    translation_table_footnote_binding_missing_cell_count = _as_int(
+        translation_summary.get("table_footnote_binding_missing_cell_count")
+    )
     translated_pdf_generated = _as_bool(translated_pdf_summary.get("generated"))
     translated_pdf_page_count = _as_int(translated_pdf_summary.get("page_count"))
     translated_pdf_chunk_count = _as_int(translated_pdf_summary.get("chunk_count"))
@@ -1103,6 +1121,18 @@ def build_experiment_metrics(
             "post_repair_table_shape_error_count": post_repair_table_shape_error_count,
             "post_repair_table_cell_token_error_count": post_repair_table_cell_token_error_count,
             "post_repair_missing_table_locked_token_count": post_repair_missing_table_locked_token_count,
+            "translation_structure_relation_check_count": translation_structure_relation_check_count,
+            "translation_structure_relation_mismatch_count": translation_structure_relation_mismatch_count,
+            "translation_structure_relation_missing_anchor_count": (
+                translation_structure_relation_missing_anchor_count
+            ),
+            "translation_table_footnote_binding_check_count": translation_table_footnote_binding_check_count,
+            "translation_table_footnote_binding_mismatch_count": (
+                translation_table_footnote_binding_mismatch_count
+            ),
+            "translation_table_footnote_binding_missing_cell_count": (
+                translation_table_footnote_binding_missing_cell_count
+            ),
             "translated_pdf_generated": translated_pdf_generated,
             "translated_pdf_page_count": translated_pdf_page_count,
             "translated_pdf_chunk_count": translated_pdf_chunk_count,
@@ -1341,6 +1371,14 @@ def build_experiment_metrics(
             "repair_formal_rollback_success_rate": _rate(
                 int(repair_formal_rollback_applied),
                 int(repair_formal_rollback_confirmed),
+            ),
+            "translation_structure_relation_mismatch_rate": _rate(
+                translation_structure_relation_mismatch_count,
+                translation_structure_relation_check_count,
+            ),
+            "translation_table_footnote_binding_mismatch_rate": _rate(
+                translation_table_footnote_binding_mismatch_count,
+                translation_table_footnote_binding_check_count,
             ),
             "post_repair_issue_reduction_rate": _rate(
                 translation_issue_count - post_repair_issue_count,

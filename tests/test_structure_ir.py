@@ -1741,6 +1741,269 @@ class StructureIRTests(unittest.TestCase):
         self.assertIn("锁定 token：91.2%", message)
         self.assertLess(message.index("【结构保护提示】"), message.index("【待译正文】"))
 
+    def test_translation_qa_reports_caption_relation_mismatch(self) -> None:
+        root = Path.cwd() / "test-output" / "caption-relation-qa"
+        if root.exists():
+            shutil.rmtree(root)
+        chunk_dir = root / "chunks"
+        chunk_dir.mkdir(parents=True)
+        try:
+            caption = BlockIR(
+                "p1-b0000",
+                1,
+                "caption",
+                "Table 1: Results.",
+                (40, 80, 520, 105),
+                0,
+            )
+            table = BlockIR(
+                "p1-b0001",
+                1,
+                "table",
+                "Model Acc\nBERT 91.2%",
+                (40, 110, 520, 180),
+                1,
+                meta={
+                    "table": {
+                        "rows": [["Model", "Acc"], ["BERT", "91.2%"]],
+                        "row_count": 2,
+                        "column_count": 2,
+                        "header": ["Model", "Acc"],
+                        "confidence": "medium",
+                    }
+                },
+            )
+            assign_block_parents([caption, table])
+            doc_ir = DocumentIR(
+                doc_id="caption-relation-qa",
+                source_pdf="sample.pdf",
+                pages=[PageIR(1, 600, 800, caption.text + "\n" + table.text, [caption, table])],
+            )
+            chunk = TextChunk(
+                "c0000",
+                [0],
+                "Table 1: Results.\nModel Acc\nBERT 91.2%",
+                0,
+                0,
+            )
+            chunk.block_ids = ["p1-b0000", "p1-b0001"]
+            (chunk_dir / "c0000.md").write_text(
+                "---\n{}\n---\n\n结果如下。\n\n| 模型 | 准确率 |\n| --- | --- |\n| BERT | 91.2% |\n",
+                encoding="utf-8",
+            )
+
+            report = build_translation_qa([chunk], chunk_dir, document_ir=doc_ir)
+
+            issue = next(
+                issue
+                for issue in report["chunks"][0]["issues"]
+                if issue["type"] == "caption_or_footnote_relation_mismatch"
+            )
+            relation = issue["relations"][0]
+            self.assertEqual(report["summary"]["structure_relation_check_count"], 1)
+            self.assertEqual(report["summary"]["structure_relation_mismatch_count"], 1)
+            self.assertEqual(report["summary"]["structure_relation_missing_anchor_count"], 1)
+            self.assertEqual(relation["relation"], "caption_for_table")
+            self.assertEqual(relation["parent_block_id"], "p1-b0001")
+            self.assertEqual(relation["missing_anchors"][0]["token"], "Table 1")
+
+            plan = build_repair_plan(report)
+            repair = next(
+                item for item in plan["items"] if item["issue_type"] == "caption_or_footnote_relation_mismatch"
+            )
+            self.assertEqual(repair["action"], "rewrite_with_structure_relations")
+            self.assertIn("relations", repair["evidence"])
+            requests = build_repair_requests(plan, [chunk], chunk_dir)
+            request = next(
+                item
+                for item in requests["requests"]
+                if item["issue_type"] == "caption_or_footnote_relation_mismatch"
+            )
+            self.assertIn("Table 1", request["locked_tokens"])
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
+    def test_translation_qa_reports_table_footnote_binding_mismatch(self) -> None:
+        root = Path.cwd() / "test-output" / "table-footnote-binding-qa"
+        if root.exists():
+            shutil.rmtree(root)
+        chunk_dir = root / "chunks"
+        chunk_dir.mkdir(parents=True)
+        try:
+            table = BlockIR(
+                "p1-b0000",
+                1,
+                "table",
+                "Model Acc\nBERT 91.2% *",
+                (40, 110, 520, 180),
+                0,
+                meta={
+                    "table": {
+                        "rows": [["Model", "Acc"], ["BERT", "91.2% *"]],
+                        "row_count": 2,
+                        "column_count": 2,
+                        "header": ["Model", "Acc"],
+                        "confidence": "medium",
+                    }
+                },
+            )
+            footnote = BlockIR(
+                "p1-b0001",
+                1,
+                "footnote",
+                "* p < 0.05.",
+                (40, 190, 520, 210),
+                1,
+            )
+            assign_block_parents([table, footnote])
+            doc_ir = DocumentIR(
+                doc_id="table-footnote-binding-qa",
+                source_pdf="sample.pdf",
+                pages=[PageIR(1, 600, 800, table.text + "\n" + footnote.text, [table, footnote])],
+            )
+            table_reconstruction = build_table_reconstruction_report(doc_ir, build_structure_qa(doc_ir))
+            chunk = TextChunk(
+                "c0000",
+                [0],
+                "Model Acc\nBERT 91.2% *\n* p < 0.05.",
+                0,
+                0,
+            )
+            chunk.block_ids = ["p1-b0000", "p1-b0001"]
+            (chunk_dir / "c0000.md").write_text(
+                (
+                    "---\n{}\n---\n\n"
+                    "| 模型 | 准确率 |\n"
+                    "| --- | --- |\n"
+                    "| BERT | 91.2% |\n\n"
+                    "注：* p < 0.05。\n"
+                ),
+                encoding="utf-8",
+            )
+
+            report = build_translation_qa(
+                [chunk],
+                chunk_dir,
+                document_ir=doc_ir,
+                table_reconstruction=table_reconstruction,
+            )
+
+            issue = next(
+                issue
+                for issue in report["chunks"][0]["issues"]
+                if issue["type"] == "table_footnote_binding_mismatch"
+            )
+            binding = issue["bindings"][0]
+            self.assertEqual(report["summary"]["table_footnote_binding_check_count"], 1)
+            self.assertEqual(report["summary"]["table_footnote_binding_mismatch_count"], 1)
+            self.assertEqual(report["summary"]["table_footnote_binding_missing_cell_count"], 1)
+            self.assertEqual(binding["table_id"], "p1-b0000")
+            self.assertEqual(binding["footnote_block_id"], "p1-b0001")
+            self.assertEqual(binding["missing_cells"][0]["row_index"], 1)
+            self.assertEqual(binding["missing_cells"][0]["column_index"], 1)
+            self.assertIn("*", binding["missing_cells"][0]["missing_markers"])
+
+            plan = build_repair_plan(report)
+            repair = next(item for item in plan["items"] if item["issue_type"] == "table_footnote_binding_mismatch")
+            self.assertEqual(repair["action"], "repair_table_footnote_binding")
+            self.assertEqual(repair["priority"], "P0")
+            requests = build_repair_requests(plan, [chunk], chunk_dir)
+            request = next(
+                item for item in requests["requests"] if item["issue_type"] == "table_footnote_binding_mismatch"
+            )
+            self.assertIn("*", request["locked_tokens"])
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
+    def test_translation_qa_accepts_preserved_structure_relations(self) -> None:
+        root = Path.cwd() / "test-output" / "structure-relation-qa-clean"
+        if root.exists():
+            shutil.rmtree(root)
+        chunk_dir = root / "chunks"
+        chunk_dir.mkdir(parents=True)
+        try:
+            caption = BlockIR("p1-b0000", 1, "caption", "Table 1: Results.", (40, 80, 520, 105), 0)
+            table = BlockIR(
+                "p1-b0001",
+                1,
+                "table",
+                "Model Acc\nBERT 91.2% *",
+                (40, 110, 520, 180),
+                1,
+                meta={
+                    "table": {
+                        "rows": [["Model", "Acc"], ["BERT", "91.2% *"]],
+                        "row_count": 2,
+                        "column_count": 2,
+                        "header": ["Model", "Acc"],
+                        "confidence": "medium",
+                    }
+                },
+            )
+            footnote = BlockIR("p1-b0002", 1, "footnote", "* p < 0.05.", (40, 190, 520, 210), 2)
+            assign_block_parents([caption, table, footnote])
+            doc_ir = DocumentIR(
+                doc_id="structure-relation-qa-clean",
+                source_pdf="sample.pdf",
+                pages=[
+                    PageIR(
+                        1,
+                        600,
+                        800,
+                        caption.text + "\n" + table.text + "\n" + footnote.text,
+                        [caption, table, footnote],
+                    )
+                ],
+            )
+            table_reconstruction = build_table_reconstruction_report(doc_ir, build_structure_qa(doc_ir))
+            chunk = TextChunk(
+                "c0000",
+                [0],
+                "Table 1: Results.\nModel Acc\nBERT 91.2% *\n* p < 0.05.",
+                0,
+                0,
+            )
+            chunk.block_ids = ["p1-b0000", "p1-b0001", "p1-b0002"]
+            (chunk_dir / "c0000.md").write_text(
+                (
+                    "---\n{}\n---\n\n"
+                    "表 1：结果。\n\n"
+                    "| 模型 | 准确率 |\n"
+                    "| --- | --- |\n"
+                    "| BERT | 91.2% * |\n\n"
+                    "注：* p < 0.05。\n"
+                ),
+                encoding="utf-8",
+            )
+
+            report = build_translation_qa(
+                [chunk],
+                chunk_dir,
+                document_ir=doc_ir,
+                table_reconstruction=table_reconstruction,
+            )
+            issue_types = {issue["type"] for issue in report["chunks"][0]["issues"]}
+            self.assertEqual(report["summary"]["structure_relation_check_count"], 2)
+            self.assertEqual(report["summary"]["structure_relation_mismatch_count"], 0)
+            self.assertEqual(report["summary"]["table_footnote_binding_check_count"], 1)
+            self.assertEqual(report["summary"]["table_footnote_binding_mismatch_count"], 0)
+            self.assertNotIn("caption_or_footnote_relation_mismatch", issue_types)
+            self.assertNotIn("table_footnote_binding_mismatch", issue_types)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
     def test_translation_qa_reports_table_cell_token_mismatch(self) -> None:
         root = Path.cwd() / "test-output" / "table-cell-token-qa"
         if root.exists():
@@ -4288,13 +4551,21 @@ class StructureIRTests(unittest.TestCase):
                     "source_table_locked_token_count": 6,
                     "table_cell_token_error_count": 2,
                     "missing_table_locked_token_count": 3,
-                    "issue_count": 4,
+                    "structure_relation_check_count": 3,
+                    "structure_relation_mismatch_count": 1,
+                    "structure_relation_missing_anchor_count": 1,
+                    "table_footnote_binding_check_count": 2,
+                    "table_footnote_binding_mismatch_count": 1,
+                    "table_footnote_binding_missing_cell_count": 2,
+                    "issue_count": 6,
                     "issue_counts": {
                         "missing_numbers": 1,
                         "missing_entity_tokens": 2,
                         "table_cell_token_mismatch": 1,
+                        "caption_or_footnote_relation_mismatch": 1,
+                        "table_footnote_binding_mismatch": 1,
                     },
-                    "severity_counts": {"high": 2, "medium": 2},
+                    "severity_counts": {"high": 3, "medium": 3},
                     "max_english_residual_ratio": 0.125,
                 },
             },
@@ -4937,8 +5208,16 @@ class StructureIRTests(unittest.TestCase):
             "output/formal_full.before_repair.md",
         )
         self.assertEqual(metrics["quality"]["post_repair_issue_count"], 3)
-        self.assertEqual(metrics["quality"]["post_repair_issue_delta"], 1)
+        self.assertEqual(metrics["quality"]["post_repair_issue_delta"], 3)
         self.assertEqual(metrics["quality"]["post_repair_table_cell_token_error_count"], 1)
+        self.assertEqual(metrics["quality"]["translation_structure_relation_check_count"], 3)
+        self.assertEqual(metrics["quality"]["translation_structure_relation_mismatch_count"], 1)
+        self.assertEqual(metrics["quality"]["translation_structure_relation_missing_anchor_count"], 1)
+        self.assertEqual(metrics["quality"]["translation_table_footnote_binding_check_count"], 2)
+        self.assertEqual(metrics["quality"]["translation_table_footnote_binding_mismatch_count"], 1)
+        self.assertEqual(metrics["quality"]["translation_table_footnote_binding_missing_cell_count"], 2)
+        self.assertEqual(metrics["rates"]["translation_structure_relation_mismatch_rate"], 0.3333)
+        self.assertEqual(metrics["rates"]["translation_table_footnote_binding_mismatch_rate"], 0.5)
         self.assertTrue(metrics["quality"]["translated_pdf_generated"])
         self.assertEqual(metrics["quality"]["translated_pdf_page_count"], 3)
         self.assertEqual(metrics["quality"]["translated_pdf_chunk_count"], 2)
@@ -5118,7 +5397,7 @@ class StructureIRTests(unittest.TestCase):
             metrics["breakdowns"]["repair_merge_applied_strategy_counts"]["replace_markdown_table_by_evidence"],
             1,
         )
-        self.assertEqual(metrics["rates"]["post_repair_issue_reduction_rate"], 0.25)
+        self.assertEqual(metrics["rates"]["post_repair_issue_reduction_rate"], 0.5)
         self.assertEqual(metrics["rates"]["relationship_warning_rate"], 0.3333)
         self.assertEqual(metrics["quality"]["vision_preview_page_count"], 2)
         self.assertEqual(metrics["quality"]["vision_region_crop_count"], 3)

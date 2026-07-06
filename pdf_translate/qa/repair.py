@@ -92,6 +92,18 @@ _ISSUE_RULES = {
         "executor": "translation_backend",
         "reason": "译文表格单元格缺失源表格锁定 token，需要按单元格上下文局部重译或重构。",
     },
+    "table_footnote_binding_mismatch": {
+        "action": "repair_table_footnote_binding",
+        "scope": "table_cell",
+        "executor": "translation_backend",
+        "reason": "译文表格脚注标记未保留在源表绑定单元格中，需要按表格脚注关系局部修复。",
+    },
+    "caption_or_footnote_relation_mismatch": {
+        "action": "rewrite_with_structure_relations",
+        "scope": "chunk",
+        "executor": "translation_backend",
+        "reason": "图注、表注或脚注归属锚点在译文中缺失，需要带结构关系提示重译相关块。",
+    },
     "duplicate_paragraphs": {
         "action": "deduplicate_overlap",
         "scope": "paragraph",
@@ -108,7 +120,12 @@ _ISSUE_RULES = {
 
 
 def _priority(severity: str, issue_type: str) -> str:
-    if issue_type in {"missing_translation", "table_shape_mismatch", "table_cell_token_mismatch"}:
+    if issue_type in {
+        "missing_translation",
+        "table_shape_mismatch",
+        "table_cell_token_mismatch",
+        "table_footnote_binding_mismatch",
+    }:
         return "P0"
     if severity == "high":
         return "P0"
@@ -127,6 +144,8 @@ def _issue_evidence(issue: dict[str, Any]) -> dict[str, Any]:
         "conflicts",
         "tables",
         "cells",
+        "bindings",
+        "relations",
         "samples",
         "ratio",
         "detail",
@@ -171,6 +190,19 @@ def _locked_tokens_from_evidence(evidence: dict[str, Any]) -> list[str]:
     for cell in evidence.get("cells") or []:
         if isinstance(cell, dict):
             tokens.extend(str(token) for token in cell.get("missing_tokens") or [] if str(token))
+    for binding in evidence.get("bindings") or []:
+        if not isinstance(binding, dict):
+            continue
+        tokens.extend(str(marker) for marker in binding.get("markers") or [] if str(marker))
+        for cell in binding.get("missing_cells") or []:
+            if isinstance(cell, dict):
+                tokens.extend(str(marker) for marker in cell.get("missing_markers") or [] if str(marker))
+    for relation in evidence.get("relations") or []:
+        if not isinstance(relation, dict):
+            continue
+        for anchor in relation.get("missing_anchors") or relation.get("anchors") or []:
+            if isinstance(anchor, dict) and str(anchor.get("token") or ""):
+                tokens.append(str(anchor["token"]))
     return list(dict.fromkeys(token.strip() for token in tokens if token.strip()))
 
 

@@ -252,9 +252,22 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("structure_hint_avg_char_count", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("structure_hint_relationship_count", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("structure_hint_entity_count", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("translation_structure_relation_mismatch_count", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn(
+                "translation_table_footnote_binding_mismatch_count",
+                loaded["records"][0]["metrics"]["quality"],
+            )
             self.assertIn("structure_hint_chunk_rate", loaded["records"][0]["metrics"]["rates"])
             self.assertIn("structure_hint_relationship_per_chunk", loaded["records"][0]["metrics"]["rates"])
             self.assertIn("structure_hint_entity_per_chunk", loaded["records"][0]["metrics"]["rates"])
+            self.assertIn(
+                "translation_structure_relation_mismatch_rate",
+                loaded["records"][0]["metrics"]["rates"],
+            )
+            self.assertIn(
+                "translation_table_footnote_binding_mismatch_rate",
+                loaded["records"][0]["metrics"]["rates"],
+            )
             self.assertIn("structure_hint_locked_token_per_chunk", loaded["records"][0]["metrics"]["rates"])
             self.assertIn(
                 "structure_hint_merged_cell_candidate_type_counts",
@@ -340,6 +353,11 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("ocr_candidate_structured_formula_gate_issue_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("rates.structure_hint_relationship_per_chunk", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.structure_hint_entity_per_chunk", loaded["comparisons"][0]["deltas"])
+            self.assertIn("rates.translation_structure_relation_mismatch_rate", loaded["comparisons"][0]["deltas"])
+            self.assertIn(
+                "rates.translation_table_footnote_binding_mismatch_rate",
+                loaded["comparisons"][0]["deltas"],
+            )
             self.assertIn("rates.ocr_structured_table_gate_pass_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.ocr_structured_table_promotion_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.ocr_structured_formula_gate_pass_rate", loaded["comparisons"][0]["deltas"])

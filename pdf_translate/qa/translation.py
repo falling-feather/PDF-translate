@@ -33,7 +33,14 @@ _METRIC_FORMULA_TOKEN_RE = re.compile(
     re.I,
 )
 _STAT_FORMULA_RE = re.compile(r"\bp\s*(?:<|<=|=|>|>=|\u2264|\u2265)\s*0?\.\d+\b", re.I)
+_FOOTNOTE_ANCHOR_RE = re.compile(r"^\s*(?P<marker>\d+|[*†‡§])[\).、\s]*")
 _ENTITY_MEDIUM_SEVERITY_TYPES = {"model_or_dataset", "acronym"}
+_STRUCTURE_RELATION_TYPES = {
+    "caption_for_table",
+    "caption_for_figure",
+    "footnote_for_table",
+    "footnote_for_block",
+}
 
 
 def _unique_in_order(items: list[str]) -> list[str]:
@@ -138,12 +145,18 @@ def _table_figure_tokens(text: str) -> list[dict[str, str]]:
 
 
 def _has_table_figure_token(target: str, token: dict[str, str]) -> bool:
-    if token["token"] in target:
+    if re.search(re.escape(token["token"]), target, flags=re.I):
         return True
     num = re.escape(token["num"])
     if token["kind"] == "table":
-        return bool(re.search(rf"表\s*{num}\b", target))
-    return bool(re.search(rf"图\s*{num}\b", target))
+        return bool(
+            re.search(rf"\bTable\s*{num}\b", target, flags=re.I)
+            or re.search(rf"表\s*{num}(?![0-9A-Za-z])", target)
+        )
+    return bool(
+        re.search(rf"\bFig(?:ure)?\.?\s*{num}\b", target, flags=re.I)
+        or re.search(rf"图\s*{num}(?![0-9A-Za-z])", target)
+    )
 
 
 def _markdown_separator_row(row: list[str]) -> bool:
@@ -438,6 +451,190 @@ def _table_cell_token_errors(
     return errors
 
 
+def _document_blocks(doc_ir: DocumentIR | None) -> list[Any]:
+    if doc_ir is None:
+        return []
+    return [block for page in doc_ir.pages for block in page.blocks]
+
+
+def _footnote_anchor_markers(text: str) -> list[str]:
+    match = _FOOTNOTE_ANCHOR_RE.match(str(text or ""))
+    if not match:
+        return []
+    marker = str(match.group("marker") or "").strip()
+    return [marker] if marker else []
+
+
+def _has_footnote_marker(target: str, marker: str) -> bool:
+    marker = str(marker or "").strip()
+    if not marker:
+        return True
+    if marker in target:
+        return True
+    escaped = re.escape(marker)
+    if marker.isdigit():
+        return bool(re.search(rf"(^|[\s\[\(（]){escaped}(?=$|[\).、\]\）\s])", target))
+    return False
+
+
+def _target_contains_structure_anchor(target: str, anchor: dict[str, Any]) -> bool:
+    kind = str(anchor.get("kind") or "")
+    token = str(anchor.get("token") or "").strip()
+    if not token:
+        return True
+    if kind in {"table", "figure"}:
+        return _has_table_figure_token(target, {"kind": kind, "num": str(anchor.get("num") or ""), "token": token})
+    if kind == "footnote_marker":
+        return _has_footnote_marker(target, token)
+    return bool(re.search(re.escape(token), target, flags=re.I))
+
+
+def _document_structure_relation_checks(
+    doc_ir: DocumentIR | None,
+    chunk: TextChunk,
+) -> list[dict[str, Any]]:
+    blocks = _document_blocks(doc_ir)
+    if not blocks:
+        return []
+    block_by_id = {str(block.block_id): block for block in blocks if str(getattr(block, "block_id", ""))}
+    block_ids = {str(block_id) for block_id in getattr(chunk, "block_ids", []) if str(block_id)}
+    pages = {page + 1 for page in chunk.pages_0based}
+    checks: list[dict[str, Any]] = []
+    for block in blocks:
+        relation = str(getattr(block, "meta", {}).get("parent_relation") or "")
+        parent_id = str(getattr(block, "parent_id", "") or "")
+        if relation not in _STRUCTURE_RELATION_TYPES or not parent_id:
+            continue
+        parent = block_by_id.get(parent_id)
+        if block_ids:
+            if str(block.block_id) not in block_ids and parent_id not in block_ids:
+                continue
+        elif block.page_no not in pages and (parent is None or parent.page_no not in pages):
+            continue
+
+        anchors: list[dict[str, Any]] = []
+        if block.type == "caption":
+            anchors.extend(_table_figure_tokens(block.text))
+        elif block.type == "footnote":
+            anchors.extend(
+                {"kind": "footnote_marker", "token": marker}
+                for marker in _footnote_anchor_markers(block.text)
+            )
+        if not anchors:
+            continue
+        meta = getattr(block, "meta", {}) if isinstance(getattr(block, "meta", {}), dict) else {}
+        checks.append(
+            {
+                "relation": relation,
+                "child_block_id": str(block.block_id),
+                "parent_block_id": parent_id,
+                "child_type": str(block.type),
+                "page_no": int(block.page_no or 0),
+                "parent_page_no": int(meta.get("parent_page_no") or getattr(parent, "page_no", 0) or 0),
+                "cross_page": bool(meta.get("cross_page_parent")),
+                "anchors": anchors[:12],
+                "source_text": str(block.text or "")[:200],
+            }
+        )
+    return checks
+
+
+def _structure_relation_mismatches(
+    checks: list[dict[str, Any]],
+    target_text: str,
+) -> list[dict[str, Any]]:
+    mismatches: list[dict[str, Any]] = []
+    for check in checks:
+        missing_anchors = [
+            anchor
+            for anchor in check.get("anchors") or []
+            if isinstance(anchor, dict) and not _target_contains_structure_anchor(target_text, anchor)
+        ]
+        if not missing_anchors:
+            continue
+        item = dict(check)
+        item["missing_anchors"] = missing_anchors[:12]
+        mismatches.append(item)
+    return mismatches
+
+
+def _table_footnote_binding_checks(source_tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    for table_index, table in enumerate(source_tables):
+        table_id = str(table.get("table_id") or table.get("block_id") or "")
+        for binding in table.get("footnote_bindings") or []:
+            if not isinstance(binding, dict):
+                continue
+            if str(binding.get("status") or "") != "bound_to_cells":
+                continue
+            markers = [str(marker).strip() for marker in binding.get("markers") or [] if str(marker).strip()]
+            matched_cells = [cell for cell in binding.get("matched_cells") or [] if isinstance(cell, dict)]
+            if not markers or not matched_cells:
+                continue
+            checks.append(
+                {
+                    "table_index": table_index,
+                    "table_id": table_id,
+                    "block_id": str(table.get("block_id") or table_id),
+                    "page_no": table.get("page_no"),
+                    "footnote_block_id": str(binding.get("footnote_block_id") or ""),
+                    "markers": markers[:12],
+                    "source_text": str(binding.get("text") or "")[:200],
+                    "matched_cells": matched_cells[:30],
+                }
+            )
+    return checks
+
+
+def _table_footnote_binding_mismatches(
+    checks: list[dict[str, Any]],
+    target_tables: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    mismatches: list[dict[str, Any]] = []
+    for check in checks:
+        table_index = int(check.get("table_index") or 0)
+        target_table = target_tables[table_index] if table_index < len(target_tables) else None
+        missing_cells: list[dict[str, Any]] = []
+        for cell in check.get("matched_cells") or []:
+            if not isinstance(cell, dict):
+                continue
+            row_index = _safe_nonnegative_int(cell.get("row_index"))
+            column_index = _safe_nonnegative_int(cell.get("column_index"))
+            if row_index is None or column_index is None:
+                continue
+            target_cell_text = _target_cell_text(target_table or {}, row_index, column_index) if target_table else None
+            markers = [
+                str(marker).strip()
+                for marker in cell.get("matched_markers") or check.get("markers") or []
+                if str(marker).strip()
+            ]
+            missing_markers = [
+                marker
+                for marker in markers
+                if target_cell_text is None or not _has_footnote_marker(target_cell_text, marker)
+            ]
+            if not missing_markers:
+                continue
+            missing_cells.append(
+                {
+                    "row_index": row_index,
+                    "column_index": column_index,
+                    "role": cell.get("role") or "data",
+                    "column_header": cell.get("column_header") or "",
+                    "row_header": cell.get("row_header") or "",
+                    "source_cell_text": cell.get("text") or "",
+                    "target_cell_text": target_cell_text,
+                    "missing_markers": missing_markers[:12],
+                }
+            )
+        if not missing_cells:
+            continue
+        item = dict(check)
+        item["missing_cells"] = missing_cells[:30]
+        mismatches.append(item)
+    return mismatches
+
+
 def _english_residual_ratio(text: str) -> float:
     body = re.sub(r"`[^`]*`", "", text)
     letters = len(re.findall(r"[A-Za-z]", body))
@@ -616,6 +813,7 @@ def _chunk_report(
     glossary_conflicts: list[dict[str, Any]],
     table_invariants: list[dict[str, Any]] | None = None,
     table_reconstruction_tables: list[dict[str, Any]] | None = None,
+    structure_relation_checks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     source = _source_text_for_qa(chunk.text)
     pages_1based = [p + 1 for p in chunk.pages_0based]
@@ -682,6 +880,16 @@ def _chunk_report(
     missing_table_locked_token_count = sum(
         len(error.get("missing_tokens") or []) for error in table_cell_token_errors
     )
+    structure_relation_checks = structure_relation_checks or []
+    structure_relation_mismatches = _structure_relation_mismatches(
+        structure_relation_checks,
+        target_text,
+    )
+    table_footnote_binding_checks = _table_footnote_binding_checks(table_reconstruction_tables or [])
+    table_footnote_binding_mismatches = _table_footnote_binding_mismatches(
+        table_footnote_binding_checks,
+        target_markdown_tables,
+    )
 
     duplicates = _duplicate_paragraphs(target_text)
     english_ratio = _english_residual_ratio(target_text)
@@ -731,6 +939,22 @@ def _chunk_report(
                 "type": "table_cell_token_mismatch",
                 "severity": "high",
                 "cells": table_cell_token_errors[:80],
+            }
+        )
+    if table_footnote_binding_mismatches:
+        issues.append(
+            {
+                "type": "table_footnote_binding_mismatch",
+                "severity": "high",
+                "bindings": table_footnote_binding_mismatches[:80],
+            }
+        )
+    if structure_relation_mismatches:
+        issues.append(
+            {
+                "type": "caption_or_footnote_relation_mismatch",
+                "severity": "medium",
+                "relations": structure_relation_mismatches[:80],
             }
         )
     if duplicates:
@@ -796,6 +1020,16 @@ def _chunk_report(
             "source_table_locked_token_count": _table_locked_token_count(table_reconstruction_tables or []),
             "table_cell_token_error_count": len(table_cell_token_errors),
             "missing_table_locked_token_count": missing_table_locked_token_count,
+            "structure_relation_check_count": len(structure_relation_checks),
+            "structure_relation_mismatch_count": len(structure_relation_mismatches),
+            "structure_relation_missing_anchor_count": sum(
+                len(item.get("missing_anchors") or []) for item in structure_relation_mismatches
+            ),
+            "table_footnote_binding_check_count": len(table_footnote_binding_checks),
+            "table_footnote_binding_mismatch_count": len(table_footnote_binding_mismatches),
+            "table_footnote_binding_missing_cell_count": sum(
+                len(item.get("missing_cells") or []) for item in table_footnote_binding_mismatches
+            ),
             "english_residual_ratio": english_ratio,
             "duplicate_paragraph_count": len(duplicates),
             "missing_glossary_term_count": len(missing_glossary),
@@ -825,6 +1059,7 @@ def build_translation_qa(
             conflicts,
             table_invariants=_document_table_invariants(document_ir, chunk),
             table_reconstruction_tables=_table_reconstruction_tables(table_reconstruction, chunk),
+            structure_relation_checks=_document_structure_relation_checks(document_ir, chunk),
         )
         for chunk in chunks
     ]
@@ -839,6 +1074,12 @@ def build_translation_qa(
     source_table_locked_token_count = 0
     table_cell_token_error_count = 0
     missing_table_locked_token_count = 0
+    structure_relation_check_count = 0
+    structure_relation_mismatch_count = 0
+    structure_relation_missing_anchor_count = 0
+    table_footnote_binding_check_count = 0
+    table_footnote_binding_mismatch_count = 0
+    table_footnote_binding_missing_cell_count = 0
     source_formula_token_count = 0
     missing_formula_token_count = 0
     source_equation_label_count = 0
@@ -862,6 +1103,16 @@ def build_translation_qa(
         source_table_locked_token_count += int(metrics.get("source_table_locked_token_count") or 0)
         table_cell_token_error_count += int(metrics.get("table_cell_token_error_count") or 0)
         missing_table_locked_token_count += int(metrics.get("missing_table_locked_token_count") or 0)
+        structure_relation_check_count += int(metrics.get("structure_relation_check_count") or 0)
+        structure_relation_mismatch_count += int(metrics.get("structure_relation_mismatch_count") or 0)
+        structure_relation_missing_anchor_count += int(metrics.get("structure_relation_missing_anchor_count") or 0)
+        table_footnote_binding_check_count += int(metrics.get("table_footnote_binding_check_count") or 0)
+        table_footnote_binding_mismatch_count += int(
+            metrics.get("table_footnote_binding_mismatch_count") or 0
+        )
+        table_footnote_binding_missing_cell_count += int(
+            metrics.get("table_footnote_binding_missing_cell_count") or 0
+        )
         for issue in report["issues"]:
             issue_counts[issue["type"]] += 1
             severity_counts[issue["severity"]] += 1
@@ -888,6 +1139,12 @@ def build_translation_qa(
             "source_table_locked_token_count": source_table_locked_token_count,
             "table_cell_token_error_count": table_cell_token_error_count,
             "missing_table_locked_token_count": missing_table_locked_token_count,
+            "structure_relation_check_count": structure_relation_check_count,
+            "structure_relation_mismatch_count": structure_relation_mismatch_count,
+            "structure_relation_missing_anchor_count": structure_relation_missing_anchor_count,
+            "table_footnote_binding_check_count": table_footnote_binding_check_count,
+            "table_footnote_binding_mismatch_count": table_footnote_binding_mismatch_count,
+            "table_footnote_binding_missing_cell_count": table_footnote_binding_missing_cell_count,
             "issue_count": sum(issue_counts.values()),
             "issue_counts": dict(issue_counts),
             "severity_counts": dict(severity_counts),
@@ -919,6 +1176,10 @@ def translation_qa_to_markdown(report: dict[str, Any]) -> str:
         f"| 表格形状异常 | {summary.get('table_shape_error_count', 0)} |",
         f"| 表格单元格 token 异常 | {summary.get('table_cell_token_error_count', 0)} |",
         f"| 缺失表格锁定 token | {summary.get('missing_table_locked_token_count', 0)} |",
+        f"| 结构关系检查 | {summary.get('structure_relation_check_count', 0)} |",
+        f"| 结构关系异常 | {summary.get('structure_relation_mismatch_count', 0)} |",
+        f"| 表格脚注绑定检查 | {summary.get('table_footnote_binding_check_count', 0)} |",
+        f"| 表格脚注绑定异常 | {summary.get('table_footnote_binding_mismatch_count', 0)} |",
         f"| 问题总数 | {summary.get('issue_count', 0)} |",
         f"| 最高英文残留比例 | {summary.get('max_english_residual_ratio', 0)} |",
         "",
@@ -983,6 +1244,14 @@ def translation_qa_to_markdown(report: dict[str, Any]) -> str:
                 lines.append(f"- `{severity}` `{issue_type}`：{json.dumps(issue.get('tables'), ensure_ascii=False)}")
             elif "cells" in issue:
                 lines.append(f"- `{severity}` `{issue_type}`：{json.dumps(issue.get('cells'), ensure_ascii=False)}")
+            elif "bindings" in issue:
+                lines.append(
+                    f"- `{severity}` `{issue_type}`：{json.dumps(issue.get('bindings'), ensure_ascii=False)}"
+                )
+            elif "relations" in issue:
+                lines.append(
+                    f"- `{severity}` `{issue_type}`：{json.dumps(issue.get('relations'), ensure_ascii=False)}"
+                )
             elif "samples" in issue:
                 lines.append(f"- `{severity}` `{issue_type}`：{json.dumps(issue.get('samples'), ensure_ascii=False)}")
             else:
