@@ -8,7 +8,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pdf_translate.config import AppConfig
 from pdf_translate.error_codes import error_info_from_exception, make_error_info
@@ -18,10 +18,65 @@ from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
 JOB_STATUS_SCHEMA_VERSION = "web-job-status-v1"
 JOB_HYDRATION_REPORT_SCHEMA_VERSION = "web-job-hydration-report-v1"
 VALID_JOB_STATUSES = {"queued", "running", "done", "error", "cancelled"}
+VALID_AUTO_RESUME_POLICIES = {"off", "safe", "all"}
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def job_auto_resume_policy_from_env() -> str:
+    raw = (
+        os.getenv("PDF_TRANSLATE_JOB_AUTO_RESUME")
+        or os.getenv("PDF_TRANSLATE_RECOVERY_POLICY")
+        or "off"
+    ).strip().lower()
+    aliases = {
+        "0": "off",
+        "false": "off",
+        "no": "off",
+        "manual": "off",
+        "1": "safe",
+        "true": "safe",
+        "yes": "safe",
+        "requeue": "safe",
+    }
+    raw = aliases.get(raw, raw)
+    return raw if raw in VALID_AUTO_RESUME_POLICIES else "off"
+
+
+def job_auto_resume_max_from_env(default: int = 2) -> int:
+    raw = os.getenv("PDF_TRANSLATE_JOB_AUTO_RESUME_MAX", "").strip()
+    if not raw:
+        return default
+    try:
+        return max(0, min(int(raw), 32))
+    except ValueError:
+        return default
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -46,6 +101,12 @@ class JobPublic:
     reference_pages: int | None = None
     translate_mode: str | None = None
     parallel_max_workers: int | None = None
+    backend: str | None = None
+    tail_fallback: bool = False
+    pages_per_chunk: int = 3
+    overlap_pages: int = 1
+    max_chunks: int | None = None
+    use_custom_api: bool = False
     duration_seconds: float | None = None
     run_started_at: str | None = None
     recovered_from_disk: bool = False
@@ -77,6 +138,12 @@ class JobRecord:
     original_filename: str | None = None
     translate_mode: str = "serial"
     parallel_max_workers: int | None = None
+    backend: str | None = None
+    tail_fallback: bool = False
+    pages_per_chunk: int = 3
+    overlap_pages: int = 1
+    max_chunks: int | None = None
+    use_custom_api: bool = False
     duration_seconds: float | None = None
     run_started_at: str | None = None
     recovered_from_disk: bool = False
@@ -106,6 +173,12 @@ class JobRecord:
             reference_pages=self.reference_pages,
             translate_mode=self.translate_mode,
             parallel_max_workers=self.parallel_max_workers,
+            backend=self.backend,
+            tail_fallback=self.tail_fallback,
+            pages_per_chunk=self.pages_per_chunk,
+            overlap_pages=self.overlap_pages,
+            max_chunks=self.max_chunks,
+            use_custom_api=self.use_custom_api,
             duration_seconds=self.duration_seconds,
             run_started_at=self.run_started_at,
             recovered_from_disk=self.recovered_from_disk,
@@ -139,6 +212,12 @@ class JobRecord:
             "original_filename": self.original_filename,
             "translate_mode": self.translate_mode,
             "parallel_max_workers": self.parallel_max_workers,
+            "backend": self.backend,
+            "tail_fallback": self.tail_fallback,
+            "pages_per_chunk": self.pages_per_chunk,
+            "overlap_pages": self.overlap_pages,
+            "max_chunks": self.max_chunks,
+            "use_custom_api": self.use_custom_api,
             "duration_seconds": self.duration_seconds,
             "run_started_at": self.run_started_at,
         }
@@ -172,7 +251,13 @@ class JobRecord:
             owner_username=raw.get("owner_username"),
             original_filename=raw.get("original_filename"),
             translate_mode=raw.get("translate_mode") or "serial",
-            parallel_max_workers=raw.get("parallel_max_workers"),
+            parallel_max_workers=_coerce_optional_int(raw.get("parallel_max_workers")),
+            backend=raw.get("backend"),
+            tail_fallback=_coerce_bool(raw.get("tail_fallback")),
+            pages_per_chunk=_coerce_int(raw.get("pages_per_chunk"), 3),
+            overlap_pages=_coerce_int(raw.get("overlap_pages"), 1),
+            max_chunks=_coerce_optional_int(raw.get("max_chunks")),
+            use_custom_api=_coerce_bool(raw.get("use_custom_api")),
             duration_seconds=raw.get("duration_seconds"),
             run_started_at=raw.get("run_started_at"),
             recovered_from_disk=True,
@@ -199,6 +284,13 @@ class JobRegistry:
             "restored_job_ids": [],
             "active_recovered_job_ids": [],
             "recovered_status_counts": {},
+            "auto_resume_policy": "off",
+            "auto_resume_enabled": False,
+            "auto_resume_max_jobs": 0,
+            "auto_resume_attempted_job_ids": [],
+            "auto_resume_started_job_ids": [],
+            "auto_resume_skipped": [],
+            "auto_resume_error_count": 0,
             "warnings": [],
         }
 
@@ -234,6 +326,12 @@ class JobRegistry:
         original_filename: str | None = None,
         translate_mode: str = "serial",
         parallel_max_workers: int | None = None,
+        backend: str | None = None,
+        tail_fallback: bool = False,
+        pages_per_chunk: int = 3,
+        overlap_pages: int = 1,
+        max_chunks: int | None = None,
+        use_custom_api: bool = False,
     ) -> JobRecord:
         job_id = uuid.uuid4().hex[:12]
         work = self.data_root / job_id
@@ -246,6 +344,12 @@ class JobRegistry:
             original_filename=original_filename,
             translate_mode=translate_mode,
             parallel_max_workers=parallel_max_workers,
+            backend=backend,
+            tail_fallback=tail_fallback,
+            pages_per_chunk=pages_per_chunk,
+            overlap_pages=overlap_pages,
+            max_chunks=max_chunks,
+            use_custom_api=use_custom_api,
         )
         with self._lock:
             self._jobs[job_id] = rec
@@ -971,6 +1075,217 @@ class JobRegistry:
             "job_diagnostic_warnings": warnings,
         }
 
+    @staticmethod
+    def _runtime_options_for_record(rec: JobRecord) -> dict[str, Any]:
+        return {
+            "backend": rec.backend,
+            "tail_fallback": rec.tail_fallback,
+            "pages_per_chunk": rec.pages_per_chunk,
+            "overlap_pages": rec.overlap_pages,
+            "max_chunks": rec.max_chunks,
+            "translate_mode": rec.translate_mode,
+            "parallel_max_workers": rec.parallel_max_workers,
+            "use_custom_api": rec.use_custom_api,
+        }
+
+    def recovery_fields_for_record(
+        self,
+        rec: JobRecord,
+        pipeline_fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        pipeline = pipeline_fields or self.pipeline_state_fields_for_record(rec)
+        blockers: list[str] = []
+        input_ready = (rec.work_dir / "input.pdf").is_file()
+        cancel_requested = is_cancel_requested(rec.work_dir)
+
+        if not rec.recovered_from_disk:
+            blockers.append("not_recovered_from_disk")
+        if rec.status not in ("queued", "running"):
+            blockers.append("not_active_status")
+        if not input_ready:
+            blockers.append("input_pdf_missing")
+        if cancel_requested:
+            blockers.append("cancel_requested")
+        if rec.use_custom_api:
+            blockers.append("custom_api_not_resumable")
+        if not str(rec.backend or "").strip():
+            blockers.append("backend_missing")
+        if rec.pages_per_chunk < 1 or rec.pages_per_chunk > 3:
+            blockers.append("pages_per_chunk_invalid")
+        if rec.overlap_pages < 0 or rec.overlap_pages >= rec.pages_per_chunk:
+            blockers.append("overlap_pages_invalid")
+
+        active_recovered = rec.recovered_from_disk and rec.status in ("queued", "running")
+        requeue_candidate = active_recovered and not blockers
+        if requeue_candidate:
+            action = "requeueable"
+        elif active_recovered:
+            action = "manual_required"
+        else:
+            action = "not_applicable"
+
+        return {
+            "job_requeue_candidate": requeue_candidate,
+            "job_requeue_action": action,
+            "job_requeue_blockers": blockers,
+            "job_requeue_input_ready": input_ready,
+            "job_requeue_cancel_requested": cancel_requested,
+            "job_requeue_runtime_options": self._runtime_options_for_record(rec),
+            "job_requeue_pipeline_state_status": pipeline.get("pipeline_state_status"),
+            "job_requeue_pipeline_resume_ready": pipeline.get("pipeline_resume_ready"),
+        }
+
+    def requeue_recovered_jobs(
+        self,
+        *,
+        policy: str,
+        max_jobs: int,
+        cfg: AppConfig,
+        starter: Callable[..., None] | None = None,
+        audit: bool = True,
+        job_ids: set[str] | None = None,
+        audit_user_id: int | None = None,
+        audit_username: str | None = "system",
+    ) -> dict[str, Any]:
+        normalized_policy = (policy or "off").strip().lower()
+        if normalized_policy not in VALID_AUTO_RESUME_POLICIES:
+            normalized_policy = "off"
+        max_jobs = max(0, min(int(max_jobs), 32))
+        report: dict[str, Any] = {
+            "auto_resume_policy": normalized_policy,
+            "auto_resume_enabled": normalized_policy != "off",
+            "auto_resume_max_jobs": max_jobs,
+            "auto_resume_attempted_job_ids": [],
+            "auto_resume_started_job_ids": [],
+            "auto_resume_skipped": [],
+            "auto_resume_error_count": 0,
+        }
+
+        with self._lock:
+            records = sorted(
+                self._jobs.values(),
+                key=lambda rec: rec.updated_at or rec.created_at,
+            )
+
+        wanted = {str(item) for item in job_ids} if job_ids is not None else None
+        starter_fn = starter or start_job_thread
+
+        def add_skip(rec: JobRecord, reason: str, fields: dict[str, Any] | None = None) -> None:
+            report["auto_resume_skipped"].append(
+                {
+                    "job_id": rec.job_id,
+                    "reason": reason,
+                    "status": rec.status,
+                    "phase": rec.phase,
+                    "blockers": list((fields or {}).get("job_requeue_blockers") or []),
+                    "pipeline_state_status": (fields or {}).get("job_requeue_pipeline_state_status"),
+                    "pipeline_resume_ready": (fields or {}).get("job_requeue_pipeline_resume_ready"),
+                    "runtime_options": self._runtime_options_for_record(rec),
+                }
+            )
+
+        def log_requeued(rec: JobRecord, fields: dict[str, Any]) -> None:
+            if not audit:
+                return
+            try:
+                from pdf_translate.server import database as srv_db
+
+                srv_db.log_audit(
+                    action="job_recovery_requeued",
+                    ip=None,
+                    user_id=audit_user_id,
+                    username=audit_username,
+                    job_id=rec.job_id,
+                    detail={
+                        "previous_status": rec.status,
+                        "previous_phase": rec.phase,
+                        "pipeline_state_status": fields.get("job_requeue_pipeline_state_status"),
+                        "pipeline_resume_ready": fields.get("job_requeue_pipeline_resume_ready"),
+                        "runtime_options": self._runtime_options_for_record(rec),
+                        "work_dir": str(rec.work_dir.resolve()),
+                        "policy": normalized_policy,
+                    },
+                )
+            except Exception:
+                pass
+
+        for rec in records:
+            if wanted is not None and rec.job_id not in wanted:
+                continue
+            if not (rec.recovered_from_disk and rec.status in ("queued", "running")):
+                continue
+            fields = self.recovery_fields_for_record(rec)
+            if normalized_policy == "off":
+                add_skip(rec, "policy_off", fields)
+                continue
+            if len(report["auto_resume_started_job_ids"]) >= max_jobs:
+                add_skip(rec, "max_jobs_reached", fields)
+                continue
+            if not bool(fields.get("job_requeue_candidate")):
+                blockers = list(fields.get("job_requeue_blockers") or [])
+                add_skip(rec, blockers[0] if blockers else "not_requeueable", fields)
+                continue
+
+            report["auto_resume_attempted_job_ids"].append(rec.job_id)
+            try:
+                log_requeued(rec, fields)
+                self.update(
+                    rec.job_id,
+                    status="queued",
+                    phase="queued",
+                    message="服务重启后重新入队，准备断点续跑…",
+                    recovered_from_disk=False,
+                    run_started_at=None,
+                    duration_seconds=None,
+                    error=None,
+                    error_code=None,
+                    error_category=None,
+                    error_retryable=None,
+                    error_next_step=None,
+                    error_source=None,
+                    error_http_status=None,
+                )
+                starter_fn(
+                    self,
+                    rec.job_id,
+                    tail_fallback=rec.tail_fallback,
+                    pages_per_chunk=rec.pages_per_chunk,
+                    overlap_pages=rec.overlap_pages,
+                    backend=rec.backend,
+                    max_chunks=rec.max_chunks,
+                    cfg=cfg,
+                )
+                report["auto_resume_started_job_ids"].append(rec.job_id)
+            except Exception as exc:
+                report["auto_resume_error_count"] += 1
+                info = make_error_info(
+                    "PIPELINE_ERROR",
+                    detail=f"Failed to start recovered job thread: {exc}",
+                    source="server:requeue_recovered_jobs",
+                    exception=exc,
+                )
+                self.update(
+                    rec.job_id,
+                    status="error",
+                    phase="error",
+                    message="恢复重新入队启动失败",
+                    recovered_from_disk=False,
+                    error=str(exc),
+                    error_code=info.code,
+                    error_category=info.category,
+                    error_retryable=info.retryable,
+                    error_next_step=info.next_step,
+                    error_source=info.source,
+                    error_http_status=info.http_status,
+                )
+                add_skip(rec, f"start_failed:{type(exc).__name__}", fields)
+
+        with self._lock:
+            merged = dict(self._last_hydration_report)
+            merged.update(report)
+            self._last_hydration_report = merged
+        return report
+
     def diagnostic_summary_for_record(self, rec: JobRecord) -> dict[str, Any]:
         data = asdict(rec.to_public())
         data.update(
@@ -981,7 +1296,9 @@ class JobRegistry:
             }
         )
         data.update(self.artifact_fields_for_record(rec))
-        data.update(self.pipeline_state_fields_for_record(rec))
+        pipeline_fields = self.pipeline_state_fields_for_record(rec)
+        data.update(pipeline_fields)
+        data.update(self.recovery_fields_for_record(rec, pipeline_fields))
         return data
 
     def status_fields_for_job(self, job_id: str) -> dict[str, Any]:

@@ -770,6 +770,12 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             original_filename=file.filename or "upload.pdf",
             translate_mode=tm,
             parallel_max_workers=pwm,
+            backend=be,
+            tail_fallback=tail_fallback,
+            pages_per_chunk=pages_per_chunk,
+            overlap_pages=overlap_pages,
+            max_chunks=max_n,
+            use_custom_api=use_custom_api,
         )
         dest = rec.work_dir / "input.pdf"
         max_mb = max_upload_mb()
@@ -1721,6 +1727,25 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             "hydration": app_registry.hydration_report(),
             "drift": app_registry.storage_drift(set(database.list_all_job_ids())),
         }
+
+    @admin.post("/jobs/{job_id}/requeue")
+    def admin_requeue_recovered_job(job_id: str, p: Principal = Depends(require_admin)) -> dict:
+        rec = app_registry.get(job_id)
+        if not rec:
+            raise HTTPException(404, "任务不存在")
+        report = app_registry.requeue_recovered_jobs(
+            policy="safe",
+            max_jobs=1,
+            cfg=settings_service.effective_app_config(),
+            starter=start_job_thread,
+            audit=True,
+            job_ids={job_id},
+            audit_user_id=p.user_id,
+            audit_username=p.username,
+        )
+        if job_id not in report.get("auto_resume_started_job_ids", []):
+            raise HTTPException(409, detail=report)
+        return {"ok": True, "recovery": report}
 
     @admin.post("/jobs/reconcile")
     def admin_jobs_reconcile(

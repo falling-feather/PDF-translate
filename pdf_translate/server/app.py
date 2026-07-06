@@ -8,7 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from pdf_translate.server import database
-from pdf_translate.server.jobs import JobRegistry
+from pdf_translate.server import settings_service
+from pdf_translate.server.jobs import (
+    JobRegistry,
+    job_auto_resume_max_from_env,
+    job_auto_resume_policy_from_env,
+    start_job_thread,
+)
 from pdf_translate.server.routes_web import register_web_routes
 from pdf_translate.server.runtime_state import set_data_dir
 from pdf_translate.server.security_preflight import assert_production_security_ready, cors_origins_from_env
@@ -24,6 +30,13 @@ database.configure(DATA_BASE / "app.db")
 
 registry = JobRegistry(DATA_ROOT)
 registry.hydrate_from_disk()
+registry.requeue_recovered_jobs(
+    policy=job_auto_resume_policy_from_env(),
+    max_jobs=job_auto_resume_max_from_env(),
+    cfg=settings_service.effective_app_config(),
+    starter=start_job_thread,
+    audit=True,
+)
 try:
     database.log_job_hydration_report(registry.hydration_report())
 except Exception:

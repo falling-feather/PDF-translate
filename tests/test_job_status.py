@@ -4,6 +4,7 @@ import json
 import shutil
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import fitz
 from typer.testing import CliRunner
@@ -77,6 +78,11 @@ class JobStatusSnapshotTests(unittest.TestCase):
             original_filename="paper.pdf",
             translate_mode="parallel",
             parallel_max_workers=3,
+            backend="echo",
+            tail_fallback=True,
+            pages_per_chunk=2,
+            overlap_pages=1,
+            max_chunks=4,
         )
         registry.update(
             rec.job_id,
@@ -95,6 +101,11 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(raw["schema_version"], JOB_STATUS_SCHEMA_VERSION)
         self.assertEqual(raw["status"], "running")
         self.assertEqual(raw["translate_mode"], "parallel")
+        self.assertEqual(raw["backend"], "echo")
+        self.assertTrue(raw["tail_fallback"])
+        self.assertEqual(raw["pages_per_chunk"], 2)
+        self.assertEqual(raw["overlap_pages"], 1)
+        self.assertEqual(raw["max_chunks"], 4)
         self.assertFalse(status_path.with_name("web_status.json.tmp").exists())
 
         restored = JobRegistry(root)
@@ -108,6 +119,11 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(restored_rec.chunk_total, 3)
         self.assertEqual(restored_rec.owner_user_id, 7)
         self.assertEqual(restored_rec.original_filename, "paper.pdf")
+        self.assertEqual(restored_rec.backend, "echo")
+        self.assertTrue(restored_rec.tail_fallback)
+        self.assertEqual(restored_rec.pages_per_chunk, 2)
+        self.assertEqual(restored_rec.overlap_pages, 1)
+        self.assertEqual(restored_rec.max_chunks, 4)
         self.assertEqual(restored_rec.work_dir, (root / rec.job_id).resolve())
 
     def test_hydrate_uses_status_file_directory_as_work_dir_boundary(self) -> None:
@@ -349,6 +365,237 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(failed["detail"]["terminal_status"], "error")
         self.assertTrue(failed["detail"]["error_code"])
         self.assertEqual(failed["detail"]["original_filename"], "paper.pdf")
+
+    def test_requeue_recovered_job_uses_persisted_runtime_options(self) -> None:
+        root = self._case_root("requeue-runtime-options")
+        registry = JobRegistry(root)
+        rec = registry.create_job(
+            original_filename="paper.pdf",
+            translate_mode="parallel",
+            parallel_max_workers=3,
+            backend="echo",
+            tail_fallback=True,
+            pages_per_chunk=2,
+            overlap_pages=1,
+            max_chunks=5,
+        )
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        registry.update(rec.job_id, status="running", phase="translate")
+
+        restored = JobRegistry(root)
+        restored.hydrate_from_disk()
+        restored_rec = restored.get(rec.job_id)
+        assert restored_rec is not None
+        self.assertTrue(restored.recovery_fields_for_record(restored_rec)["job_requeue_candidate"])
+
+        started: list[dict] = []
+
+        def fake_starter(registry_arg: JobRegistry, job_id: str, **kwargs) -> None:
+            started.append({"registry": registry_arg, "job_id": job_id, "kwargs": kwargs})
+
+        report = restored.requeue_recovered_jobs(
+            policy="safe",
+            max_jobs=1,
+            cfg=_cfg(),
+            starter=fake_starter,
+            audit=False,
+        )
+
+        self.assertEqual(report["auto_resume_started_job_ids"], [rec.job_id])
+        self.assertEqual(len(started), 1)
+        self.assertIs(started[0]["registry"], restored)
+        self.assertEqual(started[0]["job_id"], rec.job_id)
+        self.assertEqual(started[0]["kwargs"]["backend"], "echo")
+        self.assertTrue(started[0]["kwargs"]["tail_fallback"])
+        self.assertEqual(started[0]["kwargs"]["pages_per_chunk"], 2)
+        self.assertEqual(started[0]["kwargs"]["overlap_pages"], 1)
+        self.assertEqual(started[0]["kwargs"]["max_chunks"], 5)
+        self.assertEqual(started[0]["kwargs"]["cfg"].default_translator, "echo")
+        reread = restored.get(rec.job_id)
+        self.assertIsNotNone(reread)
+        assert reread is not None
+        self.assertFalse(reread.recovered_from_disk)
+        self.assertIsNone(reread.run_started_at)
+        self.assertIsNone(reread.duration_seconds)
+
+    def test_admin_requeue_recovered_job_uses_persisted_options(self) -> None:
+        root = self._case_root("admin-requeue-runtime-options")
+        database.configure(root / "app.db")
+        registry = JobRegistry(root / "jobs")
+        rec = registry.create_job(
+            original_filename="paper.pdf",
+            translate_mode="parallel",
+            parallel_max_workers=4,
+            backend="echo",
+            tail_fallback=True,
+            pages_per_chunk=2,
+            overlap_pages=1,
+            max_chunks=6,
+        )
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        registry.update(rec.job_id, status="running", phase="translate")
+
+        restored = JobRegistry(root / "jobs")
+        restored.hydrate_from_disk()
+        api = FastAPI()
+        api.include_router(register_web_routes(restored))
+        api.dependency_overrides[bearer_principal] = lambda: Principal(
+            user_id=1,
+            username="admin",
+            role="admin",
+        )
+        started: list[dict[str, object]] = []
+
+        def fake_starter(registry_arg: JobRegistry, job_id: str, **kwargs: object) -> None:
+            started.append({"registry": registry_arg, "job_id": job_id, "kwargs": kwargs})
+
+        with patch("pdf_translate.server.routes_web.start_job_thread", fake_starter):
+            response = TestClient(api).post(f"/api/admin/jobs/{rec.job_id}/requeue")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["recovery"]["auto_resume_started_job_ids"], [rec.job_id])
+        self.assertEqual(len(started), 1)
+        self.assertEqual(started[0]["kwargs"]["backend"], "echo")
+        self.assertTrue(started[0]["kwargs"]["tail_fallback"])
+        self.assertEqual(started[0]["kwargs"]["pages_per_chunk"], 2)
+        self.assertEqual(started[0]["kwargs"]["overlap_pages"], 1)
+        self.assertEqual(started[0]["kwargs"]["max_chunks"], 6)
+        event = database.list_audit(limit=10)[0]
+        self.assertEqual(event["action"], "job_recovery_requeued")
+        self.assertEqual(event["username"], "admin")
+
+    def test_requeue_recovered_job_marks_error_when_starter_fails(self) -> None:
+        root = self._case_root("requeue-starter-fails")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf", backend="echo")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        registry.update(rec.job_id, status="running", phase="translate")
+
+        restored = JobRegistry(root)
+        restored.hydrate_from_disk()
+
+        def failing_starter(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("thread start failed")
+
+        report = restored.requeue_recovered_jobs(
+            policy="safe",
+            max_jobs=1,
+            cfg=_cfg(),
+            starter=failing_starter,
+            audit=False,
+        )
+
+        self.assertEqual(report["auto_resume_started_job_ids"], [])
+        self.assertEqual(report["auto_resume_error_count"], 1)
+        self.assertEqual(report["auto_resume_skipped"][0]["reason"], "start_failed:RuntimeError")
+        reread = restored.get(rec.job_id)
+        self.assertIsNotNone(reread)
+        assert reread is not None
+        self.assertEqual(reread.status, "error")
+        self.assertEqual(reread.phase, "error")
+        self.assertEqual(reread.error_code, "PIPELINE_ERROR")
+        self.assertFalse(reread.recovered_from_disk)
+
+    def test_requeue_recovered_job_skips_custom_api_without_persisted_secret(self) -> None:
+        root = self._case_root("requeue-custom-api-skip")
+        registry = JobRegistry(root)
+        rec = registry.create_job(
+            original_filename="paper.pdf",
+            backend="openai",
+            use_custom_api=True,
+        )
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        registry.update(rec.job_id, status="running", phase="translate")
+
+        restored = JobRegistry(root)
+        restored.hydrate_from_disk()
+        report = restored.requeue_recovered_jobs(
+            policy="safe",
+            max_jobs=1,
+            cfg=_cfg(),
+            starter=lambda *args, **kwargs: None,
+            audit=False,
+        )
+
+        self.assertEqual(report["auto_resume_started_job_ids"], [])
+        self.assertEqual(report["auto_resume_skipped"][0]["job_id"], rec.job_id)
+        self.assertEqual(report["auto_resume_skipped"][0]["reason"], "custom_api_not_resumable")
+
+    def test_requeue_recovered_job_skips_cancel_requested_job(self) -> None:
+        root = self._case_root("requeue-cancel-requested-skip")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf", backend="echo")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        cancel_flag_path(rec.work_dir).write_text("1", encoding="utf-8")
+        registry.update(rec.job_id, status="running", phase="translate")
+
+        restored = JobRegistry(root)
+        restored.hydrate_from_disk()
+        report = restored.requeue_recovered_jobs(
+            policy="safe",
+            max_jobs=1,
+            cfg=_cfg(),
+            starter=lambda *args, **kwargs: None,
+            audit=False,
+        )
+
+        self.assertEqual(report["auto_resume_started_job_ids"], [])
+        self.assertEqual(report["auto_resume_skipped"][0]["reason"], "cancel_requested")
+
+    def test_requeue_recovered_job_skips_legacy_snapshot_without_backend(self) -> None:
+        root = self._case_root("requeue-missing-backend-skip")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf", backend="echo")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        registry.update(rec.job_id, status="running", phase="translate")
+        status_path = root / rec.job_id / "web_status.json"
+        raw = json.loads(status_path.read_text(encoding="utf-8"))
+        raw.pop("backend", None)
+        status_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        restored = JobRegistry(root)
+        restored.hydrate_from_disk()
+        report = restored.requeue_recovered_jobs(
+            policy="safe",
+            max_jobs=1,
+            cfg=_cfg(),
+            starter=lambda *args, **kwargs: None,
+            audit=False,
+        )
+
+        self.assertEqual(report["auto_resume_started_job_ids"], [])
+        self.assertEqual(report["auto_resume_skipped"][0]["reason"], "backend_missing")
+
+    def test_recovery_report_logs_requeue_and_skip_counts(self) -> None:
+        root = self._case_root("requeue-report-audit")
+        database.configure(root / "app.db")
+        registry = JobRegistry(root / "jobs")
+        rec_ok = registry.create_job(original_filename="ok.pdf", backend="echo")
+        rec_skip = registry.create_job(original_filename="skip.pdf", backend="openai", use_custom_api=True)
+        (rec_ok.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        (rec_skip.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        registry.update(rec_ok.job_id, status="running", phase="translate")
+        registry.update(rec_skip.job_id, status="running", phase="translate")
+
+        restored = JobRegistry(root / "jobs")
+        restored.hydrate_from_disk()
+        restored.requeue_recovered_jobs(
+            policy="safe",
+            max_jobs=2,
+            cfg=_cfg(),
+            starter=lambda *args, **kwargs: None,
+            audit=False,
+        )
+        database.log_job_hydration_report(restored.hydration_report())
+
+        event = database.list_audit(limit=10)[0]
+        self.assertEqual(event["action"], "job_hydration_report")
+        detail = event["detail"]
+        self.assertEqual(detail["auto_resume_policy"], "safe")
+        self.assertTrue(detail["auto_resume_enabled"])
+        self.assertEqual(detail["auto_resume_started_job_ids"], [rec_ok.job_id])
+        self.assertEqual(detail["auto_resume_skipped"][0]["job_id"], rec_skip.job_id)
+        self.assertEqual(detail["auto_resume_skipped"][0]["reason"], "custom_api_not_resumable")
 
     def test_merge_status_into_rows_preserves_database_created_at(self) -> None:
         root = self._case_root("merge-preserves-db-created-at")
