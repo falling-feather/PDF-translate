@@ -64,6 +64,7 @@ from pdf_translate.translators.registry import get_backend_spec
 from pdf_translate.vision.ocr_executor import execute_ocr_tasks
 from pdf_translate.vision.ocr_promotion import write_ocr_candidate_promotion
 from pdf_translate.vision.ocr_tasks import write_ocr_task_manifest
+from pdf_translate.vision.vlm_tasks import write_vlm_fallback_tasks
 from pdf_translate.vision.ocr_writeback import (
     load_ocr_results,
     write_ocr_results_payload,
@@ -430,6 +431,14 @@ def run_translate(
             out_dir / "ocr_candidate_qa.json",
             out_dir / "ocr_candidate_qa.md",
         )
+    with run_metrics.stage("vlm_fallback_tasks"):
+        vlm_fallback_tasks = write_vlm_fallback_tasks(
+            ocr_tasks,
+            ocr_results,
+            ocr_writeback,
+            ocr_candidate_qa,
+            out_dir / "vlm_tasks.json",
+        )
     with run_metrics.stage("ocr_candidate_promotion"):
         ocr_candidate_promotion = write_ocr_candidate_promotion(
             document_ir_ocr,
@@ -753,6 +762,7 @@ def run_translate(
             ocr_results=ocr_results,
             ocr_writeback=ocr_writeback,
             ocr_candidate_qa=ocr_candidate_qa,
+            vlm_fallback_tasks=vlm_fallback_tasks,
             ocr_candidate_promotion=ocr_candidate_promotion,
             repair_requests=repair_requests,
             repair_results=repair_results,

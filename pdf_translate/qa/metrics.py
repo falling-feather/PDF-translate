@@ -19,6 +19,7 @@ DEFAULT_EVIDENCE_FILES = {
     "ocr_results": "output/ocr_results.json",
     "ocr_writeback": "output/ocr_writeback.json",
     "ocr_candidate_qa": "output/ocr_candidate_qa.json",
+    "vlm_fallback_tasks": "output/vlm_tasks.json",
     "ocr_candidate_promotion": "output/ocr_candidate_promotion.json",
     "document_ir_ocr": "output/document_ir_ocr.json",
     "document_ir_promoted": "output/document_ir_promoted.json",
@@ -122,6 +123,7 @@ def build_experiment_metrics(
     ocr_results: dict[str, Any] | None = None,
     ocr_writeback: dict[str, Any] | None = None,
     ocr_candidate_qa: dict[str, Any] | None = None,
+    vlm_fallback_tasks: dict[str, Any] | None = None,
     ocr_candidate_promotion: dict[str, Any] | None = None,
     repair_requests: dict[str, Any] | None = None,
     repair_results: dict[str, Any] | None = None,
@@ -149,6 +151,7 @@ def build_experiment_metrics(
     ocr_execution_summary = _summary(ocr_execution if isinstance(ocr_execution, dict) else None)
     ocr_writeback_summary = _summary(ocr_writeback)
     ocr_candidate_summary = _summary(ocr_candidate_qa)
+    vlm_fallback_summary = _summary(vlm_fallback_tasks)
     ocr_candidate_promotion_summary = _summary(ocr_candidate_promotion)
     chunk_boundary_summary = _summary(chunk_boundary_qa)
     chunk_strategy_summary = _summary(chunk_strategy_comparison)
@@ -212,6 +215,13 @@ def build_experiment_metrics(
     ocr_candidate_structured_formula_gate_issue_counts = _counter_dict(
         ocr_candidate_summary.get("structured_formula_gate_issue_counts")
     )
+    vlm_fallback_status_counts = _counter_dict(vlm_fallback_summary.get("status_counts"))
+    vlm_fallback_priority_counts = _counter_dict(vlm_fallback_summary.get("priority_counts"))
+    vlm_fallback_block_type_counts = _counter_dict(vlm_fallback_summary.get("block_type_counts"))
+    vlm_fallback_reason_counts = _counter_dict(vlm_fallback_summary.get("reason_counts"))
+    vlm_fallback_source_stage_counts = _counter_dict(vlm_fallback_summary.get("source_stage_counts"))
+    vlm_fallback_review_goal_counts = _counter_dict(vlm_fallback_summary.get("review_goal_counts"))
+    vlm_fallback_expected_output_counts = _counter_dict(vlm_fallback_summary.get("expected_output_counts"))
     ocr_candidate_promotion_status_counts = _counter_dict(
         ocr_candidate_promotion_summary.get("candidate_status_counts")
     )
@@ -660,6 +670,37 @@ def build_experiment_metrics(
         "structured_formula_missing_equation_labels",
         0,
     )
+    vlm_fallback_after_ocr_gate_count = _as_int(vlm_fallback_summary.get("after_ocr_gate_task_count"))
+    vlm_fallback_ready_task_count = _as_int(vlm_fallback_summary.get("ready_task_count"))
+    vlm_fallback_blocked_task_count = _as_int(
+        vlm_fallback_summary.get("blocked_by_missing_visual_evidence_count")
+    )
+    vlm_fallback_ocr_missing_result_task_count = _as_int(
+        vlm_fallback_summary.get("ocr_missing_result_task_count")
+    )
+    vlm_fallback_ocr_missing_visual_evidence_task_count = _as_int(
+        vlm_fallback_summary.get("ocr_missing_visual_evidence_task_count")
+    )
+    vlm_fallback_ocr_failed_result_task_count = _as_int(
+        vlm_fallback_summary.get("ocr_failed_result_task_count")
+    )
+    vlm_fallback_ocr_empty_text_task_count = _as_int(vlm_fallback_summary.get("ocr_empty_text_task_count"))
+    vlm_fallback_ocr_low_confidence_task_count = _as_int(
+        vlm_fallback_summary.get("ocr_low_confidence_task_count")
+    )
+    vlm_fallback_writeback_rejection_task_count = _as_int(
+        vlm_fallback_summary.get("ocr_writeback_rejection_task_count")
+    )
+    vlm_fallback_candidate_gate_task_count = _as_int(
+        vlm_fallback_summary.get("ocr_candidate_gate_task_count")
+    )
+    vlm_fallback_candidate_needs_review_task_count = _as_int(
+        vlm_fallback_summary.get("ocr_candidate_needs_review_task_count")
+    )
+    vlm_fallback_candidate_blocked_task_count = _as_int(
+        vlm_fallback_summary.get("ocr_candidate_blocked_task_count")
+    )
+    vlm_fallback_structured_gate_task_count = _as_int(vlm_fallback_summary.get("structured_gate_task_count"))
     ocr_candidate_promotion_eligible_count = _as_int(ocr_candidate_promotion_summary.get("eligible_candidate_count"))
     ocr_candidate_promoted_count = _as_int(ocr_candidate_promotion_summary.get("promoted_candidate_count"))
     ocr_candidate_promotion_skipped_count = _as_int(ocr_candidate_promotion_summary.get("skipped_candidate_count"))
@@ -1196,6 +1237,25 @@ def build_experiment_metrics(
             ),
             "ocr_structured_formula_token_count": ocr_structured_formula_token_count,
             "ocr_structured_formula_equation_label_count": ocr_structured_formula_equation_label_count,
+            "vlm_fallback_after_ocr_gate_count": vlm_fallback_after_ocr_gate_count,
+            "vlm_fallback_ready_task_count": vlm_fallback_ready_task_count,
+            "vlm_fallback_blocked_task_count": vlm_fallback_blocked_task_count,
+            "vlm_fallback_ocr_missing_result_task_count": vlm_fallback_ocr_missing_result_task_count,
+            "vlm_fallback_ocr_missing_visual_evidence_task_count": (
+                vlm_fallback_ocr_missing_visual_evidence_task_count
+            ),
+            "vlm_fallback_ocr_failed_result_task_count": vlm_fallback_ocr_failed_result_task_count,
+            "vlm_fallback_ocr_empty_text_task_count": vlm_fallback_ocr_empty_text_task_count,
+            "vlm_fallback_ocr_low_confidence_task_count": vlm_fallback_ocr_low_confidence_task_count,
+            "vlm_fallback_writeback_rejection_task_count": (
+                vlm_fallback_writeback_rejection_task_count
+            ),
+            "vlm_fallback_candidate_gate_task_count": vlm_fallback_candidate_gate_task_count,
+            "vlm_fallback_candidate_needs_review_task_count": (
+                vlm_fallback_candidate_needs_review_task_count
+            ),
+            "vlm_fallback_candidate_blocked_task_count": vlm_fallback_candidate_blocked_task_count,
+            "vlm_fallback_structured_gate_task_count": vlm_fallback_structured_gate_task_count,
             "ocr_candidate_promotion_eligible_count": ocr_candidate_promotion_eligible_count,
             "ocr_candidate_promoted_count": ocr_candidate_promoted_count,
             "ocr_candidate_promotion_skipped_count": ocr_candidate_promotion_skipped_count,
@@ -1683,6 +1743,23 @@ def build_experiment_metrics(
                 ocr_structured_formula_equation_label_count,
                 ocr_structured_formula_candidate_count,
             ),
+            "vlm_fallback_after_ocr_gate_rate": _rate(vlm_fallback_after_ocr_gate_count, ocr_task_count),
+            "vlm_fallback_ready_rate": _rate(
+                vlm_fallback_ready_task_count,
+                vlm_fallback_after_ocr_gate_count,
+            ),
+            "vlm_fallback_writeback_rejection_rate": _rate(
+                vlm_fallback_writeback_rejection_task_count,
+                vlm_fallback_after_ocr_gate_count,
+            ),
+            "vlm_fallback_candidate_gate_rate": _rate(
+                vlm_fallback_candidate_gate_task_count,
+                vlm_fallback_after_ocr_gate_count,
+            ),
+            "vlm_fallback_structured_gate_rate": _rate(
+                vlm_fallback_structured_gate_task_count,
+                vlm_fallback_after_ocr_gate_count,
+            ),
             "ocr_candidate_promotable_rate": _rate(ocr_candidate_promotable_count, ocr_candidate_qa_count),
             "ocr_candidate_blocked_rate": _rate(ocr_candidate_blocked_count, ocr_candidate_qa_count),
             "ocr_candidate_promotion_rate": _rate(ocr_candidate_promoted_count, ocr_candidate_qa_count),
@@ -1751,6 +1828,13 @@ def build_experiment_metrics(
             "ocr_candidate_structured_formula_gate_issue_counts": (
                 ocr_candidate_structured_formula_gate_issue_counts
             ),
+            "vlm_fallback_status_counts": vlm_fallback_status_counts,
+            "vlm_fallback_priority_counts": vlm_fallback_priority_counts,
+            "vlm_fallback_block_type_counts": vlm_fallback_block_type_counts,
+            "vlm_fallback_reason_counts": vlm_fallback_reason_counts,
+            "vlm_fallback_source_stage_counts": vlm_fallback_source_stage_counts,
+            "vlm_fallback_review_goal_counts": vlm_fallback_review_goal_counts,
+            "vlm_fallback_expected_output_counts": vlm_fallback_expected_output_counts,
             "ocr_candidate_promotion_status_counts": ocr_candidate_promotion_status_counts,
             "ocr_candidate_promotion_skip_counts": ocr_candidate_promotion_skip_counts,
             "translation_issue_counts": translation_issue_counts,
@@ -1848,6 +1932,7 @@ def write_experiment_metrics(
     ocr_results: dict[str, Any] | None = None,
     ocr_writeback: dict[str, Any] | None = None,
     ocr_candidate_qa: dict[str, Any] | None = None,
+    vlm_fallback_tasks: dict[str, Any] | None = None,
     ocr_candidate_promotion: dict[str, Any] | None = None,
     repair_requests: dict[str, Any] | None = None,
     repair_results: dict[str, Any] | None = None,
@@ -1882,6 +1967,7 @@ def write_experiment_metrics(
         ocr_results=ocr_results,
         ocr_writeback=ocr_writeback,
         ocr_candidate_qa=ocr_candidate_qa,
+        vlm_fallback_tasks=vlm_fallback_tasks,
         ocr_candidate_promotion=ocr_candidate_promotion,
         repair_requests=repair_requests,
         repair_results=repair_results,

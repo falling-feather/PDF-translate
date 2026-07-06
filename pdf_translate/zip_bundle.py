@@ -87,6 +87,8 @@ def map_bundle_arcname(rel_posix: str) -> str:
         "output/state.json": "设置/翻译状态.json",
         "output/run_log.jsonl": "设置/运行日志.jsonl",
     }
+    if rel == "output/vlm_tasks.json":
+        return "质量/VLM视觉复核任务.json"
     if rel in output_map:
         return output_map[rel]
     if rel.startswith("output/repairs/"):
@@ -216,6 +218,7 @@ def iter_bundle_files(root: Path) -> list[Path]:
         root / "output" / "ocr_writeback.json",
         root / "output" / "ocr_candidate_qa.json",
         root / "output" / "ocr_candidate_qa.md",
+        root / "output" / "vlm_tasks.json",
         root / "output" / "ocr_candidate_promotion.json",
         root / "output" / "ocr_candidate_promotion.md",
         root / "output" / "document_ir_ocr.json",

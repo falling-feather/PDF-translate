@@ -83,6 +83,7 @@ from pdf_translate.translators.factory import build_translator
 from pdf_translate.translators.http_retry import call_with_http_retry, capture_http_retry_events
 from pdf_translate.translators.openai_compatible import _build_user_message
 from pdf_translate.vision.ocr_tasks import build_ocr_task_manifest, write_ocr_task_manifest
+from pdf_translate.vision.vlm_tasks import build_vlm_fallback_tasks, write_vlm_fallback_tasks
 from pdf_translate.vision.ocr_executor import execute_ocr_tasks
 from pdf_translate.vision.ocr_promotion import build_ocr_candidate_promotion, write_ocr_candidate_promotion
 from pdf_translate.vision.ocr_writeback import (
@@ -4450,6 +4451,257 @@ class StructureIRTests(unittest.TestCase):
         self.assertIn("structured_table_missing_cell_bboxes", candidate["reasons"])
         self.assertIn("needs_structured_table_review", candidate["reasons"])
 
+    def test_vlm_fallback_tasks_materialize_after_ocr_gates(self) -> None:
+        manifest = {
+            "schema_version": "ocr-task-manifest-v1",
+            "doc_id": "vlm-fallback-sample",
+            "source_pdf": "sample.pdf",
+            "tasks": [
+                {
+                    "task_id": "ocr-p0001-table",
+                    "doc_id": "vlm-fallback-sample",
+                    "page_no": 1,
+                    "scope": "region",
+                    "layout_scope": "table_region",
+                    "status": "pending_engine",
+                    "priority": "P0",
+                    "route_action": "local_ocr",
+                    "risk_level": "high",
+                    "reasons": ["possible_image_table"],
+                    "recommended_engine": "local_table_ocr",
+                    "fallback_engine": "",
+                    "input_path": "vision_crops/page-0001/p1-b0000-table.png",
+                    "page_preview_path": "vision_pages/page-0001.png",
+                    "block_id": "p1-b0000",
+                    "block_type": "table",
+                    "target_structure_type": "table",
+                    "bbox": [60, 540, 500, 620],
+                    "crop_width": 720,
+                    "crop_height": 140,
+                    "table_context": {
+                        "table_id": "p1-b0000",
+                        "row_count": 2,
+                        "column_count": 2,
+                        "locked_tokens": ["91.2"],
+                    },
+                    "structure_contract": {
+                        "schema_version": "ocr-structure-contract-v1",
+                        "target_structure_type": "table",
+                    },
+                },
+                {
+                    "task_id": "ocr-p0002-image",
+                    "doc_id": "vlm-fallback-sample",
+                    "page_no": 2,
+                    "scope": "region",
+                    "layout_scope": "image_region",
+                    "status": "pending_engine",
+                    "priority": "P1",
+                    "route_action": "vlm_review",
+                    "risk_level": "medium",
+                    "reasons": ["image_caption_context"],
+                    "recommended_engine": "local_ocr",
+                    "fallback_engine": "vlm_review",
+                    "input_path": "vision_crops/page-0002/p2-b0000-image.png",
+                    "page_preview_path": "vision_pages/page-0002.png",
+                    "block_id": "p2-b0000",
+                    "block_type": "image",
+                    "target_structure_type": "image",
+                    "bbox": [40, 80, 560, 520],
+                    "crop_width": 720,
+                    "crop_height": 610,
+                },
+                {
+                    "task_id": "ocr-p0003-text",
+                    "doc_id": "vlm-fallback-sample",
+                    "page_no": 3,
+                    "scope": "region",
+                    "layout_scope": "text_region",
+                    "status": "pending_engine",
+                    "priority": "P2",
+                    "route_action": "local_ocr",
+                    "risk_level": "low",
+                    "reasons": [],
+                    "recommended_engine": "local_ocr",
+                    "fallback_engine": "",
+                    "input_path": "vision_crops/page-0003/p3-b0000-text.png",
+                    "block_id": "p3-b0000",
+                    "block_type": "paragraph",
+                    "target_structure_type": "text",
+                    "bbox": [40, 80, 560, 120],
+                },
+            ],
+        }
+        ocr_writeback = {
+            "schema_version": "ocr-writeback-v1",
+            "doc_id": "vlm-fallback-sample",
+            "summary": {
+                "task_count": 3,
+                "rejected_result_count": 2,
+                "pending_task_count": 1,
+                "rejection_reason_counts": {"low_confidence": 2},
+            },
+            "rejected_results": [
+                {
+                    "task_id": "ocr-p0001-table",
+                    "page_no": 1,
+                    "block_id": "p1-b0000",
+                    "status": "succeeded",
+                    "engine": "local_table_ocr",
+                    "reason": "low_confidence",
+                    "confidence": 0.24,
+                    "text_char_count": 18,
+                },
+                {
+                    "task_id": "ocr-p0003-text",
+                    "page_no": 3,
+                    "block_id": "p3-b0000",
+                    "status": "succeeded",
+                    "engine": "local_ocr",
+                    "reason": "low_confidence",
+                    "confidence": 0.22,
+                    "text_char_count": 10,
+                },
+            ],
+            "pending_tasks": [
+                {
+                    "task_id": "ocr-p0002-image",
+                    "page_no": 2,
+                    "block_id": "p2-b0000",
+                    "status": "pending_engine",
+                    "input_path": "vision_crops/page-0002/p2-b0000-image.png",
+                }
+            ],
+        }
+        ocr_candidate_qa = {
+            "schema_version": "ocr-candidate-qa-v1",
+            "doc_id": "vlm-fallback-sample",
+            "summary": {"candidate_count": 1, "needs_review_candidate_count": 1},
+            "candidates": [
+                {
+                    "task_id": "ocr-p0001-table",
+                    "page_no": 1,
+                    "block_id": "p1-b0000",
+                    "scope": "region",
+                    "block_type": "table",
+                    "target_structure_type": "table",
+                    "status": "needs_review",
+                    "input_path": "vision_crops/page-0001/p1-b0000-table.png",
+                    "reasons": ["needs_structured_table_review"],
+                    "structured_table_gate": {
+                        "status": "needs_review",
+                        "issues": ["structured_table_missing_cell_bboxes"],
+                        "blockers": [],
+                    },
+                }
+            ],
+        }
+
+        payload = build_vlm_fallback_tasks(manifest, None, ocr_writeback, ocr_candidate_qa)
+
+        self.assertEqual(payload["schema_version"], "vlm-fallback-tasks-v1")
+        self.assertEqual(payload["summary"]["task_count"], 2)
+        self.assertEqual(payload["summary"]["ready_task_count"], 2)
+        self.assertEqual(payload["summary"]["ocr_low_confidence_task_count"], 1)
+        self.assertEqual(payload["summary"]["ocr_missing_result_task_count"], 1)
+        self.assertEqual(payload["summary"]["ocr_candidate_gate_task_count"], 1)
+        self.assertEqual(payload["summary"]["reason_counts"]["structured_table_missing_cell_bboxes"], 1)
+        self.assertNotIn("paragraph", payload["summary"]["block_type_counts"])
+        table_task = next(task for task in payload["tasks"] if task["source_ocr_task_id"] == "ocr-p0001-table")
+        self.assertEqual(table_task["status"], "pending_vlm")
+        self.assertEqual(table_task["priority"], "P0")
+        self.assertIn("ocr_writeback_rejection", table_task["source_stages"])
+        self.assertIn("ocr_candidate_gate", table_task["source_stages"])
+        self.assertIn("recover_table_grid_and_cells", table_task["review_goals"])
+        self.assertIn("structured_cells", table_task["expected_outputs"])
+        self.assertEqual(table_task["visual_evidence"]["input_path"], "vision_crops/page-0001/p1-b0000-table.png")
+        self.assertEqual(table_task["fallback_policy"]["engine"], "vlm_fallback")
+        image_task = next(task for task in payload["tasks"] if task["source_ocr_task_id"] == "ocr-p0002-image")
+        self.assertIn("verify_image_caption_relationship", image_task["review_goals"])
+
+        root = Path.cwd() / "test-output" / "vlm-fallback-tasks"
+        if root.exists():
+            shutil.rmtree(root)
+        try:
+            report_path = root / "output" / "vlm_tasks.json"
+            written = write_vlm_fallback_tasks(manifest, None, ocr_writeback, ocr_candidate_qa, report_path)
+            self.assertTrue(report_path.is_file())
+            self.assertEqual(written["summary"]["task_count"], 2)
+            loaded = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(loaded["result_contract"]["engine"], "vlm_fallback")
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
+    def test_vlm_fallback_tasks_use_page_preview_as_visual_evidence(self) -> None:
+        manifest = {
+            "schema_version": "ocr-task-manifest-v1",
+            "doc_id": "preview-only-sample",
+            "source_pdf": "sample.pdf",
+            "tasks": [
+                {
+                    "task_id": "ocr-p0001-page",
+                    "doc_id": "preview-only-sample",
+                    "page_no": 1,
+                    "scope": "page",
+                    "layout_scope": "page",
+                    "status": "pending_engine",
+                    "priority": "P1",
+                    "route_action": "vlm_review",
+                    "reasons": ["low_text_image_heavy_page"],
+                    "recommended_engine": "local_ocr",
+                    "fallback_engine": "vlm_review",
+                    "page_preview_path": "vision_pages/page-0001.png",
+                    "block_id": "",
+                    "block_type": "page",
+                    "target_structure_type": "page",
+                },
+                {
+                    "task_id": "ocr-p0002-image",
+                    "doc_id": "preview-only-sample",
+                    "page_no": 2,
+                    "scope": "region",
+                    "layout_scope": "image_region",
+                    "status": "blocked_missing_visual_evidence",
+                    "priority": "P1",
+                    "route_action": "vlm_review",
+                    "reasons": ["image_caption_context"],
+                    "recommended_engine": "local_ocr",
+                    "fallback_engine": "vlm_review",
+                    "block_id": "p2-b0000",
+                    "block_type": "image",
+                    "target_structure_type": "image",
+                },
+            ],
+        }
+        ocr_writeback = {
+            "schema_version": "ocr-writeback-v1",
+            "doc_id": "preview-only-sample",
+            "pending_tasks": [
+                {"task_id": "ocr-p0001-page", "page_no": 1, "status": "pending_engine"},
+                {
+                    "task_id": "ocr-p0002-image",
+                    "page_no": 2,
+                    "status": "blocked_missing_visual_evidence",
+                },
+            ],
+        }
+
+        payload = build_vlm_fallback_tasks(manifest, None, ocr_writeback, None)
+
+        self.assertEqual(payload["summary"]["task_count"], 2)
+        self.assertEqual(payload["summary"]["ready_task_count"], 1)
+        self.assertEqual(payload["summary"]["blocked_by_missing_visual_evidence_count"], 1)
+        preview_task = next(task for task in payload["tasks"] if task["source_ocr_task_id"] == "ocr-p0001-page")
+        self.assertEqual(preview_task["status"], "pending_vlm")
+        self.assertEqual(preview_task["visual_evidence"]["page_preview_path"], "vision_pages/page-0001.png")
+        blocked_task = next(task for task in payload["tasks"] if task["source_ocr_task_id"] == "ocr-p0002-image")
+        self.assertEqual(blocked_task["status"], "blocked_missing_visual_evidence")
+        self.assertIn("missing_visual_evidence", blocked_task["trigger_reasons"])
+
     def test_local_ocr_executor_runs_ready_tasks_into_results_payload(self) -> None:
         root = Path.cwd() / "test-output" / "ocr-executor"
         if root.exists():
@@ -5618,6 +5870,46 @@ class StructureIRTests(unittest.TestCase):
                     },
                 },
             },
+            vlm_fallback_tasks={
+                "schema_version": "vlm-fallback-tasks-v1",
+                "summary": {
+                    "task_count": 3,
+                    "after_ocr_gate_task_count": 3,
+                    "ready_task_count": 2,
+                    "blocked_by_missing_visual_evidence_count": 1,
+                    "ocr_missing_result_task_count": 1,
+                    "ocr_missing_visual_evidence_task_count": 1,
+                    "ocr_failed_result_task_count": 0,
+                    "ocr_empty_text_task_count": 0,
+                    "ocr_low_confidence_task_count": 1,
+                    "ocr_writeback_rejection_task_count": 1,
+                    "ocr_candidate_gate_task_count": 1,
+                    "ocr_candidate_needs_review_task_count": 1,
+                    "ocr_candidate_blocked_task_count": 0,
+                    "structured_gate_task_count": 2,
+                    "status_counts": {"pending_vlm": 2, "blocked_missing_visual_evidence": 1},
+                    "priority_counts": {"P0": 1, "P1": 2},
+                    "block_type_counts": {"table": 1, "formula": 1, "image": 1},
+                    "reason_counts": {
+                        "low_confidence": 1,
+                        "missing_ocr_result": 1,
+                        "missing_visual_evidence": 1,
+                        "ocr_candidate_needs_review": 1,
+                        "structured_table_missing_cell_bboxes": 1,
+                    },
+                    "source_stage_counts": {
+                        "ocr_writeback_rejection": 1,
+                        "ocr_missing_result": 2,
+                        "ocr_candidate_gate": 1,
+                    },
+                    "review_goal_counts": {
+                        "recover_visible_text": 3,
+                        "recover_table_grid_and_cells": 1,
+                        "repair_local_ocr_failure": 2,
+                    },
+                    "expected_output_counts": {"plain_text": 3, "structured_cells": 1},
+                },
+            },
             ocr_candidate_promotion={
                 "schema_version": "ocr-candidate-promotion-v1",
                 "summary": {
@@ -6276,6 +6568,16 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_structured_formula_token_count"], 5)
         self.assertEqual(metrics["quality"]["ocr_structured_formula_equation_label_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_structured_formula_missing_equation_label_count"], 1)
+        self.assertEqual(metrics["quality"]["vlm_fallback_after_ocr_gate_count"], 3)
+        self.assertEqual(metrics["quality"]["vlm_fallback_ready_task_count"], 2)
+        self.assertEqual(metrics["quality"]["vlm_fallback_blocked_task_count"], 1)
+        self.assertEqual(metrics["quality"]["vlm_fallback_ocr_missing_result_task_count"], 1)
+        self.assertEqual(metrics["quality"]["vlm_fallback_ocr_missing_visual_evidence_task_count"], 1)
+        self.assertEqual(metrics["quality"]["vlm_fallback_ocr_low_confidence_task_count"], 1)
+        self.assertEqual(metrics["quality"]["vlm_fallback_writeback_rejection_task_count"], 1)
+        self.assertEqual(metrics["quality"]["vlm_fallback_candidate_gate_task_count"], 1)
+        self.assertEqual(metrics["quality"]["vlm_fallback_candidate_needs_review_task_count"], 1)
+        self.assertEqual(metrics["quality"]["vlm_fallback_structured_gate_task_count"], 2)
         self.assertEqual(metrics["quality"]["ocr_candidate_promotion_eligible_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_promoted_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_candidate_promotion_skipped_count"], 2)
@@ -6320,6 +6622,11 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["ocr_structured_formula_gate_review_rate"], 0.5)
         self.assertEqual(metrics["rates"]["ocr_formula_token_per_candidate"], 2.5)
         self.assertEqual(metrics["rates"]["ocr_formula_equation_label_per_candidate"], 0.5)
+        self.assertEqual(metrics["rates"]["vlm_fallback_after_ocr_gate_rate"], 0.75)
+        self.assertEqual(metrics["rates"]["vlm_fallback_ready_rate"], 0.6667)
+        self.assertEqual(metrics["rates"]["vlm_fallback_writeback_rejection_rate"], 0.3333)
+        self.assertEqual(metrics["rates"]["vlm_fallback_candidate_gate_rate"], 0.3333)
+        self.assertEqual(metrics["rates"]["vlm_fallback_structured_gate_rate"], 0.6667)
         self.assertEqual(metrics["rates"]["ocr_candidate_promotable_rate"], 0.3333)
         self.assertEqual(metrics["rates"]["ocr_candidate_blocked_rate"], 0.3333)
         self.assertEqual(metrics["rates"]["ocr_candidate_promotion_rate"], 0.3333)
@@ -6354,6 +6661,11 @@ class StructureIRTests(unittest.TestCase):
             ],
             1,
         )
+        self.assertEqual(metrics["breakdowns"]["vlm_fallback_reason_counts"]["low_confidence"], 1)
+        self.assertEqual(metrics["breakdowns"]["vlm_fallback_status_counts"]["pending_vlm"], 2)
+        self.assertEqual(metrics["breakdowns"]["vlm_fallback_source_stage_counts"]["ocr_candidate_gate"], 1)
+        self.assertEqual(metrics["breakdowns"]["vlm_fallback_review_goal_counts"]["repair_local_ocr_failure"], 2)
+        self.assertEqual(metrics["breakdowns"]["vlm_fallback_expected_output_counts"]["structured_cells"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_candidate_promotion_status_counts"]["candidate"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_candidate_promotion_skip_counts"]["status_not_promotable"], 2)
         self.assertEqual(metrics["breakdowns"]["stage_elapsed_ms"]["document_ir"], 50)
@@ -6367,6 +6679,7 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["evidence_files"]["ocr_results"], "output/ocr_results.json")
         self.assertEqual(metrics["evidence_files"]["ocr_writeback"], "output/ocr_writeback.json")
         self.assertEqual(metrics["evidence_files"]["ocr_candidate_qa"], "output/ocr_candidate_qa.json")
+        self.assertEqual(metrics["evidence_files"]["vlm_fallback_tasks"], "output/vlm_tasks.json")
         self.assertEqual(metrics["evidence_files"]["ocr_candidate_promotion"], "output/ocr_candidate_promotion.json")
         self.assertEqual(metrics["evidence_files"]["document_ir_ocr"], "output/document_ir_ocr.json")
         self.assertEqual(metrics["evidence_files"]["document_ir_promoted"], "output/document_ir_promoted.json")
@@ -7832,6 +8145,7 @@ class StructureIRTests(unittest.TestCase):
             ocr_writeback_path = work_dir / "output" / "ocr_writeback.json"
             ocr_candidate_qa_path = work_dir / "output" / "ocr_candidate_qa.json"
             ocr_candidate_qa_md_path = work_dir / "output" / "ocr_candidate_qa.md"
+            vlm_tasks_path = work_dir / "output" / "vlm_tasks.json"
             document_ir_ocr_path = work_dir / "output" / "document_ir_ocr.json"
             ocr_candidate_promotion_path = work_dir / "output" / "ocr_candidate_promotion.json"
             ocr_candidate_promotion_md_path = work_dir / "output" / "ocr_candidate_promotion.md"
@@ -7894,6 +8208,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(ocr_writeback_path.is_file())
             self.assertTrue(ocr_candidate_qa_path.is_file())
             self.assertTrue(ocr_candidate_qa_md_path.is_file())
+            self.assertTrue(vlm_tasks_path.is_file())
             self.assertTrue(document_ir_ocr_path.is_file())
             self.assertTrue(ocr_candidate_promotion_path.is_file())
             self.assertTrue(ocr_candidate_promotion_md_path.is_file())
@@ -7952,6 +8267,7 @@ class StructureIRTests(unittest.TestCase):
             ocr_results = json.loads(ocr_results_path.read_text(encoding="utf-8"))
             ocr_writeback = json.loads(ocr_writeback_path.read_text(encoding="utf-8"))
             ocr_candidate_qa = json.loads(ocr_candidate_qa_path.read_text(encoding="utf-8"))
+            vlm_tasks = json.loads(vlm_tasks_path.read_text(encoding="utf-8"))
             document_ir_ocr = json.loads(document_ir_ocr_path.read_text(encoding="utf-8"))
             ocr_candidate_promotion = json.loads(ocr_candidate_promotion_path.read_text(encoding="utf-8"))
             document_ir_promoted = json.loads(document_ir_promoted_path.read_text(encoding="utf-8"))
@@ -8079,6 +8395,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("pending_task_count", ocr_writeback["summary"])
             self.assertEqual(ocr_candidate_qa["schema_version"], "ocr-candidate-qa-v1")
             self.assertIn("candidate_count", ocr_candidate_qa["summary"])
+            self.assertEqual(vlm_tasks["schema_version"], "vlm-fallback-tasks-v1")
+            self.assertIn("after_ocr_gate_task_count", vlm_tasks["summary"])
             self.assertEqual(document_ir_ocr["schema_version"], "document-ir-v1")
             self.assertEqual(ocr_candidate_promotion["schema_version"], "ocr-candidate-promotion-v1")
             self.assertIn("promoted_candidate_count", ocr_candidate_promotion["summary"])
@@ -8191,6 +8509,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(metrics["evidence_files"]["ocr_writeback"], "output/ocr_writeback.json")
             self.assertIn("ocr_candidate_qa_count", metrics["quality"])
             self.assertEqual(metrics["evidence_files"]["ocr_candidate_qa"], "output/ocr_candidate_qa.json")
+            self.assertIn("vlm_fallback_after_ocr_gate_count", metrics["quality"])
+            self.assertEqual(metrics["evidence_files"]["vlm_fallback_tasks"], "output/vlm_tasks.json")
             self.assertIn("ocr_candidate_promoted_count", metrics["quality"])
             self.assertEqual(metrics["evidence_files"]["ocr_candidate_promotion"], "output/ocr_candidate_promotion.json")
             self.assertEqual(metrics["evidence_files"]["document_ir_ocr"], "output/document_ir_ocr.json")
@@ -8322,6 +8642,7 @@ class StructureIRTests(unittest.TestCase):
                 "ocr_writeback.json",
                 "ocr_candidate_qa.json",
                 "ocr_candidate_qa.md",
+                "vlm_tasks.json",
                 "document_ir_ocr.json",
                 "ocr_candidate_promotion.json",
                 "ocr_candidate_promotion.md",
@@ -8406,6 +8727,7 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/ocr_writeback.json", rels)
             self.assertIn("output/ocr_candidate_qa.json", rels)
             self.assertIn("output/ocr_candidate_qa.md", rels)
+            self.assertIn("output/vlm_tasks.json", rels)
             self.assertIn("output/document_ir_ocr.json", rels)
             self.assertIn("output/ocr_candidate_promotion.json", rels)
             self.assertIn("output/ocr_candidate_promotion.md", rels)
@@ -8562,6 +8884,9 @@ class StructureIRTests(unittest.TestCase):
             parent = root.parent
             if parent.is_dir() and not any(parent.iterdir()):
                 shutil.rmtree(parent)
+
+    def test_vlm_fallback_tasks_bundle_arcname_is_named_for_review(self) -> None:
+        self.assertEqual(map_bundle_arcname("output/vlm_tasks.json"), "质量/VLM视觉复核任务.json")
 
 
 if __name__ == "__main__":
