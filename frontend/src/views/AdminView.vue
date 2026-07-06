@@ -176,6 +176,10 @@ function artifactReadySummary(job) {
   if (job.repair_published_full_ready) ready.push("修复稿");
   if (job.repair_rollback_report_ready) ready.push("回滚报告");
   if (job.repair_rollback_full_ready) ready.push("回滚稿");
+  if (job.repair_formal_replace_report_ready) ready.push("正式替换");
+  if (job.repair_formal_full_ready) ready.push("正式稿");
+  if (job.repair_formal_rollback_report_ready) ready.push("正式回滚");
+  if (job.repair_formal_backup_full_ready) ready.push("正式备份");
   if (job.bundle_zip_ready) ready.push("ZIP");
   return ready.length ? `可用：${ready.join(" / ")}` : "暂无可下载产物";
 }
@@ -436,6 +440,46 @@ async function adminConfirmRepairRollback(job) {
   alert("已生成回滚演练稿");
 }
 
+async function adminConfirmRepairFormalReplace(job) {
+  if (!job.repair_published_full_ready) {
+    alert("修复发布稿尚未生成，暂不能生成正式译文。");
+    return;
+  }
+  if (!window.confirm("确认把修复发布稿提升为正式译文？系统会保留正式译文修复前备份。")) return;
+  const r = await fetch(`/api/jobs/${job.job_id}/repair-formal-replace/confirm`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatAdminError(data));
+    return;
+  }
+  await loadJobs();
+  await loadAudit();
+  alert("已生成正式修复译文");
+}
+
+async function adminConfirmRepairFormalRollback(job) {
+  if (!job.repair_formal_backup_full_ready) {
+    alert("正式译文修复前备份尚未生成，暂不能正式回滚。");
+    return;
+  }
+  if (!window.confirm("确认把正式译文恢复到修复前备份？当前修复正式稿会另存为回滚前副本。")) return;
+  const r = await fetch(`/api/jobs/${job.job_id}/repair-formal-rollback/confirm`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatAdminError(data));
+    return;
+  }
+  await loadJobs();
+  await loadAudit();
+  alert("已回滚正式译文");
+}
+
 onMounted(() => {
   loadSettings();
   loadAudit();
@@ -671,6 +715,12 @@ onMounted(() => {
                 <button type="button" class="linkish" :disabled="!j.repair_published_full_ready" @click="adminDownload(j.job_id, 'repair_published_full', 'published_full.md')">修复稿</button>
                 <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.repair_published_full_ready || j.repair_rollback_full_ready" @click="adminConfirmRepairRollback(j)">回滚演练</button>
                 <button type="button" class="linkish" :disabled="!j.repair_rollback_full_ready" @click="adminDownload(j.job_id, 'repair_rollback_full', 'rollback_full.md')">回滚稿</button>
+                <button type="button" class="linkish" :disabled="!j.repair_formal_replace_report_ready" @click="adminDownload(j.job_id, 'repair_formal_replace', 'repair_formal_replace.md')">正式替换报告</button>
+                <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.repair_published_full_ready || j.repair_formal_full_ready" @click="adminConfirmRepairFormalReplace(j)">生成正式稿</button>
+                <button type="button" class="linkish" :disabled="!j.repair_formal_full_ready" @click="adminDownload(j.job_id, 'repair_formal_full', 'formal_full.md')">正式稿</button>
+                <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.repair_formal_backup_full_ready || j.repair_formal_rollback_applied" @click="adminConfirmRepairFormalRollback(j)">正式回滚</button>
+                <button type="button" class="linkish" :disabled="!j.repair_formal_rollback_report_ready" @click="adminDownload(j.job_id, 'repair_formal_rollback', 'repair_formal_rollback.md')">正式回滚报告</button>
+                <button type="button" class="linkish" :disabled="!j.repair_formal_backup_full_ready" @click="adminDownload(j.job_id, 'repair_formal_backup_full', 'formal_full.before_repair.md')">修复前备份</button>
                 <button type="button" class="linkish" :disabled="!j.bundle_zip_ready" @click="adminDownload(j.job_id, 'bundle_zip', j.job_id + '.zip')">ZIP</button>
               </td>
             </tr>

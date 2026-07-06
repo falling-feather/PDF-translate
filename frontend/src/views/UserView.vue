@@ -174,6 +174,10 @@ function artifactSummary(j) {
   if (j.repair_published_full_ready) ready.push("修复发布稿");
   if (j.repair_rollback_report_ready) ready.push("回滚报告");
   if (j.repair_rollback_full_ready) ready.push("回滚演练稿");
+  if (j.repair_formal_replace_report_ready) ready.push("正式替换报告");
+  if (j.repair_formal_full_ready) ready.push("正式译文");
+  if (j.repair_formal_rollback_report_ready) ready.push("正式回滚报告");
+  if (j.repair_formal_backup_full_ready) ready.push("正式备份");
   if (j.bundle_zip_ready) ready.push("资料包 ZIP");
   return ready.length ? `可下载：${ready.join(" / ")}` : "";
 }
@@ -501,6 +505,48 @@ async function confirmRepairRollback(jid) {
   taskMap.value = { ...taskMap.value, [jid]: data };
   await loadMyJobs();
   alert("已生成回滚演练稿");
+}
+
+async function confirmRepairFormalReplace(jid) {
+  const job = taskMap.value[jid] || {};
+  if (!job.repair_published_full_ready) {
+    alert("修复发布稿尚未生成，暂不能生成正式译文。");
+    return;
+  }
+  if (!window.confirm("确认把修复发布稿提升为正式译文？系统会保留正式译文修复前备份。")) return;
+  const r = await fetch(`/api/jobs/${jid}/repair-formal-replace/confirm`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatErrorPayload(data));
+    return;
+  }
+  taskMap.value = { ...taskMap.value, [jid]: data };
+  await loadMyJobs();
+  alert("已生成正式修复译文");
+}
+
+async function confirmRepairFormalRollback(jid) {
+  const job = taskMap.value[jid] || {};
+  if (!job.repair_formal_backup_full_ready) {
+    alert("正式译文修复前备份尚未生成，暂不能正式回滚。");
+    return;
+  }
+  if (!window.confirm("确认把正式译文恢复到修复前备份？当前修复正式稿会另存为回滚前副本。")) return;
+  const r = await fetch(`/api/jobs/${jid}/repair-formal-rollback/confirm`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatErrorPayload(data));
+    return;
+  }
+  taskMap.value = { ...taskMap.value, [jid]: data };
+  await loadMyJobs();
+  alert("已回滚正式译文");
 }
 
 function filenameFromContentDisposition(cd) {
@@ -950,6 +996,60 @@ onUnmounted(() => {
                   @click="downloadFrom(`/api/jobs/${tid}/download/rollback-full.md`, `${tid}_rollback_full.md`)"
                 >
                   回滚演练稿
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].repair_formal_replace_report_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/repair-formal-replace.md`, `${tid}_repair_formal_replace.md`)"
+                >
+                  正式替换报告
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done'"
+                  type="button"
+                  class="btn"
+                  :disabled="!taskMap[tid].repair_published_full_ready || taskMap[tid].repair_formal_full_ready"
+                  @click="confirmRepairFormalReplace(tid)"
+                >
+                  生成正式译文
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].repair_formal_full_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/formal-full.md`, `${tid}_formal_full.md`)"
+                >
+                  正式译文
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done'"
+                  type="button"
+                  class="btn"
+                  :disabled="!taskMap[tid].repair_formal_backup_full_ready || taskMap[tid].repair_formal_rollback_applied"
+                  @click="confirmRepairFormalRollback(tid)"
+                >
+                  正式回滚
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].repair_formal_rollback_report_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/repair-formal-rollback.md`, `${tid}_repair_formal_rollback.md`)"
+                >
+                  正式回滚报告
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].repair_formal_backup_full_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/formal-before-repair-full.md`, `${tid}_formal_before_repair.md`)"
+                >
+                  修复前备份
                 </button>
                 <button
                   v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"

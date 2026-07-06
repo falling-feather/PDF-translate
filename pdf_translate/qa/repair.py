@@ -20,6 +20,8 @@ MERGE_SCHEMA_VERSION = "repair-merge-v1"
 PATCH_REVIEW_SCHEMA_VERSION = "repair-patch-review-v1"
 PUBLISH_SCHEMA_VERSION = "repair-publish-v1"
 ROLLBACK_SCHEMA_VERSION = "repair-rollback-v1"
+FORMAL_REPLACE_SCHEMA_VERSION = "repair-formal-replace-v1"
+FORMAL_ROLLBACK_SCHEMA_VERSION = "repair-formal-rollback-v1"
 
 HUMAN_PATCH_REVIEW_DECISIONS = {"", "approve", "reject", "needs_revision"}
 
@@ -2151,4 +2153,334 @@ def write_repair_rollback(
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
     markdown_path.write_text(repair_rollback_to_markdown(report), encoding="utf-8")
+    return report
+
+
+def build_repair_formal_replace(
+    repair_publish: dict[str, Any],
+    *,
+    confirm: bool = False,
+    original_full_path: Path | None = None,
+    published_full_path: Path | None = None,
+    formal_full_path: Path | None = None,
+    backup_full_path: Path | None = None,
+) -> dict[str, Any]:
+    """Promote the confirmed repair copy into a formal visible translation copy."""
+    publish_summary = repair_publish.get("summary") if isinstance(repair_publish.get("summary"), dict) else {}
+    original_path_text = str(publish_summary.get("original_full_path") or "")
+    published_path_text = str(publish_summary.get("published_full_path") or "")
+    original_path = original_full_path or (Path(original_path_text) if original_path_text else None)
+    published_path = published_full_path or (Path(published_path_text) if published_path_text else None)
+    formal_path = formal_full_path
+    backup_path = backup_full_path
+
+    published = bool(publish_summary.get("published"))
+    original_exists = bool(original_path and original_path.is_file())
+    published_exists = bool(published_path and published_path.is_file())
+    formal_exists_before = bool(formal_path and formal_path.is_file())
+    formal_initialized_from_original = False
+    replaced = False
+    already_applied = False
+    warnings: list[str] = []
+
+    replace_available = published and published_exists and bool(formal_path) and (formal_exists_before or original_exists)
+    status = "pending_confirmation" if replace_available else "not_ready"
+    reason = "Explicit confirmation is required before replacing the formal translation copy."
+
+    if not published:
+        warnings.append("Confirmed repair publication is not available.")
+    if not published_exists:
+        warnings.append("published_full.md is missing.")
+    if not formal_path:
+        warnings.append("formal_full.md target path is missing.")
+    if not formal_exists_before and not original_exists:
+        warnings.append("Neither formal_full.md nor original translated_full.md exists.")
+
+    original_hash = _file_sha256(original_path)
+    published_hash = _file_sha256(published_path)
+    formal_hash_before = _file_sha256(formal_path)
+    backup_hash_before = _file_sha256(backup_path)
+
+    if confirm:
+        if not published:
+            status = "blocked_unpublished"
+            reason = "Confirmed repair publication is not available; formal replacement was not executed."
+        elif not published_exists:
+            status = "blocked_missing_published"
+            reason = "published_full.md is missing; formal replacement was not executed."
+        elif formal_path is None:
+            status = "blocked_missing_formal_target"
+            reason = "formal_full.md target path is missing; formal replacement was not executed."
+        elif backup_path is None:
+            status = "blocked_missing_backup_target"
+            reason = "formal backup path is missing; formal replacement was not executed."
+        elif not formal_exists_before and not original_exists:
+            status = "blocked_missing_formal_baseline"
+            reason = "No formal baseline or original translation exists; formal replacement was not executed."
+        else:
+            if not formal_exists_before and original_path is not None:
+                _copy_text_atomic(original_path, formal_path)
+                formal_initialized_from_original = True
+                formal_hash_before = _file_sha256(formal_path)
+            if formal_hash_before and published_hash and formal_hash_before == published_hash:
+                already_applied = True
+                replaced = True
+                status = "already_applied"
+                reason = "formal_full.md already matches published_full.md; no overwrite was needed."
+            elif backup_hash_before and formal_hash_before and backup_hash_before != formal_hash_before:
+                status = "blocked_existing_backup"
+                reason = (
+                    "Existing formal backup does not match the current formal translation; "
+                    "refusing to overwrite without manual cleanup."
+                )
+            else:
+                if not backup_hash_before:
+                    _copy_text_atomic(formal_path, backup_path)
+                _copy_text_atomic(published_path, formal_path)
+                replaced = True
+                status = "replaced"
+                reason = (
+                    "published_full.md was promoted into formal_full.md; "
+                    "the previous formal translation was preserved."
+                )
+    elif not replace_available:
+        reason = "Formal replacement is not ready because required publication or baseline files are missing."
+
+    formal_hash_after = _file_sha256(formal_path)
+    backup_hash_after = _file_sha256(backup_path)
+    return {
+        "schema_version": FORMAL_REPLACE_SCHEMA_VERSION,
+        "summary": {
+            "repair_publish_schema_version": repair_publish.get("schema_version"),
+            "confirmed": bool(confirm),
+            "published": published,
+            "replace_available": replace_available,
+            "replaced": replaced,
+            "already_applied": already_applied,
+            "replace_status": status,
+            "reason": reason,
+            "publish_status": publish_summary.get("publish_status") or "",
+            "formal_initialized_from_original": formal_initialized_from_original,
+            "original_full_path": original_path.as_posix() if original_path else "",
+            "published_full_path": published_path.as_posix() if published_path else "",
+            "formal_full_path": formal_path.as_posix() if formal_path else "",
+            "backup_full_path": backup_path.as_posix() if backup_path else "",
+            "original_sha256": original_hash,
+            "published_sha256": published_hash,
+            "formal_sha256_before": formal_hash_before,
+            "formal_sha256_after": formal_hash_after,
+            "backup_sha256_before": backup_hash_before,
+            "backup_sha256_after": backup_hash_after,
+            "formal_matches_published": bool(formal_hash_after and published_hash and formal_hash_after == published_hash),
+            "backup_matches_formal_before": bool(
+                backup_hash_after and formal_hash_before and backup_hash_after == formal_hash_before
+            ),
+            "rollback_available": bool(backup_hash_after and formal_hash_after),
+            "warnings": warnings,
+        },
+        "source": {
+            "repair_publish_summary": publish_summary,
+        },
+    }
+
+
+def repair_formal_replace_to_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary", {})
+    warnings = summary.get("warnings") if isinstance(summary.get("warnings"), list) else []
+    lines = [
+        "# Repair Formal Replacement",
+        "",
+        "| Metric | Value |",
+        "| --- | --- |",
+        f"| Status | `{summary.get('replace_status') or '-'}` |",
+        f"| Confirmed | {summary.get('confirmed', False)} |",
+        f"| Replaced | {summary.get('replaced', False)} |",
+        f"| Already applied | {summary.get('already_applied', False)} |",
+        f"| Formal initialized from original | {summary.get('formal_initialized_from_original', False)} |",
+        f"| Formal matches published | {summary.get('formal_matches_published', False)} |",
+        f"| Rollback available | {summary.get('rollback_available', False)} |",
+        f"| Formal copy | `{summary.get('formal_full_path') or '-'}` |",
+        f"| Published repair copy | `{summary.get('published_full_path') or '-'}` |",
+        f"| Formal backup | `{summary.get('backup_full_path') or '-'}` |",
+        "",
+        summary.get("reason") or "",
+    ]
+    if warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- {warning}" for warning in warnings)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_repair_formal_replace(
+    repair_publish: dict[str, Any],
+    json_path: Path,
+    markdown_path: Path,
+    *,
+    confirm: bool = False,
+    original_full_path: Path | None = None,
+    published_full_path: Path | None = None,
+    formal_full_path: Path | None = None,
+    backup_full_path: Path | None = None,
+) -> dict[str, Any]:
+    report = build_repair_formal_replace(
+        repair_publish,
+        confirm=confirm,
+        original_full_path=original_full_path,
+        published_full_path=published_full_path,
+        formal_full_path=formal_full_path or json_path.parent / "formal_full.md",
+        backup_full_path=backup_full_path or json_path.parent / "formal_full.before_repair.md",
+    )
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(repair_formal_replace_to_markdown(report), encoding="utf-8")
+    return report
+
+
+def build_repair_formal_rollback(
+    repair_formal_replace: dict[str, Any],
+    *,
+    confirm: bool = False,
+    formal_full_path: Path | None = None,
+    backup_full_path: Path | None = None,
+    active_before_rollback_path: Path | None = None,
+) -> dict[str, Any]:
+    """Restore formal_full.md from the preserved pre-repair formal backup."""
+    replace_summary = (
+        repair_formal_replace.get("summary")
+        if isinstance(repair_formal_replace.get("summary"), dict)
+        else {}
+    )
+    formal_path_text = str(replace_summary.get("formal_full_path") or "")
+    backup_path_text = str(replace_summary.get("backup_full_path") or "")
+    formal_path = formal_full_path or (Path(formal_path_text) if formal_path_text else None)
+    backup_path = backup_full_path or (Path(backup_path_text) if backup_path_text else None)
+    before_path = active_before_rollback_path
+
+    replaced = bool(replace_summary.get("replaced"))
+    formal_exists = bool(formal_path and formal_path.is_file())
+    backup_exists = bool(backup_path and backup_path.is_file())
+    rollback_available = replaced and formal_exists and backup_exists
+    status = "pending_confirmation" if rollback_available else "not_ready"
+    reason = "Explicit confirmation is required before rolling back the formal translation copy."
+    rollback_applied = False
+    warnings: list[str] = []
+
+    if not replaced:
+        warnings.append("Formal replacement has not been applied.")
+    if not formal_exists:
+        warnings.append("formal_full.md is missing.")
+    if not backup_exists:
+        warnings.append("formal_full.before_repair.md is missing.")
+
+    formal_hash_before = _file_sha256(formal_path)
+    backup_hash = _file_sha256(backup_path)
+    active_before_hash_before = _file_sha256(before_path)
+
+    if confirm:
+        if not replaced:
+            status = "blocked_not_replaced"
+            reason = "Formal replacement has not been applied; rollback was not executed."
+        elif not formal_exists:
+            status = "blocked_missing_formal"
+            reason = "formal_full.md is missing; rollback was not executed."
+        elif not backup_exists:
+            status = "blocked_missing_backup"
+            reason = "formal_full.before_repair.md is missing; rollback was not executed."
+        elif before_path is None:
+            status = "blocked_missing_active_snapshot"
+            reason = "Active formal snapshot path is missing; rollback was not executed."
+        else:
+            _copy_text_atomic(formal_path, before_path)
+            _copy_text_atomic(backup_path, formal_path)
+            rollback_applied = True
+            status = "rolled_back"
+            reason = (
+                "formal_full.md was restored from the pre-repair backup; "
+                "the active repaired formal copy was preserved."
+            )
+    elif not rollback_available:
+        reason = "Formal rollback is not ready because replacement or backup evidence is missing."
+
+    formal_hash_after = _file_sha256(formal_path)
+    active_before_hash_after = _file_sha256(before_path)
+    return {
+        "schema_version": FORMAL_ROLLBACK_SCHEMA_VERSION,
+        "summary": {
+            "repair_formal_replace_schema_version": repair_formal_replace.get("schema_version"),
+            "confirmed": bool(confirm),
+            "rollback_available": rollback_available,
+            "rollback_applied": rollback_applied,
+            "rollback_status": status,
+            "reason": reason,
+            "replace_status": replace_summary.get("replace_status") or "",
+            "replaced": replaced,
+            "formal_full_path": formal_path.as_posix() if formal_path else "",
+            "backup_full_path": backup_path.as_posix() if backup_path else "",
+            "active_before_rollback_path": before_path.as_posix() if before_path else "",
+            "formal_sha256_before": formal_hash_before,
+            "formal_sha256_after": formal_hash_after,
+            "backup_sha256": backup_hash,
+            "active_before_rollback_sha256_before": active_before_hash_before,
+            "active_before_rollback_sha256_after": active_before_hash_after,
+            "formal_matches_backup": bool(formal_hash_after and backup_hash and formal_hash_after == backup_hash),
+            "active_snapshot_matches_formal_before": bool(
+                active_before_hash_after
+                and formal_hash_before
+                and active_before_hash_after == formal_hash_before
+            ),
+            "warnings": warnings,
+        },
+        "source": {
+            "repair_formal_replace_summary": replace_summary,
+        },
+    }
+
+
+def repair_formal_rollback_to_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary", {})
+    warnings = summary.get("warnings") if isinstance(summary.get("warnings"), list) else []
+    lines = [
+        "# Repair Formal Rollback",
+        "",
+        "| Metric | Value |",
+        "| --- | --- |",
+        f"| Status | `{summary.get('rollback_status') or '-'}` |",
+        f"| Confirmed | {summary.get('confirmed', False)} |",
+        f"| Rollback applied | {summary.get('rollback_applied', False)} |",
+        f"| Formal matches backup | {summary.get('formal_matches_backup', False)} |",
+        f"| Formal copy | `{summary.get('formal_full_path') or '-'}` |",
+        f"| Formal backup | `{summary.get('backup_full_path') or '-'}` |",
+        f"| Active snapshot | `{summary.get('active_before_rollback_path') or '-'}` |",
+        "",
+        summary.get("reason") or "",
+    ]
+    if warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- {warning}" for warning in warnings)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_repair_formal_rollback(
+    repair_formal_replace: dict[str, Any],
+    json_path: Path,
+    markdown_path: Path,
+    *,
+    confirm: bool = False,
+    formal_full_path: Path | None = None,
+    backup_full_path: Path | None = None,
+    active_before_rollback_path: Path | None = None,
+) -> dict[str, Any]:
+    report = build_repair_formal_rollback(
+        repair_formal_replace,
+        confirm=confirm,
+        formal_full_path=formal_full_path,
+        backup_full_path=backup_full_path,
+        active_before_rollback_path=active_before_rollback_path
+        or json_path.parent / "formal_full.repair_applied.md",
+    )
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(repair_formal_rollback_to_markdown(report), encoding="utf-8")
     return report

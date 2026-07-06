@@ -41,6 +41,8 @@ from pdf_translate.qa.repair import (
     build_repair_merge,
     build_repair_publish,
     build_repair_rollback,
+    build_repair_formal_replace,
+    build_repair_formal_rollback,
     build_repair_validation,
 )
 from pdf_translate.qa.structure import build_structure_qa
@@ -1851,6 +1853,98 @@ class StructureIRTests(unittest.TestCase):
             )
             self.assertEqual(blocked_rollback["summary"]["rollback_status"], "blocked_unpublished")
             self.assertFalse((root / "blocked_rollback_full.md").exists())
+            draft_formal_replace = build_repair_formal_replace(
+                confirmed_publish,
+                original_full_path=chunk_dir / "c0000.md",
+                published_full_path=root / "published_full.md",
+                formal_full_path=root / "formal_full.md",
+                backup_full_path=root / "formal_full.before_repair.md",
+            )
+            self.assertEqual(draft_formal_replace["schema_version"], "repair-formal-replace-v1")
+            self.assertTrue(draft_formal_replace["summary"]["replace_available"])
+            self.assertFalse(draft_formal_replace["summary"]["replaced"])
+            self.assertEqual(draft_formal_replace["summary"]["replace_status"], "pending_confirmation")
+            self.assertFalse((root / "formal_full.md").exists())
+            confirmed_formal_replace = build_repair_formal_replace(
+                confirmed_publish,
+                confirm=True,
+                original_full_path=chunk_dir / "c0000.md",
+                published_full_path=root / "published_full.md",
+                formal_full_path=root / "formal_full.md",
+                backup_full_path=root / "formal_full.before_repair.md",
+            )
+            self.assertTrue(confirmed_formal_replace["summary"]["confirmed"])
+            self.assertTrue(confirmed_formal_replace["summary"]["replaced"])
+            self.assertTrue(confirmed_formal_replace["summary"]["formal_initialized_from_original"])
+            self.assertEqual(confirmed_formal_replace["summary"]["replace_status"], "replaced")
+            self.assertTrue(confirmed_formal_replace["summary"]["formal_matches_published"])
+            self.assertTrue(confirmed_formal_replace["summary"]["backup_matches_formal_before"])
+            self.assertEqual((root / "formal_full.md").read_text(encoding="utf-8"), published_text)
+            self.assertEqual(
+                (root / "formal_full.before_repair.md").read_text(encoding="utf-8"),
+                (chunk_dir / "c0000.md").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                (chunk_dir / "c0000.md").read_text(encoding="utf-8"),
+                (root / "formal_full.before_repair.md").read_text(encoding="utf-8"),
+            )
+            repeated_formal_replace = build_repair_formal_replace(
+                confirmed_publish,
+                confirm=True,
+                original_full_path=chunk_dir / "c0000.md",
+                published_full_path=root / "published_full.md",
+                formal_full_path=root / "formal_full.md",
+                backup_full_path=root / "formal_full.before_repair.md",
+            )
+            self.assertTrue(repeated_formal_replace["summary"]["replaced"])
+            self.assertTrue(repeated_formal_replace["summary"]["already_applied"])
+            self.assertEqual(repeated_formal_replace["summary"]["replace_status"], "already_applied")
+            blocked_formal_replace = build_repair_formal_replace(
+                draft_publish,
+                confirm=True,
+                original_full_path=chunk_dir / "c0000.md",
+                published_full_path=root / "missing_published_full.md",
+                formal_full_path=root / "blocked_formal_full.md",
+                backup_full_path=root / "blocked_formal_full.before_repair.md",
+            )
+            self.assertEqual(blocked_formal_replace["summary"]["replace_status"], "blocked_unpublished")
+            self.assertFalse((root / "blocked_formal_full.md").exists())
+            draft_formal_rollback = build_repair_formal_rollback(
+                confirmed_formal_replace,
+                formal_full_path=root / "formal_full.md",
+                backup_full_path=root / "formal_full.before_repair.md",
+                active_before_rollback_path=root / "formal_full.repair_applied.md",
+            )
+            self.assertEqual(draft_formal_rollback["schema_version"], "repair-formal-rollback-v1")
+            self.assertTrue(draft_formal_rollback["summary"]["rollback_available"])
+            self.assertFalse(draft_formal_rollback["summary"]["rollback_applied"])
+            self.assertEqual(draft_formal_rollback["summary"]["rollback_status"], "pending_confirmation")
+            confirmed_formal_rollback = build_repair_formal_rollback(
+                confirmed_formal_replace,
+                confirm=True,
+                formal_full_path=root / "formal_full.md",
+                backup_full_path=root / "formal_full.before_repair.md",
+                active_before_rollback_path=root / "formal_full.repair_applied.md",
+            )
+            self.assertTrue(confirmed_formal_rollback["summary"]["confirmed"])
+            self.assertTrue(confirmed_formal_rollback["summary"]["rollback_applied"])
+            self.assertEqual(confirmed_formal_rollback["summary"]["rollback_status"], "rolled_back")
+            self.assertTrue(confirmed_formal_rollback["summary"]["formal_matches_backup"])
+            self.assertEqual(
+                (root / "formal_full.md").read_text(encoding="utf-8"),
+                (chunk_dir / "c0000.md").read_text(encoding="utf-8"),
+            )
+            self.assertEqual((root / "formal_full.repair_applied.md").read_text(encoding="utf-8"), published_text)
+            self.assertEqual((root / "published_full.md").read_text(encoding="utf-8"), published_text)
+            blocked_formal_rollback = build_repair_formal_rollback(
+                confirmed_formal_replace,
+                confirm=True,
+                formal_full_path=root / "formal_full.md",
+                backup_full_path=root / "missing_formal_backup.md",
+                active_before_rollback_path=root / "blocked_formal_full.repair_applied.md",
+            )
+            self.assertEqual(blocked_formal_rollback["summary"]["rollback_status"], "blocked_missing_backup")
+            self.assertFalse((root / "blocked_formal_full.repair_applied.md").exists())
         finally:
             if root.exists():
                 shutil.rmtree(root)
@@ -4480,6 +4574,27 @@ class StructureIRTests(unittest.TestCase):
                     "rollback_matches_original": True,
                 },
             },
+            repair_formal_replace={
+                "schema_version": "repair-formal-replace-v1",
+                "summary": {
+                    "replace_available": True,
+                    "confirmed": True,
+                    "replaced": True,
+                    "replace_status": "replaced",
+                    "formal_matches_published": True,
+                    "rollback_available": True,
+                },
+            },
+            repair_formal_rollback={
+                "schema_version": "repair-formal-rollback-v1",
+                "summary": {
+                    "rollback_available": True,
+                    "confirmed": True,
+                    "rollback_applied": True,
+                    "rollback_status": "rolled_back",
+                    "formal_matches_backup": True,
+                },
+            },
             translated_pdf_report={
                 "schema_version": "translated-pdf-report-v1",
                 "summary": {
@@ -4644,6 +4759,24 @@ class StructureIRTests(unittest.TestCase):
         self.assertTrue(metrics["quality"]["repair_rollback_matches_original"])
         self.assertEqual(metrics["rates"]["repair_rollback_success_rate"], 1.0)
         self.assertEqual(metrics["breakdowns"]["repair_rollback_status_counts"]["rolled_back"], 1)
+        self.assertTrue(metrics["quality"]["repair_formal_replace_available"])
+        self.assertTrue(metrics["quality"]["repair_formal_replace_confirmed"])
+        self.assertTrue(metrics["quality"]["repair_formal_replace_replaced"])
+        self.assertTrue(metrics["quality"]["repair_formal_replace_matches_published"])
+        self.assertTrue(metrics["quality"]["repair_formal_replace_rollback_available"])
+        self.assertTrue(metrics["quality"]["repair_formal_rollback_available"])
+        self.assertTrue(metrics["quality"]["repair_formal_rollback_confirmed"])
+        self.assertTrue(metrics["quality"]["repair_formal_rollback_applied"])
+        self.assertTrue(metrics["quality"]["repair_formal_rollback_matches_backup"])
+        self.assertEqual(metrics["rates"]["repair_formal_replace_success_rate"], 1.0)
+        self.assertEqual(metrics["rates"]["repair_formal_rollback_success_rate"], 1.0)
+        self.assertEqual(metrics["breakdowns"]["repair_formal_replace_status_counts"]["replaced"], 1)
+        self.assertEqual(metrics["breakdowns"]["repair_formal_rollback_status_counts"]["rolled_back"], 1)
+        self.assertEqual(metrics["evidence_files"]["repair_formal_full"], "output/formal_full.md")
+        self.assertEqual(
+            metrics["evidence_files"]["repair_formal_backup_full"],
+            "output/formal_full.before_repair.md",
+        )
         self.assertEqual(metrics["quality"]["post_repair_issue_count"], 3)
         self.assertEqual(metrics["quality"]["post_repair_issue_delta"], 1)
         self.assertEqual(metrics["quality"]["post_repair_table_cell_token_error_count"], 1)
@@ -5903,11 +6036,18 @@ class StructureIRTests(unittest.TestCase):
             repair_publish_md_path = work_dir / "output" / "repair_publish.md"
             repair_rollback_path = work_dir / "output" / "repair_rollback.json"
             repair_rollback_md_path = work_dir / "output" / "repair_rollback.md"
+            repair_formal_replace_path = work_dir / "output" / "repair_formal_replace.json"
+            repair_formal_replace_md_path = work_dir / "output" / "repair_formal_replace.md"
+            repair_formal_rollback_path = work_dir / "output" / "repair_formal_rollback.json"
+            repair_formal_rollback_md_path = work_dir / "output" / "repair_formal_rollback.md"
             repair_merge_qa_path = work_dir / "output" / "repair_merge_qa.json"
             repair_merge_qa_md_path = work_dir / "output" / "repair_merge_qa.md"
             repaired_full_path = work_dir / "output" / "repaired_full.md"
             published_full_path = work_dir / "output" / "published_full.md"
             rollback_full_path = work_dir / "output" / "rollback_full.md"
+            formal_full_path = work_dir / "output" / "formal_full.md"
+            formal_backup_full_path = work_dir / "output" / "formal_full.before_repair.md"
+            formal_active_before_rollback_path = work_dir / "output" / "formal_full.repair_applied.md"
             metrics_path = work_dir / "output" / "experiment_metrics.json"
             run_metrics_path = work_dir / "output" / "run_metrics.json"
             run_log_path = work_dir / "output" / "run_log.jsonl"
@@ -5956,11 +6096,18 @@ class StructureIRTests(unittest.TestCase):
             self.assertTrue(repair_publish_md_path.is_file())
             self.assertTrue(repair_rollback_path.is_file())
             self.assertTrue(repair_rollback_md_path.is_file())
+            self.assertTrue(repair_formal_replace_path.is_file())
+            self.assertTrue(repair_formal_replace_md_path.is_file())
+            self.assertTrue(repair_formal_rollback_path.is_file())
+            self.assertTrue(repair_formal_rollback_md_path.is_file())
             self.assertTrue(repair_merge_qa_path.is_file())
             self.assertTrue(repair_merge_qa_md_path.is_file())
             self.assertTrue(repaired_full_path.is_file())
             self.assertFalse(published_full_path.exists())
             self.assertFalse(rollback_full_path.exists())
+            self.assertFalse(formal_full_path.exists())
+            self.assertFalse(formal_backup_full_path.exists())
+            self.assertFalse(formal_active_before_rollback_path.exists())
             self.assertTrue(metrics_path.is_file())
             self.assertTrue(run_metrics_path.is_file())
             self.assertTrue(run_log_path.is_file())
@@ -5995,6 +6142,8 @@ class StructureIRTests(unittest.TestCase):
             repair_patch_review = json.loads(repair_patch_review_path.read_text(encoding="utf-8"))
             repair_publish = json.loads(repair_publish_path.read_text(encoding="utf-8"))
             repair_rollback = json.loads(repair_rollback_path.read_text(encoding="utf-8"))
+            repair_formal_replace = json.loads(repair_formal_replace_path.read_text(encoding="utf-8"))
+            repair_formal_rollback = json.loads(repair_formal_rollback_path.read_text(encoding="utf-8"))
             repair_merge_qa = json.loads(repair_merge_qa_path.read_text(encoding="utf-8"))
             metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
             run_metrics = json.loads(run_metrics_path.read_text(encoding="utf-8"))
@@ -6131,6 +6280,14 @@ class StructureIRTests(unittest.TestCase):
             self.assertFalse(repair_rollback["summary"]["confirmed"])
             self.assertFalse(repair_rollback["summary"]["rollback_applied"])
             self.assertEqual(repair_rollback["summary"]["rollback_status"], "not_ready")
+            self.assertEqual(repair_formal_replace["schema_version"], "repair-formal-replace-v1")
+            self.assertFalse(repair_formal_replace["summary"]["confirmed"])
+            self.assertFalse(repair_formal_replace["summary"]["replaced"])
+            self.assertEqual(repair_formal_replace["summary"]["replace_status"], "not_ready")
+            self.assertEqual(repair_formal_rollback["schema_version"], "repair-formal-rollback-v1")
+            self.assertFalse(repair_formal_rollback["summary"]["confirmed"])
+            self.assertFalse(repair_formal_rollback["summary"]["rollback_applied"])
+            self.assertEqual(repair_formal_rollback["summary"]["rollback_status"], "not_ready")
             self.assertEqual(repair_merge_qa["schema_version"], "translation-qa-v1")
             self.assertEqual(run_metrics["schema_version"], "run-metrics-v1")
             self.assertEqual(run_metrics["pipeline_variant"], "structure")
@@ -6145,6 +6302,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("repair_patch_review", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("repair_publish", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("repair_rollback", run_metrics["summary"]["stage_elapsed_ms"])
+            self.assertIn("repair_formal_replace", run_metrics["summary"]["stage_elapsed_ms"])
+            self.assertIn("repair_formal_rollback", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertIn("translated_pdf", run_metrics["summary"]["stage_elapsed_ms"])
             self.assertTrue(any(event["event_type"] == "chunk_translation" for event in run_log_lines))
             self.assertEqual(cost_estimate["schema_version"], "cost-estimate-v1")
@@ -6208,6 +6367,13 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(metrics["breakdowns"]["repair_publish_status_counts"]["pending_confirmation"], 1)
             self.assertEqual(metrics["evidence_files"]["repair_publish"], "output/repair_publish.json")
             self.assertEqual(metrics["evidence_files"]["repair_published_full"], "output/published_full.md")
+            self.assertEqual(metrics["evidence_files"]["repair_formal_replace"], "output/repair_formal_replace.json")
+            self.assertEqual(metrics["evidence_files"]["repair_formal_rollback"], "output/repair_formal_rollback.json")
+            self.assertEqual(metrics["evidence_files"]["repair_formal_full"], "output/formal_full.md")
+            self.assertEqual(
+                metrics["evidence_files"]["repair_formal_backup_full"],
+                "output/formal_full.before_repair.md",
+            )
             self.assertIn("entity_missing_rate", metrics["rates"])
             self.assertIn("split_boundary_rate", metrics["rates"])
             self.assertIn("budget_overflow_chunk_rate", metrics["rates"])
@@ -6335,10 +6501,17 @@ class StructureIRTests(unittest.TestCase):
                 "repair_publish.md",
                 "repair_rollback.json",
                 "repair_rollback.md",
+                "repair_formal_replace.json",
+                "repair_formal_replace.md",
+                "repair_formal_rollback.json",
+                "repair_formal_rollback.md",
                 "repair_merge_qa.json",
                 "repair_merge_qa.md",
                 "published_full.md",
                 "rollback_full.md",
+                "formal_full.md",
+                "formal_full.before_repair.md",
+                "formal_full.repair_applied.md",
                 "experiment_metrics.json",
                 "run_metrics.json",
                 "cost_estimate.json",
@@ -6363,6 +6536,10 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/repair_publish.md", rels)
             self.assertIn("output/repair_rollback.json", rels)
             self.assertIn("output/repair_rollback.md", rels)
+            self.assertIn("output/repair_formal_replace.json", rels)
+            self.assertIn("output/repair_formal_replace.md", rels)
+            self.assertIn("output/repair_formal_rollback.json", rels)
+            self.assertIn("output/repair_formal_rollback.md", rels)
             self.assertIn("output/repair_merge_qa.json", rels)
             self.assertIn("output/repairs/rq0000.md", rels)
             self.assertIn("output/repaired_chunks/c0000.md", rels)
@@ -6380,6 +6557,9 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/repaired_full.md", rels)
             self.assertIn("output/published_full.md", rels)
             self.assertIn("output/rollback_full.md", rels)
+            self.assertIn("output/formal_full.md", rels)
+            self.assertIn("output/formal_full.before_repair.md", rels)
+            self.assertIn("output/formal_full.repair_applied.md", rels)
             self.assertIn("output/translated_full.pdf", rels)
             self.assertIn("output/translated_pdf_report.json", rels)
             self.assertIn("output/bilingual.html", rels)
@@ -6397,6 +6577,13 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/experiment_metrics.json", rels)
             self.assertIn("output/run_metrics.json", rels)
             self.assertIn("output/cost_estimate.json", rels)
+            self.assertEqual(map_bundle_arcname("output/repair_formal_replace.json"), "质量/局部修复正式替换.json")
+            self.assertEqual(map_bundle_arcname("output/repair_formal_replace.md"), "质量/局部修复正式替换.md")
+            self.assertEqual(map_bundle_arcname("output/repair_formal_rollback.json"), "质量/局部修复正式回滚.json")
+            self.assertEqual(map_bundle_arcname("output/repair_formal_rollback.md"), "质量/局部修复正式回滚.md")
+            self.assertEqual(map_bundle_arcname("output/formal_full.md"), "译文/正式译文.md")
+            self.assertEqual(map_bundle_arcname("output/formal_full.before_repair.md"), "译文/正式译文修复前备份.md")
+            self.assertEqual(map_bundle_arcname("output/formal_full.repair_applied.md"), "译文/正式译文回滚前修复稿.md")
             self.assertEqual(map_bundle_arcname("output/bilingual.html"), "译文/双语对照.html")
             self.assertEqual(map_bundle_arcname("output/translated_full.pdf"), "译文/结构化译文.pdf")
             self.assertEqual(map_bundle_arcname("output/translated_pdf_report.json"), "质量/PDF译文生成报告.json")

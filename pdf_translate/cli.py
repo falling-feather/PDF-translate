@@ -110,6 +110,16 @@ def cmd_translate(
         "--rollback-repairs",
         help="人工确认后生成 rollback_full.md 回滚演练副本；不覆盖发布稿",
     ),
+    formal_replace_repairs: bool = typer.Option(
+        False,
+        "--formal-replace-repairs",
+        help="显式确认后把 published_full.md 提升为 formal_full.md，并保留覆盖前备份",
+    ),
+    formal_rollback_repairs: bool = typer.Option(
+        False,
+        "--formal-rollback-repairs",
+        help="显式确认后从 formal_full.before_repair.md 恢复 formal_full.md",
+    ),
     chunk_strategy: str = typer.Option(
         "page",
         "--chunk-strategy",
@@ -146,6 +156,8 @@ def cmd_translate(
         max_repair_requests=max_repair_requests,
         publish_repairs=publish_repairs,
         rollback_repairs=rollback_repairs,
+        formal_replace_repairs=formal_replace_repairs,
+        formal_rollback_repairs=formal_rollback_repairs,
         ocr_results_path=ocr_results,
         execute_ocr=execute_ocr,
         ocr_engine=ocr_engine,
@@ -250,6 +262,16 @@ def cmd_run(
         "--rollback-repairs",
         help="人工确认后生成 rollback_full.md 回滚演练副本；不覆盖发布稿",
     ),
+    formal_replace_repairs: bool = typer.Option(
+        False,
+        "--formal-replace-repairs",
+        help="显式确认后把 published_full.md 提升为 formal_full.md，并保留覆盖前备份",
+    ),
+    formal_rollback_repairs: bool = typer.Option(
+        False,
+        "--formal-rollback-repairs",
+        help="显式确认后从 formal_full.before_repair.md 恢复 formal_full.md",
+    ),
     chunk_strategy: str = typer.Option(
         "page",
         "--chunk-strategy",
@@ -289,6 +311,8 @@ def cmd_run(
         max_repair_requests=max_repair_requests,
         publish_repairs=publish_repairs,
         rollback_repairs=rollback_repairs,
+        formal_replace_repairs=formal_replace_repairs,
+        formal_rollback_repairs=formal_rollback_repairs,
         ocr_results_path=ocr_results,
         execute_ocr=execute_ocr,
         ocr_engine=ocr_engine,

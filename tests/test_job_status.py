@@ -11,6 +11,8 @@ from fastapi import HTTPException
 
 from pdf_translate.cli import app
 from pdf_translate.server.routes_web import (
+    _confirm_repair_formal_replace_for_record,
+    _confirm_repair_formal_rollback_for_record,
     _confirm_repair_publish_for_record,
     _confirm_repair_rollback_for_record,
     _confirm_table_structure_publish_for_record,
@@ -232,6 +234,11 @@ class JobStatusSnapshotTests(unittest.TestCase):
         (out / "published_full.md").write_text("published translation", encoding="utf-8")
         (out / "repair_rollback.md").write_text("# 回滚演练", encoding="utf-8")
         (out / "rollback_full.md").write_text("translated", encoding="utf-8")
+        (out / "repair_formal_replace.md").write_text("# formal replace", encoding="utf-8")
+        (out / "repair_formal_rollback.md").write_text("# formal rollback", encoding="utf-8")
+        (out / "formal_full.md").write_text("formal original", encoding="utf-8")
+        (out / "formal_full.before_repair.md").write_text("formal before", encoding="utf-8")
+        (out / "formal_full.repair_applied.md").write_text("formal repaired", encoding="utf-8")
         (out / "repair_publish.json").write_text(
             json.dumps(
                 {
@@ -257,6 +264,37 @@ class JobStatusSnapshotTests(unittest.TestCase):
                         "rollback_applied": True,
                         "rollback_status": "rolled_back",
                         "rollback_matches_original": True,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (out / "repair_formal_replace.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "repair-formal-replace-v1",
+                    "summary": {
+                        "replace_available": True,
+                        "confirmed": True,
+                        "replaced": True,
+                        "replace_status": "replaced",
+                        "formal_matches_published": True,
+                        "rollback_available": True,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (out / "repair_formal_rollback.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "repair-formal-rollback-v1",
+                    "summary": {
+                        "rollback_available": True,
+                        "confirmed": True,
+                        "rollback_applied": True,
+                        "rollback_status": "rolled_back",
+                        "formal_matches_backup": True,
                     },
                 }
             ),
@@ -330,6 +368,27 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertGreater(merged[0]["repair_published_full_bytes"], 0)
         self.assertTrue(merged[0]["repair_rollback_full_ready"])
         self.assertGreater(merged[0]["repair_rollback_full_bytes"], 0)
+        self.assertTrue(merged[0]["repair_formal_replace_report_ready"])
+        self.assertGreater(merged[0]["repair_formal_replace_report_bytes"], 0)
+        self.assertTrue(merged[0]["repair_formal_replace_available"])
+        self.assertTrue(merged[0]["repair_formal_replace_confirmed"])
+        self.assertTrue(merged[0]["repair_formal_replace_replaced"])
+        self.assertEqual(merged[0]["repair_formal_replace_status"], "replaced")
+        self.assertTrue(merged[0]["repair_formal_replace_matches_published"])
+        self.assertTrue(merged[0]["repair_formal_replace_rollback_available"])
+        self.assertTrue(merged[0]["repair_formal_rollback_report_ready"])
+        self.assertGreater(merged[0]["repair_formal_rollback_report_bytes"], 0)
+        self.assertTrue(merged[0]["repair_formal_rollback_available"])
+        self.assertTrue(merged[0]["repair_formal_rollback_confirmed"])
+        self.assertTrue(merged[0]["repair_formal_rollback_applied"])
+        self.assertEqual(merged[0]["repair_formal_rollback_status"], "rolled_back")
+        self.assertTrue(merged[0]["repair_formal_rollback_matches_backup"])
+        self.assertTrue(merged[0]["repair_formal_full_ready"])
+        self.assertGreater(merged[0]["repair_formal_full_bytes"], 0)
+        self.assertTrue(merged[0]["repair_formal_backup_full_ready"])
+        self.assertGreater(merged[0]["repair_formal_backup_full_bytes"], 0)
+        self.assertTrue(merged[0]["repair_formal_active_before_rollback_full_ready"])
+        self.assertGreater(merged[0]["repair_formal_active_before_rollback_full_bytes"], 0)
         self.assertIn("repair_publish_open_issues", merged[0]["artifact_warnings"])
         self.assertIn("repair_patch_review_blocking_items", merged[0]["artifact_warnings"])
         self.assertIn("table_merged_cell_review_required_items", merged[0]["artifact_warnings"])
@@ -415,6 +474,94 @@ class JobStatusSnapshotTests(unittest.TestCase):
         merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
         self.assertTrue(merged[0]["repair_rollback_applied"])
         self.assertTrue(merged[0]["repair_rollback_full_ready"])
+
+    def test_confirm_repair_formal_replace_for_completed_job_writes_formal_copy(self) -> None:
+        root = self._case_root("repair-formal-replace-confirm")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        out = rec.work_dir / "output"
+        out.mkdir()
+        (out / "translated_full.md").write_text("original translation", encoding="utf-8")
+        (out / "published_full.md").write_text("published translation", encoding="utf-8")
+        (out / "repair_publish.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "repair-publish-v1",
+                    "summary": {
+                        "confirmed": True,
+                        "published": True,
+                        "publish_status": "published",
+                        "original_full_path": (out / "translated_full.md").as_posix(),
+                        "published_full_path": (out / "published_full.md").as_posix(),
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        registry.update(rec.job_id, status="done", phase="done")
+
+        report = _confirm_repair_formal_replace_for_record(rec)
+
+        self.assertTrue((out / "repair_formal_replace.json").is_file())
+        self.assertTrue((out / "repair_formal_replace.md").is_file())
+        self.assertEqual((out / "formal_full.md").read_text(encoding="utf-8"), "published translation")
+        self.assertEqual((out / "formal_full.before_repair.md").read_text(encoding="utf-8"), "original translation")
+        self.assertEqual((out / "translated_full.md").read_text(encoding="utf-8"), "original translation")
+        self.assertEqual((out / "published_full.md").read_text(encoding="utf-8"), "published translation")
+        self.assertTrue(report["summary"]["confirmed"])
+        self.assertTrue(report["summary"]["replaced"])
+        self.assertEqual(report["summary"]["replace_status"], "replaced")
+        self.assertTrue(report["summary"]["formal_matches_published"])
+        merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
+        self.assertTrue(merged[0]["repair_formal_replace_replaced"])
+        self.assertTrue(merged[0]["repair_formal_full_ready"])
+        self.assertTrue(merged[0]["repair_formal_backup_full_ready"])
+
+    def test_confirm_repair_formal_rollback_for_completed_job_restores_formal_copy(self) -> None:
+        root = self._case_root("repair-formal-rollback-confirm")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        out = rec.work_dir / "output"
+        out.mkdir()
+        (out / "translated_full.md").write_text("original translation", encoding="utf-8")
+        (out / "published_full.md").write_text("published translation", encoding="utf-8")
+        (out / "formal_full.md").write_text("published translation", encoding="utf-8")
+        (out / "formal_full.before_repair.md").write_text("original translation", encoding="utf-8")
+        (out / "repair_formal_replace.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "repair-formal-replace-v1",
+                    "summary": {
+                        "confirmed": True,
+                        "replaced": True,
+                        "replace_status": "replaced",
+                        "formal_full_path": (out / "formal_full.md").as_posix(),
+                        "backup_full_path": (out / "formal_full.before_repair.md").as_posix(),
+                        "published_full_path": (out / "published_full.md").as_posix(),
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        registry.update(rec.job_id, status="done", phase="done")
+
+        report = _confirm_repair_formal_rollback_for_record(rec)
+
+        self.assertTrue((out / "repair_formal_rollback.json").is_file())
+        self.assertTrue((out / "repair_formal_rollback.md").is_file())
+        self.assertEqual((out / "formal_full.md").read_text(encoding="utf-8"), "original translation")
+        self.assertEqual((out / "formal_full.repair_applied.md").read_text(encoding="utf-8"), "published translation")
+        self.assertEqual((out / "published_full.md").read_text(encoding="utf-8"), "published translation")
+        self.assertEqual((out / "translated_full.md").read_text(encoding="utf-8"), "original translation")
+        self.assertTrue(report["summary"]["confirmed"])
+        self.assertTrue(report["summary"]["rollback_applied"])
+        self.assertEqual(report["summary"]["rollback_status"], "rolled_back")
+        self.assertTrue(report["summary"]["formal_matches_backup"])
+        merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
+        self.assertTrue(merged[0]["repair_formal_rollback_applied"])
+        self.assertTrue(merged[0]["repair_formal_active_before_rollback_full_ready"])
 
     def test_confirm_repair_publish_respects_existing_patch_review_gate(self) -> None:
         root = self._case_root("repair-publish-patch-review-gate")

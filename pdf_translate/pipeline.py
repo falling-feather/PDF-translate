@@ -27,6 +27,8 @@ from pdf_translate.qa.ocr_candidates import write_ocr_candidate_qa
 from pdf_translate.qa.repair import (
     write_repair_plan,
     write_repair_patch_review,
+    write_repair_formal_replace,
+    write_repair_formal_rollback,
     write_repair_requests,
     write_repair_results,
     write_repair_merge,
@@ -255,6 +257,8 @@ def run_translate(
     max_repair_requests: int | None = None,
     publish_repairs: bool = False,
     rollback_repairs: bool = False,
+    formal_replace_repairs: bool = False,
+    formal_rollback_repairs: bool = False,
     ocr_results_path: Path | None = None,
     execute_ocr: bool = False,
     ocr_engine: str = "tesseract_cli",
@@ -564,6 +568,27 @@ def run_translate(
                 published_full_path=out_dir / "published_full.md",
                 rollback_full_path=out_dir / "rollback_full.md",
             )
+        with run_metrics.stage("repair_formal_replace", confirmed=formal_replace_repairs):
+            repair_formal_replace = write_repair_formal_replace(
+                repair_publish,
+                out_dir / "repair_formal_replace.json",
+                out_dir / "repair_formal_replace.md",
+                confirm=formal_replace_repairs,
+                original_full_path=out_dir / "translated_full.md",
+                published_full_path=out_dir / "published_full.md",
+                formal_full_path=out_dir / "formal_full.md",
+                backup_full_path=out_dir / "formal_full.before_repair.md",
+            )
+        with run_metrics.stage("repair_formal_rollback", confirmed=formal_rollback_repairs):
+            repair_formal_rollback = write_repair_formal_rollback(
+                repair_formal_replace,
+                out_dir / "repair_formal_rollback.json",
+                out_dir / "repair_formal_rollback.md",
+                confirm=formal_rollback_repairs,
+                formal_full_path=out_dir / "formal_full.md",
+                backup_full_path=out_dir / "formal_full.before_repair.md",
+                active_before_rollback_path=out_dir / "formal_full.repair_applied.md",
+            )
         with run_metrics.stage("bilingual_html"):
             write_bilingual_html(
                 chunks,
@@ -632,6 +657,8 @@ def run_translate(
             repair_merge_qa=repair_merge_qa,
             repair_publish=repair_publish,
             repair_rollback=repair_rollback,
+            repair_formal_replace=repair_formal_replace,
+            repair_formal_rollback=repair_formal_rollback,
             translated_pdf_report=translated_pdf_report,
             run_metrics=run_metrics_summary,
             cost_estimate=cost_estimate,

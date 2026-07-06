@@ -36,6 +36,11 @@ DEFAULT_EVIDENCE_FILES = {
     "repair_published_full": "output/published_full.md",
     "repair_rollback": "output/repair_rollback.json",
     "repair_rollback_full": "output/rollback_full.md",
+    "repair_formal_replace": "output/repair_formal_replace.json",
+    "repair_formal_rollback": "output/repair_formal_rollback.json",
+    "repair_formal_full": "output/formal_full.md",
+    "repair_formal_backup_full": "output/formal_full.before_repair.md",
+    "repair_formal_active_before_rollback_full": "output/formal_full.repair_applied.md",
     "translated_pdf": "output/translated_full.pdf",
     "translated_pdf_report": "output/translated_pdf_report.json",
     "run_metrics": "output/run_metrics.json",
@@ -124,6 +129,8 @@ def build_experiment_metrics(
     repair_merge_qa: dict[str, Any] | None = None,
     repair_publish: dict[str, Any] | None = None,
     repair_rollback: dict[str, Any] | None = None,
+    repair_formal_replace: dict[str, Any] | None = None,
+    repair_formal_rollback: dict[str, Any] | None = None,
     translated_pdf_report: dict[str, Any] | None = None,
     run_metrics: dict[str, Any] | None = None,
     cost_estimate: dict[str, Any] | None = None,
@@ -155,6 +162,8 @@ def build_experiment_metrics(
     repair_merge_qa_summary = _summary(repair_merge_qa)
     repair_publish_summary = _summary(repair_publish)
     repair_rollback_summary = _summary(repair_rollback)
+    repair_formal_replace_summary = _summary(repair_formal_replace)
+    repair_formal_rollback_summary = _summary(repair_formal_rollback)
     translated_pdf_summary = _summary(translated_pdf_report)
     run_summary = _summary(run_metrics)
     cost_summary = _summary(cost_estimate)
@@ -695,6 +704,23 @@ def build_experiment_metrics(
     repair_rollback_applied = _as_bool(repair_rollback_summary.get("rollback_applied"))
     repair_rollback_matches_original = _as_bool(repair_rollback_summary.get("rollback_matches_original"))
     repair_rollback_status = str(repair_rollback_summary.get("rollback_status") or "")
+    repair_formal_replace_available = _as_bool(repair_formal_replace_summary.get("replace_available"))
+    repair_formal_replace_confirmed = _as_bool(repair_formal_replace_summary.get("confirmed"))
+    repair_formal_replace_replaced = _as_bool(repair_formal_replace_summary.get("replaced"))
+    repair_formal_replace_matches_published = _as_bool(
+        repair_formal_replace_summary.get("formal_matches_published")
+    )
+    repair_formal_replace_rollback_available = _as_bool(
+        repair_formal_replace_summary.get("rollback_available")
+    )
+    repair_formal_replace_status = str(repair_formal_replace_summary.get("replace_status") or "")
+    repair_formal_rollback_available = _as_bool(repair_formal_rollback_summary.get("rollback_available"))
+    repair_formal_rollback_confirmed = _as_bool(repair_formal_rollback_summary.get("confirmed"))
+    repair_formal_rollback_applied = _as_bool(repair_formal_rollback_summary.get("rollback_applied"))
+    repair_formal_rollback_matches_backup = _as_bool(
+        repair_formal_rollback_summary.get("formal_matches_backup")
+    )
+    repair_formal_rollback_status = str(repair_formal_rollback_summary.get("rollback_status") or "")
     post_repair_issue_count = _as_int(repair_merge_qa_summary.get("issue_count"))
     post_repair_table_shape_error_count = _as_int(repair_merge_qa_summary.get("table_shape_error_count"))
     post_repair_table_cell_token_error_count = _as_int(repair_merge_qa_summary.get("table_cell_token_error_count"))
@@ -1050,6 +1076,15 @@ def build_experiment_metrics(
             "repair_rollback_confirmed": repair_rollback_confirmed,
             "repair_rollback_applied": repair_rollback_applied,
             "repair_rollback_matches_original": repair_rollback_matches_original,
+            "repair_formal_replace_available": repair_formal_replace_available,
+            "repair_formal_replace_confirmed": repair_formal_replace_confirmed,
+            "repair_formal_replace_replaced": repair_formal_replace_replaced,
+            "repair_formal_replace_matches_published": repair_formal_replace_matches_published,
+            "repair_formal_replace_rollback_available": repair_formal_replace_rollback_available,
+            "repair_formal_rollback_available": repair_formal_rollback_available,
+            "repair_formal_rollback_confirmed": repair_formal_rollback_confirmed,
+            "repair_formal_rollback_applied": repair_formal_rollback_applied,
+            "repair_formal_rollback_matches_backup": repair_formal_rollback_matches_backup,
             "post_repair_issue_count": post_repair_issue_count,
             "post_repair_issue_delta": translation_issue_count - post_repair_issue_count,
             "post_repair_table_shape_error_count": post_repair_table_shape_error_count,
@@ -1278,6 +1313,14 @@ def build_experiment_metrics(
                 int(repair_rollback_applied),
                 int(repair_rollback_confirmed),
             ),
+            "repair_formal_replace_success_rate": _rate(
+                int(repair_formal_replace_replaced),
+                int(repair_formal_replace_confirmed),
+            ),
+            "repair_formal_rollback_success_rate": _rate(
+                int(repair_formal_rollback_applied),
+                int(repair_formal_rollback_confirmed),
+            ),
             "post_repair_issue_reduction_rate": _rate(
                 translation_issue_count - post_repair_issue_count,
                 translation_issue_count,
@@ -1454,6 +1497,12 @@ def build_experiment_metrics(
             "repair_patch_review_risk_counts": repair_patch_review_risk_counts,
             "repair_publish_status_counts": {repair_publish_status: 1} if repair_publish_status else {},
             "repair_rollback_status_counts": {repair_rollback_status: 1} if repair_rollback_status else {},
+            "repair_formal_replace_status_counts": (
+                {repair_formal_replace_status: 1} if repair_formal_replace_status else {}
+            ),
+            "repair_formal_rollback_status_counts": (
+                {repair_formal_rollback_status: 1} if repair_formal_rollback_status else {}
+            ),
             "stage_elapsed_ms": stage_elapsed_ms,
             "stage_counts": stage_counts,
             "translator_counts": translator_counts,
@@ -1535,6 +1584,8 @@ def write_experiment_metrics(
     repair_merge_qa: dict[str, Any] | None = None,
     repair_publish: dict[str, Any] | None = None,
     repair_rollback: dict[str, Any] | None = None,
+    repair_formal_replace: dict[str, Any] | None = None,
+    repair_formal_rollback: dict[str, Any] | None = None,
     translated_pdf_report: dict[str, Any] | None = None,
     run_metrics: dict[str, Any] | None = None,
     cost_estimate: dict[str, Any] | None = None,
@@ -1566,6 +1617,8 @@ def write_experiment_metrics(
         repair_merge_qa=repair_merge_qa,
         repair_publish=repair_publish,
         repair_rollback=repair_rollback,
+        repair_formal_replace=repair_formal_replace,
+        repair_formal_rollback=repair_formal_rollback,
         translated_pdf_report=translated_pdf_report,
         run_metrics=run_metrics,
         cost_estimate=cost_estimate,

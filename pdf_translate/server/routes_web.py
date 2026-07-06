@@ -18,6 +18,8 @@ from pdf_translate.exporters.translated_pdf import write_translated_pdf
 from pdf_translate.export_filename import suggest_md_download_name, suggest_zip_bundle_name
 from pdf_translate.pipeline_cancel import cancel_flag_path
 from pdf_translate.qa.repair import (
+    write_repair_formal_replace,
+    write_repair_formal_rollback,
     write_repair_patch_review,
     write_repair_patch_review_decision,
     write_repair_publish,
@@ -249,6 +251,55 @@ def _confirm_repair_rollback_for_record(rec: JobRecord) -> dict[str, Any]:
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
     if not summary.get("rollback_applied"):
         raise HTTPException(409, str(summary.get("reason") or "回滚演练副本未生成"))
+    return report
+
+
+def _confirm_repair_formal_replace_for_record(rec: JobRecord) -> dict[str, Any]:
+    if rec.status != "done":
+        raise HTTPException(409, "任务尚未完成，不能确认正式替换")
+    out_dir = rec.work_dir / "output"
+    repair_publish = _read_json_artifact(
+        out_dir / "repair_publish.json",
+        missing_message="局部修复发布确认报告尚未生成",
+        invalid_message="局部修复发布确认报告无法解析",
+    )
+    report = write_repair_formal_replace(
+        repair_publish,
+        out_dir / "repair_formal_replace.json",
+        out_dir / "repair_formal_replace.md",
+        confirm=True,
+        original_full_path=out_dir / "translated_full.md",
+        published_full_path=out_dir / "published_full.md",
+        formal_full_path=out_dir / "formal_full.md",
+        backup_full_path=out_dir / "formal_full.before_repair.md",
+    )
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    if not summary.get("replaced"):
+        raise HTTPException(409, str(summary.get("reason") or "正式替换未执行"))
+    return report
+
+
+def _confirm_repair_formal_rollback_for_record(rec: JobRecord) -> dict[str, Any]:
+    if rec.status != "done":
+        raise HTTPException(409, "任务尚未完成，不能确认正式回滚")
+    out_dir = rec.work_dir / "output"
+    repair_formal_replace = _read_json_artifact(
+        out_dir / "repair_formal_replace.json",
+        missing_message="局部修复正式替换报告尚未生成",
+        invalid_message="局部修复正式替换报告无法解析",
+    )
+    report = write_repair_formal_rollback(
+        repair_formal_replace,
+        out_dir / "repair_formal_rollback.json",
+        out_dir / "repair_formal_rollback.md",
+        confirm=True,
+        formal_full_path=out_dir / "formal_full.md",
+        backup_full_path=out_dir / "formal_full.before_repair.md",
+        active_before_rollback_path=out_dir / "formal_full.repair_applied.md",
+    )
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    if not summary.get("rollback_applied"):
+        raise HTTPException(409, str(summary.get("reason") or "正式回滚未执行"))
     return report
 
 
@@ -890,6 +941,40 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             headers={"Content-Disposition": cd},
         )
 
+    @api.get("/jobs/{job_id}/download/repair-formal-replace.md")
+    def download_repair_formal_replace(job_id: str, p: Principal = Depends(bearer_principal)) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "repair_formal_replace.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "局部修复正式替换报告尚未生成")
+        ascii_fallback = "repair_formal_replace.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_repair_formal_replace.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
+    @api.get("/jobs/{job_id}/download/repair-formal-rollback.md")
+    def download_repair_formal_rollback(job_id: str, p: Principal = Depends(bearer_principal)) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "repair_formal_rollback.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "局部修复正式回滚报告尚未生成")
+        ascii_fallback = "repair_formal_rollback.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_repair_formal_rollback.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
     @api.get("/jobs/{job_id}/download/repair-patch-review.md")
     def download_repair_patch_review(job_id: str, p: Principal = Depends(bearer_principal)) -> FileResponse:
         rec = app_registry.get(job_id)
@@ -1295,6 +1380,43 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             headers={"Content-Disposition": cd},
         )
 
+    @api.get("/jobs/{job_id}/download/formal-full.md")
+    def download_formal_full(job_id: str, p: Principal = Depends(bearer_principal)) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "formal_full.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "正式译文尚未生成")
+        ascii_fallback = "formal_full.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_formal_full.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
+    @api.get("/jobs/{job_id}/download/formal-before-repair-full.md")
+    def download_formal_before_repair_full(
+        job_id: str,
+        p: Principal = Depends(bearer_principal),
+    ) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "formal_full.before_repair.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "正式译文修复前备份尚未生成")
+        ascii_fallback = "formal_full.before_repair.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_formal_before_repair.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
     @api.post("/jobs/{job_id}/repair-publish/confirm")
     def confirm_repair_publish(
         job_id: str,
@@ -1352,6 +1474,66 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         updated = app_registry.get(job_id) or rec
         d = _job_dict(updated)
         d["repair_rollback_summary"] = summary
+        return d
+
+    @api.post("/jobs/{job_id}/repair-formal-replace/confirm")
+    def confirm_repair_formal_replace(
+        job_id: str,
+        request: Request,
+        p: Principal = Depends(bearer_principal),
+    ) -> dict:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        report = _confirm_repair_formal_replace_for_record(rec)
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        app_registry.update(job_id, message="已生成正式修复译文")
+        database.log_audit(
+            action="job_repair_formal_replace_confirm",
+            ip=client_ip(request),
+            user_id=p.user_id,
+            username=p.username,
+            job_id=job_id,
+            detail={
+                "replace_status": summary.get("replace_status"),
+                "formal_full_path": summary.get("formal_full_path"),
+                "backup_full_path": summary.get("backup_full_path"),
+                "formal_matches_published": summary.get("formal_matches_published"),
+            },
+        )
+        updated = app_registry.get(job_id) or rec
+        d = _job_dict(updated)
+        d["repair_formal_replace_summary"] = summary
+        return d
+
+    @api.post("/jobs/{job_id}/repair-formal-rollback/confirm")
+    def confirm_repair_formal_rollback(
+        job_id: str,
+        request: Request,
+        p: Principal = Depends(bearer_principal),
+    ) -> dict:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        report = _confirm_repair_formal_rollback_for_record(rec)
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        app_registry.update(job_id, message="已把正式译文回滚到修复前备份")
+        database.log_audit(
+            action="job_repair_formal_rollback_confirm",
+            ip=client_ip(request),
+            user_id=p.user_id,
+            username=p.username,
+            job_id=job_id,
+            detail={
+                "rollback_status": summary.get("rollback_status"),
+                "formal_full_path": summary.get("formal_full_path"),
+                "backup_full_path": summary.get("backup_full_path"),
+                "formal_matches_backup": summary.get("formal_matches_backup"),
+            },
+        )
+        updated = app_registry.get(job_id) or rec
+        d = _job_dict(updated)
+        d["repair_formal_rollback_summary"] = summary
         return d
 
     @api.get("/jobs/{job_id}/download/bundle.zip")
@@ -1510,6 +1692,16 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             if not p.is_file() or p.stat().st_size == 0:
                 raise HTTPException(404, "局部修复回滚演练报告尚未生成")
             return FileResponse(p, filename="repair_rollback.md", media_type="text/markdown; charset=utf-8")
+        if kind == "repair_formal_replace":
+            p = root / "output" / "repair_formal_replace.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "局部修复正式替换报告尚未生成")
+            return FileResponse(p, filename="repair_formal_replace.md", media_type="text/markdown; charset=utf-8")
+        if kind == "repair_formal_rollback":
+            p = root / "output" / "repair_formal_rollback.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "局部修复正式回滚报告尚未生成")
+            return FileResponse(p, filename="repair_formal_rollback.md", media_type="text/markdown; charset=utf-8")
         if kind == "repair_patch_review":
             p = root / "output" / "repair_patch_review.md"
             if not p.is_file() or p.stat().st_size == 0:
@@ -1552,6 +1744,29 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             if not p.is_file() or p.stat().st_size == 0:
                 raise HTTPException(404, "局部修复回滚演练稿尚未生成")
             return FileResponse(p, filename="rollback_full.md", media_type="text/markdown; charset=utf-8")
+        if kind == "repair_formal_full":
+            p = root / "output" / "formal_full.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "正式译文尚未生成")
+            return FileResponse(p, filename="formal_full.md", media_type="text/markdown; charset=utf-8")
+        if kind == "repair_formal_backup_full":
+            p = root / "output" / "formal_full.before_repair.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "正式译文修复前备份尚未生成")
+            return FileResponse(
+                p,
+                filename="formal_full.before_repair.md",
+                media_type="text/markdown; charset=utf-8",
+            )
+        if kind == "repair_formal_active_before_rollback_full":
+            p = root / "output" / "formal_full.repair_applied.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "正式回滚前修复稿尚未生成")
+            return FileResponse(
+                p,
+                filename="formal_full.repair_applied.md",
+                media_type="text/markdown; charset=utf-8",
+            )
         if kind == "bundle_zip":
             if rec.status not in ("done", "cancelled"):
                 raise HTTPException(409, "任务未完成或未终止")
@@ -1568,7 +1783,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             return Response(content=data, media_type="application/zip", headers={"Content-Disposition": cd})
         raise HTTPException(
             400,
-            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / repair_published_full / repair_rollback_full / bundle_zip",
+            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_rollback / repair_formal_replace / repair_formal_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / repair_published_full / repair_rollback_full / repair_formal_full / repair_formal_backup_full / repair_formal_active_before_rollback_full / bundle_zip",
         )
 
     api.include_router(admin)

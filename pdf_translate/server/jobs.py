@@ -382,6 +382,32 @@ class JobRegistry:
         return summary, None
 
     @staticmethod
+    def _repair_formal_replace_summary(path: Path) -> tuple[dict[str, Any], str | None]:
+        if not path.is_file():
+            return {}, None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}, "repair_formal_replace_report_invalid"
+        summary = raw.get("summary")
+        if not isinstance(summary, dict):
+            return {}, "repair_formal_replace_summary_missing"
+        return summary, None
+
+    @staticmethod
+    def _repair_formal_rollback_summary(path: Path) -> tuple[dict[str, Any], str | None]:
+        if not path.is_file():
+            return {}, None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}, "repair_formal_rollback_report_invalid"
+        summary = raw.get("summary")
+        if not isinstance(summary, dict):
+            return {}, "repair_formal_rollback_summary_missing"
+        return summary, None
+
+    @staticmethod
     def _repair_patch_review_summary(path: Path) -> tuple[dict[str, Any], str | None]:
         if not path.is_file():
             return {}, None
@@ -445,6 +471,13 @@ class JobRegistry:
         repair_patch_review_md = output_dir / "repair_patch_review.md"
         repair_published_full = output_dir / "published_full.md"
         repair_rollback_full = output_dir / "rollback_full.md"
+        repair_formal_replace_json = output_dir / "repair_formal_replace.json"
+        repair_formal_replace_md = output_dir / "repair_formal_replace.md"
+        repair_formal_rollback_json = output_dir / "repair_formal_rollback.json"
+        repair_formal_rollback_md = output_dir / "repair_formal_rollback.md"
+        repair_formal_full = output_dir / "formal_full.md"
+        repair_formal_backup_full = output_dir / "formal_full.before_repair.md"
+        repair_formal_active_before_rollback_full = output_dir / "formal_full.repair_applied.md"
         table_reconstruction_json = output_dir / "table_reconstruction.json"
         table_merged_cell_review_json = output_dir / "table_merged_cell_review.json"
         table_merged_cell_review_md = output_dir / "table_merged_cell_review.md"
@@ -463,6 +496,15 @@ class JobRegistry:
         repair_patch_review_md_bytes = self._file_size(repair_patch_review_md)
         repair_published_full_bytes = self._file_size(repair_published_full)
         repair_rollback_full_bytes = self._file_size(repair_rollback_full)
+        repair_formal_replace_json_bytes = self._file_size(repair_formal_replace_json)
+        repair_formal_replace_md_bytes = self._file_size(repair_formal_replace_md)
+        repair_formal_rollback_json_bytes = self._file_size(repair_formal_rollback_json)
+        repair_formal_rollback_md_bytes = self._file_size(repair_formal_rollback_md)
+        repair_formal_full_bytes = self._file_size(repair_formal_full)
+        repair_formal_backup_full_bytes = self._file_size(repair_formal_backup_full)
+        repair_formal_active_before_rollback_full_bytes = self._file_size(
+            repair_formal_active_before_rollback_full
+        )
         table_merged_cell_review_json_bytes = self._file_size(table_merged_cell_review_json)
         table_merged_cell_review_md_bytes = self._file_size(table_merged_cell_review_md)
         table_structure_publish_json_bytes = self._file_size(table_structure_publish_json)
@@ -470,6 +512,12 @@ class JobRegistry:
         table_reconstruction_confirmed_bytes = self._file_size(table_reconstruction_confirmed_json)
         repair_summary, repair_warning = self._repair_publish_summary(repair_publish_json)
         repair_rollback_summary, repair_rollback_warning = self._repair_rollback_summary(repair_rollback_json)
+        repair_formal_replace_summary, repair_formal_replace_warning = self._repair_formal_replace_summary(
+            repair_formal_replace_json
+        )
+        repair_formal_rollback_summary, repair_formal_rollback_warning = self._repair_formal_rollback_summary(
+            repair_formal_rollback_json
+        )
         patch_review_summary, patch_review_warning = self._repair_patch_review_summary(repair_patch_review_json)
         table_review_summary, table_review_warning = self._table_merged_cell_review_summary(
             table_merged_cell_review_json
@@ -495,6 +543,10 @@ class JobRegistry:
             warnings.append(repair_warning)
         if repair_rollback_warning:
             warnings.append(repair_rollback_warning)
+        if repair_formal_replace_warning:
+            warnings.append(repair_formal_replace_warning)
+        if repair_formal_rollback_warning:
+            warnings.append(repair_formal_rollback_warning)
         if patch_review_warning:
             warnings.append(patch_review_warning)
         if table_review_warning:
@@ -519,6 +571,23 @@ class JobRegistry:
         repair_rollback_applied = bool(repair_rollback_summary.get("rollback_applied"))
         repair_rollback_status = str(repair_rollback_summary.get("rollback_status") or "")
         repair_rollback_matches_original = bool(repair_rollback_summary.get("rollback_matches_original"))
+        repair_formal_replace_available = bool(repair_formal_replace_summary.get("replace_available"))
+        repair_formal_replace_confirmed = bool(repair_formal_replace_summary.get("confirmed"))
+        repair_formal_replace_replaced = bool(repair_formal_replace_summary.get("replaced"))
+        repair_formal_replace_status = str(repair_formal_replace_summary.get("replace_status") or "")
+        repair_formal_replace_matches_published = bool(
+            repair_formal_replace_summary.get("formal_matches_published")
+        )
+        repair_formal_replace_rollback_available = bool(
+            repair_formal_replace_summary.get("rollback_available")
+        )
+        repair_formal_rollback_available = bool(repair_formal_rollback_summary.get("rollback_available"))
+        repair_formal_rollback_confirmed = bool(repair_formal_rollback_summary.get("confirmed"))
+        repair_formal_rollback_applied = bool(repair_formal_rollback_summary.get("rollback_applied"))
+        repair_formal_rollback_status = str(repair_formal_rollback_summary.get("rollback_status") or "")
+        repair_formal_rollback_matches_backup = bool(
+            repair_formal_rollback_summary.get("formal_matches_backup")
+        )
         repair_patch_review_count = self._as_int(patch_review_summary.get("patch_count"))
         repair_patch_review_required_count = self._as_int(patch_review_summary.get("review_required_count"))
         repair_patch_review_blocking_count = self._as_int(patch_review_summary.get("publish_blocking_count"))
@@ -573,6 +642,16 @@ class JobRegistry:
             warnings.append("repair_rollback_requested_not_applied")
         if repair_rollback_applied and repair_rollback_full_bytes <= 0:
             warnings.append("repair_rollback_full_missing")
+        if repair_formal_replace_confirmed and not repair_formal_replace_replaced:
+            warnings.append("repair_formal_replace_requested_not_replaced")
+        if repair_formal_replace_replaced and repair_formal_full_bytes <= 0:
+            warnings.append("repair_formal_full_missing")
+        if repair_formal_replace_rollback_available and repair_formal_backup_full_bytes <= 0:
+            warnings.append("repair_formal_backup_full_missing")
+        if repair_formal_rollback_confirmed and not repair_formal_rollback_applied:
+            warnings.append("repair_formal_rollback_requested_not_applied")
+        if repair_formal_rollback_applied and repair_formal_full_bytes <= 0:
+            warnings.append("repair_formal_full_missing_after_rollback")
 
         severe = {
             "work_dir_missing",
@@ -663,6 +742,39 @@ class JobRegistry:
             "repair_published_full_bytes": repair_published_full_bytes,
             "repair_rollback_full_ready": repair_rollback_full_bytes > 0,
             "repair_rollback_full_bytes": repair_rollback_full_bytes,
+            "repair_formal_replace_report_ready": (
+                repair_formal_replace_json_bytes > 0 or repair_formal_replace_md_bytes > 0
+            ),
+            "repair_formal_replace_report_bytes": max(
+                repair_formal_replace_json_bytes,
+                repair_formal_replace_md_bytes,
+            ),
+            "repair_formal_replace_available": repair_formal_replace_available,
+            "repair_formal_replace_confirmed": repair_formal_replace_confirmed,
+            "repair_formal_replace_replaced": repair_formal_replace_replaced,
+            "repair_formal_replace_status": repair_formal_replace_status,
+            "repair_formal_replace_matches_published": repair_formal_replace_matches_published,
+            "repair_formal_replace_rollback_available": repair_formal_replace_rollback_available,
+            "repair_formal_rollback_report_ready": (
+                repair_formal_rollback_json_bytes > 0 or repair_formal_rollback_md_bytes > 0
+            ),
+            "repair_formal_rollback_report_bytes": max(
+                repair_formal_rollback_json_bytes,
+                repair_formal_rollback_md_bytes,
+            ),
+            "repair_formal_rollback_available": repair_formal_rollback_available,
+            "repair_formal_rollback_confirmed": repair_formal_rollback_confirmed,
+            "repair_formal_rollback_applied": repair_formal_rollback_applied,
+            "repair_formal_rollback_status": repair_formal_rollback_status,
+            "repair_formal_rollback_matches_backup": repair_formal_rollback_matches_backup,
+            "repair_formal_full_ready": repair_formal_full_bytes > 0,
+            "repair_formal_full_bytes": repair_formal_full_bytes,
+            "repair_formal_backup_full_ready": repair_formal_backup_full_bytes > 0,
+            "repair_formal_backup_full_bytes": repair_formal_backup_full_bytes,
+            "repair_formal_active_before_rollback_full_ready": (
+                repair_formal_active_before_rollback_full_bytes > 0
+            ),
+            "repair_formal_active_before_rollback_full_bytes": repair_formal_active_before_rollback_full_bytes,
             "bundle_zip_ready": rec.status in ("done", "cancelled") and translated_bytes > 0,
         }
 
@@ -854,6 +966,27 @@ class JobRegistry:
                 "repair_published_full_bytes": 0,
                 "repair_rollback_full_ready": False,
                 "repair_rollback_full_bytes": 0,
+                "repair_formal_replace_report_ready": False,
+                "repair_formal_replace_report_bytes": 0,
+                "repair_formal_replace_available": False,
+                "repair_formal_replace_confirmed": False,
+                "repair_formal_replace_replaced": False,
+                "repair_formal_replace_status": "",
+                "repair_formal_replace_matches_published": False,
+                "repair_formal_replace_rollback_available": False,
+                "repair_formal_rollback_report_ready": False,
+                "repair_formal_rollback_report_bytes": 0,
+                "repair_formal_rollback_available": False,
+                "repair_formal_rollback_confirmed": False,
+                "repair_formal_rollback_applied": False,
+                "repair_formal_rollback_status": "",
+                "repair_formal_rollback_matches_backup": False,
+                "repair_formal_full_ready": False,
+                "repair_formal_full_bytes": 0,
+                "repair_formal_backup_full_ready": False,
+                "repair_formal_backup_full_bytes": 0,
+                "repair_formal_active_before_rollback_full_ready": False,
+                "repair_formal_active_before_rollback_full_bytes": 0,
                 "bundle_zip_ready": False,
             }
         pub = rec.to_public()
