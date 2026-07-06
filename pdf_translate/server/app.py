@@ -24,6 +24,10 @@ database.configure(DATA_BASE / "app.db")
 
 registry = JobRegistry(DATA_ROOT)
 registry.hydrate_from_disk()
+try:
+    database.log_job_hydration_report(registry.hydration_report())
+except Exception:
+    pass
 
 app = FastAPI(
     title="PDF Translate Web",

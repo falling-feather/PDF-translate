@@ -37,7 +37,7 @@ from pdf_translate.qa.table_reconstruction import (
 
 from pdf_translate.server.auth_deps import Principal, bearer_principal, mint_token, require_admin
 from pdf_translate.server import database
-from pdf_translate.server.jobs import JobRecord, JobRegistry, start_job_thread, zip_job_outputs
+from pdf_translate.server.jobs import JOB_STATUS_SCHEMA_VERSION, JobRecord, JobRegistry, start_job_thread, zip_job_outputs
 from pdf_translate.server.runtime_state import require_data_dir
 from pdf_translate.server.security_preflight import build_security_preflight, max_upload_mb
 from pdf_translate.server import settings_service
@@ -792,11 +792,21 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             username=p.username,
             job_id=rec.job_id,
             detail={
+                "status_schema_version": JOB_STATUS_SCHEMA_VERSION,
+                "status": rec.status,
+                "phase": rec.phase,
                 "filename": file.filename,
                 "backend": be,
                 "use_custom_api": bool(use_custom_api),
+                "translate_mode": tm,
+                "parallel_max_workers": pwm,
+                "pages_per_chunk": pages_per_chunk,
+                "overlap_pages": overlap_pages,
+                "max_chunks": max_n,
                 "upload_bytes": uploaded_bytes,
                 "upload_limit_mb": max_mb,
+                "runtime_created_at": rec.created_at,
+                "work_dir": str(rec.work_dir.resolve()),
             },
         )
 
@@ -837,14 +847,36 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         return _job_dict(rec)
 
     @api.post("/jobs/{job_id}/cancel")
-    def cancel_job(job_id: str, p: Principal = Depends(bearer_principal)) -> dict:
+    def cancel_job(request: Request, job_id: str, p: Principal = Depends(bearer_principal)) -> dict:
         rec = app_registry.get(job_id)
         if not rec or not _can_access_job(p, rec):
             raise HTTPException(404, "任务不存在或无权访问")
         if rec.status not in ("queued", "running"):
             raise HTTPException(400, "当前状态不可终止")
-        cancel_flag_path(rec.work_dir).write_text("1", encoding="utf-8")
+        previous_status = rec.status
+        previous_phase = rec.phase
+        previous_message = rec.message
+        flag_path = cancel_flag_path(rec.work_dir)
+        flag_path.write_text("1", encoding="utf-8")
         app_registry.update(job_id, message="已收到终止请求，将在当前块结束后停止…")
+        database.log_audit(
+            action="job_cancel_requested",
+            ip=client_ip(request),
+            user_id=p.user_id,
+            username=p.username,
+            job_id=job_id,
+            detail={
+                "previous_status": previous_status,
+                "previous_phase": previous_phase,
+                "previous_message": previous_message,
+                "chunk_index": rec.chunk_index,
+                "chunk_total": rec.chunk_total,
+                "chunk_id": rec.chunk_id,
+                "cancel_flag_path": str(flag_path.resolve()),
+                "requested_by_user_id": p.user_id,
+                "requested_by_username": p.username,
+            },
+        )
         return {"ok": True}
 
     @api.get("/jobs/{job_id}/download/full.md")

@@ -7,9 +7,14 @@ from pathlib import Path
 
 import fitz
 from typer.testing import CliRunner
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from pdf_translate.cli import app
+from pdf_translate.config import AppConfig
+from pdf_translate.pipeline_cancel import cancel_flag_path
+from pdf_translate.server import database
+from pdf_translate.server.auth_deps import Principal, bearer_principal
 from pdf_translate.server.routes_web import (
     _confirm_repair_formal_replace_for_record,
     _confirm_repair_formal_rollback_for_record,
@@ -17,8 +22,41 @@ from pdf_translate.server.routes_web import (
     _confirm_repair_rollback_for_record,
     _confirm_table_structure_publish_for_record,
     _render_table_merged_cell_review_preview_for_record,
+    register_web_routes,
 )
 from pdf_translate.server.jobs import JOB_STATUS_SCHEMA_VERSION, JobRegistry
+
+
+def _cfg(**overrides) -> AppConfig:
+    values = {
+        "openai_api_key": None,
+        "openai_base_url": "https://api.openai.com/v1",
+        "openai_model": "gpt-test",
+        "ollama_base_url": "http://127.0.0.1:11434/v1",
+        "ollama_model": "llama-test",
+        "deepl_api_key": None,
+        "deepl_api_url": "https://api-free.deepl.com/v2/translate",
+        "deepseek_api_key": None,
+        "deepseek_base_url": "https://api.deepseek.com/v1",
+        "deepseek_model": "deepseek-chat",
+        "default_translator": "echo",
+        "http_timeout_s": 120.0,
+        "survey_enabled": False,
+        "siliconflow_api_key": None,
+        "siliconflow_base_url": "https://api.siliconflow.com/v1",
+        "siliconflow_survey_model": "",
+        "siliconflow_vision_model": "",
+        "survey_max_text_chars": 12000,
+        "planner_enabled": False,
+        "planner_api_key": None,
+        "planner_base_url": "https://api.siliconflow.com/v1",
+        "planner_model": "",
+        "cost_profile_json": "",
+        "cost_profile_path": "",
+        "cost_default_currency": "USD",
+    }
+    values.update(overrides)
+    return AppConfig(**values)
 
 
 class JobStatusSnapshotTests(unittest.TestCase):
@@ -150,6 +188,167 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertTrue(summary["pipeline_resume_ready"])
         self.assertEqual(summary["job_recovery_status"], "needs_manual_resume_or_cancel")
         self.assertIn("recovered_active_without_worker", summary["job_diagnostic_warnings"])
+
+    def test_hydrate_report_tracks_active_recovered_status_counts(self) -> None:
+        root = self._case_root("hydrate-status-counts")
+        registry = JobRegistry(root)
+        running = registry.create_job(original_filename="running.pdf")
+        done = registry.create_job(original_filename="done.pdf")
+        registry.update(running.job_id, status="running", phase="translate")
+        registry.update(done.job_id, status="done", phase="done")
+
+        restored = JobRegistry(root)
+        restored.hydrate_from_disk()
+        report = restored.hydration_report()
+
+        self.assertEqual(report["restored_count"], 2)
+        self.assertEqual(report["recovered_status_counts"]["running"], 1)
+        self.assertEqual(report["recovered_status_counts"]["done"], 1)
+        self.assertIn(running.job_id, report["active_recovered_job_ids"])
+        self.assertNotIn(done.job_id, report["active_recovered_job_ids"])
+
+    def test_log_job_finished_records_cancelled_terminal_audit(self) -> None:
+        root = self._case_root("cancelled-terminal-audit")
+        database.configure(root / "app.db")
+        work = root / "job123"
+        output = work / "output"
+        output.mkdir(parents=True)
+        (work / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        (output / "translated_full.md").write_text("partial", encoding="utf-8")
+
+        database.log_job_finished(
+            job_id="job123",
+            user_id=7,
+            username="alice",
+            work_dir=work,
+            ok=False,
+            err="cancelled",
+            status="cancelled",
+            phase="cancelled",
+            duration_seconds=3.5,
+            run_started_at="2026-07-06T01:00:00Z",
+            status_updated_at="2026-07-06T01:00:03Z",
+            original_filename="paper.pdf",
+            translate_mode="parallel",
+            parallel_max_workers=2,
+            error_code="TASK_CANCELLED",
+            error_category="task",
+            error_retryable=False,
+            error_next_step="Task stopped.",
+            error_source="server:run_pipeline",
+        )
+
+        events = database.list_audit(limit=10)
+        self.assertEqual(events[0]["action"], "job_cancelled")
+        self.assertEqual(events[0]["job_id"], "job123")
+        detail = events[0]["detail"]
+        self.assertEqual(detail["terminal_status"], "cancelled")
+        self.assertEqual(detail["duration_seconds"], 3.5)
+        self.assertEqual(detail["original_filename"], "paper.pdf")
+        self.assertEqual(detail["translate_mode"], "parallel")
+        self.assertEqual(detail["parallel_max_workers"], 2)
+        self.assertEqual(detail["error_code"], "TASK_CANCELLED")
+        self.assertFalse(detail["error_retryable"])
+        self.assertEqual(detail["work_dir"], str(work.resolve()))
+        self.assertFalse(detail["bundle_zip_ready"])
+
+    def test_log_job_hydration_report_persists_recovery_scan(self) -> None:
+        root = self._case_root("hydration-report-audit")
+        database.configure(root / "app.db")
+        jobs_root = root / "jobs"
+        registry = JobRegistry(jobs_root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        registry.update(rec.job_id, status="running", phase="translate")
+
+        restored = JobRegistry(jobs_root)
+        restored.hydrate_from_disk()
+        database.log_job_hydration_report(restored.hydration_report())
+
+        events = database.list_audit(limit=10)
+        self.assertEqual(events[0]["action"], "job_hydration_report")
+        detail = events[0]["detail"]
+        self.assertEqual(detail["restored_count"], 1)
+        self.assertEqual(detail["recovered_status_counts"]["running"], 1)
+        self.assertIn(rec.job_id, detail["active_recovered_job_ids"])
+
+    def test_cancel_job_writes_request_audit(self) -> None:
+        root = self._case_root("cancel-request-audit")
+        database.configure(root / "app.db")
+        registry = JobRegistry(root / "jobs")
+        rec = registry.create_job(
+            owner_user_id=7,
+            owner_username="alice",
+            original_filename="paper.pdf",
+        )
+        registry.update(
+            rec.job_id,
+            status="running",
+            phase="translate",
+            message="translating",
+            chunk_index=1,
+            chunk_total=3,
+            chunk_id="c0001",
+        )
+
+        api = FastAPI()
+        api.include_router(register_web_routes(registry))
+        api.dependency_overrides[bearer_principal] = lambda: Principal(
+            user_id=7,
+            username="alice",
+            role="user",
+        )
+        self.addCleanup(api.dependency_overrides.clear)
+
+        response = TestClient(api).post(f"/api/jobs/{rec.job_id}/cancel")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(cancel_flag_path(rec.work_dir).is_file())
+        events = database.list_audit(limit=10)
+        self.assertEqual(events[0]["action"], "job_cancel_requested")
+        detail = events[0]["detail"]
+        self.assertEqual(detail["previous_status"], "running")
+        self.assertEqual(detail["previous_phase"], "translate")
+        self.assertEqual(detail["previous_message"], "translating")
+        self.assertEqual(detail["chunk_index"], 1)
+        self.assertEqual(detail["chunk_total"], 3)
+        self.assertEqual(detail["chunk_id"], "c0001")
+        self.assertEqual(detail["requested_by_user_id"], 7)
+        self.assertEqual(detail["requested_by_username"], "alice")
+
+    def test_run_pipeline_records_started_and_error_audit(self) -> None:
+        root = self._case_root("started-error-audit")
+        database.configure(root / "app.db")
+        registry = JobRegistry(root / "jobs")
+        rec = registry.create_job(
+            owner_user_id=7,
+            owner_username="alice",
+            original_filename="paper.pdf",
+            translate_mode="parallel",
+            parallel_max_workers=2,
+        )
+
+        registry.run_pipeline(
+            rec.job_id,
+            tail_fallback=False,
+            pages_per_chunk=1,
+            overlap_pages=0,
+            backend="echo",
+            max_chunks=None,
+            cfg=_cfg(),
+        )
+
+        events = database.list_audit(limit=10)
+        started = next(event for event in events if event["action"] == "job_started")
+        failed = next(event for event in events if event["action"] == "job_error")
+        self.assertEqual(started["job_id"], rec.job_id)
+        self.assertEqual(started["detail"]["previous_status"], "queued")
+        self.assertEqual(started["detail"]["status"], "running")
+        self.assertEqual(started["detail"]["phase"], "init")
+        self.assertEqual(started["detail"]["translate_mode"], "parallel")
+        self.assertEqual(started["detail"]["parallel_max_workers"], 2)
+        self.assertEqual(failed["detail"]["terminal_status"], "error")
+        self.assertTrue(failed["detail"]["error_code"])
+        self.assertEqual(failed["detail"]["original_filename"], "paper.pdf")
 
     def test_merge_status_into_rows_preserves_database_created_at(self) -> None:
         root = self._case_root("merge-preserves-db-created-at")

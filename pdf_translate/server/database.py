@@ -360,10 +360,40 @@ def log_job_finished(
     work_dir: Path,
     ok: bool,
     err: str | None = None,
+    status: str | None = None,
+    phase: str | None = None,
+    duration_seconds: float | None = None,
+    run_started_at: str | None = None,
+    status_updated_at: str | None = None,
+    original_filename: str | None = None,
+    translate_mode: str | None = None,
+    parallel_max_workers: int | None = None,
+    error_code: str | None = None,
+    error_category: str | None = None,
+    error_retryable: bool | None = None,
+    error_next_step: str | None = None,
+    error_source: str | None = None,
+    error_http_status: int | None = None,
 ) -> None:
     root = work_dir.resolve()
     detail: dict[str, Any] = {
         "ok": ok,
+        "status": status or ("done" if ok else ("cancelled" if err == "cancelled" else "error")),
+        "terminal_status": status or ("done" if ok else ("cancelled" if err == "cancelled" else "error")),
+        "phase": phase or "",
+        "duration_seconds": duration_seconds,
+        "run_started_at": run_started_at,
+        "status_updated_at": status_updated_at,
+        "original_filename": original_filename,
+        "translate_mode": translate_mode,
+        "parallel_max_workers": parallel_max_workers,
+        "error_code": error_code,
+        "error_category": error_category,
+        "error_retryable": error_retryable,
+        "error_next_step": error_next_step,
+        "error_source": error_source,
+        "error_http_status": error_http_status,
+        "work_dir": str(root),
         "input_pdf": str((root / "input.pdf").resolve()) if (root / "input.pdf").is_file() else None,
         "translated_md": str((root / "output" / "translated_full.md").resolve())
         if (root / "output" / "translated_full.md").is_file()
@@ -396,12 +426,25 @@ def log_job_finished(
     }
     if err:
         detail["error"] = err
+    action = "job_done" if ok else ("job_cancelled" if err == "cancelled" else "job_error")
     log_audit(
-        action="job_done" if ok else "job_error",
+        action=action,
         ip=None,
         user_id=user_id,
         username=username,
         job_id=job_id,
+        detail=detail,
+    )
+
+
+def log_job_hydration_report(report: dict[str, Any]) -> None:
+    detail = json.loads(json.dumps(report, ensure_ascii=False))
+    log_audit(
+        action="job_hydration_report",
+        ip=None,
+        user_id=None,
+        username="system",
+        job_id=None,
         detail=detail,
     )
 

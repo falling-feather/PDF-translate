@@ -29,9 +29,22 @@ def summarize_audit_event(
     if action == "job_done":
         tail = f"（任务 {job_id}）" if job_id else ""
         return f"{u} 的翻译任务已完成{tail}"
+    if action == "job_started":
+        tail = f"（任务 {job_id}）" if job_id else ""
+        return f"{u} 的翻译任务开始运行{tail}"
+    if action == "job_cancel_requested":
+        tail = f"（任务 {job_id}）" if job_id else ""
+        return f"{u} 请求终止翻译任务{tail}"
+    if action == "job_cancelled":
+        tail = f"（任务 {job_id}）" if job_id else ""
+        return f"{u} 的翻译任务已终止{tail}"
     if action == "job_error":
         tail = f"（任务 {job_id}）" if job_id else ""
         return f"{u} 的翻译任务失败{tail}"
+    if action == "job_hydration_report":
+        restored = int(detail.get("restored_count") or 0)
+        scanned = int(detail.get("scanned_dir_count") or 0)
+        return f"系统完成任务恢复扫描：扫描 {scanned} 个目录，恢复 {restored} 个任务"
     if action == "admin_settings_update":
         keys = detail.get("keys")
         if isinstance(keys, list) and keys:

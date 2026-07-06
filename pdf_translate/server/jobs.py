@@ -197,6 +197,8 @@ class JobRegistry:
             "invalid_json_count": 0,
             "job_id_mismatch_count": 0,
             "restored_job_ids": [],
+            "active_recovered_job_ids": [],
+            "recovered_status_counts": {},
             "warnings": [],
         }
 
@@ -280,6 +282,11 @@ class JobRegistry:
                 self._jobs[rec.job_id] = rec
                 report["restored_count"] += 1
                 report["restored_job_ids"].append(rec.job_id)
+                report["recovered_status_counts"][rec.status] = (
+                    int(report["recovered_status_counts"].get(rec.status) or 0) + 1
+                )
+                if rec.status in ("queued", "running"):
+                    report["active_recovered_job_ids"].append(rec.job_id)
             self._last_hydration_report = report
 
     def hydration_report(self) -> dict[str, Any]:
@@ -1142,7 +1149,13 @@ class JobRegistry:
         else:
             translate_mode = "serial"
             survey_override = False
-        parallel_max_workers = rec.parallel_max_workers
+        pw = rec.parallel_max_workers
+        if pw is None:
+            try:
+                pw = int(os.getenv("PDF_TRANSLATE_PARALLEL_WORKERS", "4"))
+            except ValueError:
+                pw = 4
+        pw = max(1, pw)
 
         def progress(ev: dict) -> None:
             evt = ev.get("event")
@@ -1183,12 +1196,15 @@ class JobRegistry:
                 )
 
         try:
+            previous_status = rec.status
+            previous_phase = rec.phase
+            run_started_at = _utc_now_iso()
             self.update(
                 job_id,
                 status="running",
                 phase="init",
                 message="初始化工作目录…",
-                run_started_at=_utc_now_iso(),
+                run_started_at=run_started_at,
                 duration_seconds=None,
                 error=None,
                 error_code=None,
@@ -1198,6 +1214,36 @@ class JobRegistry:
                 error_source=None,
                 error_http_status=None,
             )
+            try:
+                from pdf_translate.server import database as srv_db
+
+                rec_started = self.get(job_id)
+                if rec_started:
+                    srv_db.log_audit(
+                        action="job_started",
+                        ip=None,
+                        user_id=rec_started.owner_user_id,
+                        username=rec_started.owner_username,
+                        job_id=job_id,
+                        detail={
+                            "previous_status": previous_status,
+                            "previous_phase": previous_phase,
+                            "status": "running",
+                            "phase": "init",
+                            "run_started_at": run_started_at,
+                            "backend": backend,
+                            "translate_mode": translate_mode,
+                            "parallel_max_workers": pw,
+                            "pages_per_chunk": pages_per_chunk,
+                            "overlap_pages": overlap_pages,
+                            "max_chunks": max_chunks,
+                            "resume": True,
+                            "recovered_from_disk": rec_started.recovered_from_disk,
+                            "work_dir": str(rec_started.work_dir.resolve()),
+                        },
+                    )
+            except Exception:
+                pass
             init_workdir(rec.work_dir)
 
             inp = rec.work_dir / "input.pdf"
@@ -1219,14 +1265,6 @@ class JobRegistry:
 
             if is_cancel_requested(rec.work_dir):
                 raise JobCancelled()
-
-            pw = parallel_max_workers
-            if pw is None:
-                try:
-                    pw = int(os.getenv("PDF_TRANSLATE_PARALLEL_WORKERS", "4"))
-                except ValueError:
-                    pw = 4
-            pw = max(1, pw)
 
             run_translate(
                 rec.work_dir,
@@ -1271,6 +1309,14 @@ class JobRegistry:
                         username=rec2.owner_username,
                         work_dir=rec2.work_dir,
                         ok=True,
+                        status=rec2.status,
+                        phase=rec2.phase,
+                        duration_seconds=rec2.duration_seconds,
+                        run_started_at=rec2.run_started_at,
+                        status_updated_at=rec2.updated_at,
+                        original_filename=rec2.original_filename,
+                        translate_mode=rec2.translate_mode,
+                        parallel_max_workers=pw,
                     )
             except Exception:
                 pass
@@ -1311,6 +1357,20 @@ class JobRegistry:
                         work_dir=rec2.work_dir,
                         ok=False,
                         err="cancelled",
+                        status=rec2.status,
+                        phase=rec2.phase,
+                        duration_seconds=rec2.duration_seconds,
+                        run_started_at=rec2.run_started_at,
+                        status_updated_at=rec2.updated_at,
+                        original_filename=rec2.original_filename,
+                        translate_mode=rec2.translate_mode,
+                        parallel_max_workers=pw,
+                        error_code=rec2.error_code,
+                        error_category=rec2.error_category,
+                        error_retryable=rec2.error_retryable,
+                        error_next_step=rec2.error_next_step,
+                        error_source=rec2.error_source,
+                        error_http_status=rec2.error_http_status,
                     )
             except Exception:
                 pass
@@ -1343,6 +1403,20 @@ class JobRegistry:
                         work_dir=rec2.work_dir,
                         ok=False,
                         err=str(e),
+                        status=rec2.status,
+                        phase=rec2.phase,
+                        duration_seconds=rec2.duration_seconds,
+                        run_started_at=rec2.run_started_at,
+                        status_updated_at=rec2.updated_at,
+                        original_filename=rec2.original_filename,
+                        translate_mode=rec2.translate_mode,
+                        parallel_max_workers=pw,
+                        error_code=rec2.error_code,
+                        error_category=rec2.error_category,
+                        error_retryable=rec2.error_retryable,
+                        error_next_step=rec2.error_next_step,
+                        error_source=rec2.error_source,
+                        error_http_status=rec2.error_http_status,
                     )
             except Exception:
                 pass
