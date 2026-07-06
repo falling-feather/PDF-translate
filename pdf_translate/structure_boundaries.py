@@ -31,6 +31,12 @@ _CONTINUATION_START_RE = re.compile(
     re.I,
 )
 _ABBREVIATION_CONTINUABLE_BLOCK_TYPES = {"paragraph", "caption", "footnote", "formula", "reference"}
+_FORMULA_OPERATOR_END_RE = re.compile(
+    r"(?:[=+\-−–—*/×÷<>≤≥≈~&|^_(\[{,;:]|\\(?:sum|prod|int|frac|sqrt|left|right|cdot|times|leq|geq|approx)\b)\s*$"
+)
+_FORMULA_CONTINUATION_START_RE = re.compile(
+    r"^(?:[=+\-−–—*/×÷<>≤≥≈~&|^_)\]\},;:]|\\(?:sum|prod|int|frac|sqrt|left|right|cdot|times|leq|geq|approx|alpha|beta|gamma|delta|theta|lambda|mu|sigma|omega)\b|[a-zA-Z]\s*[=+\-−–—*/×÷<>≤≥≈])"
+)
 _PRESERVE_HYPHEN_PREFIXES = {
     "anti",
     "co",
@@ -84,6 +90,8 @@ def _merged_preview(previous: str, following: str, limit: int = 260, *, joiner: 
         merged = previous_compact + following_compact
     elif joiner == "hyphen_preserve":
         merged = previous_compact + following_compact
+    elif joiner == "newline":
+        merged = previous_compact + "\n" + following_compact
     else:
         merged = previous_compact + " " + following_compact
     return merged[:limit]
@@ -190,17 +198,31 @@ def _starts_like_continuation(text: str) -> bool:
     return ("a" <= first <= "z") or bool(_CONTINUATION_START_RE.match(compact))
 
 
+def _ends_with_formula_operator(text: str) -> bool:
+    return bool(_FORMULA_OPERATOR_END_RE.search(_compact(text)))
+
+
+def _starts_like_formula_continuation(text: str) -> bool:
+    compact = _compact(text)
+    if not compact:
+        return False
+    return bool(_FORMULA_CONTINUATION_START_RE.match(compact)) or _starts_like_continuation(compact)
+
+
 def _continuation_kind(
     prev_block: BlockIR,
     next_block: BlockIR,
     possible_table_continuation: bool,
     hyphenated_word_break: bool = False,
     academic_abbreviation_continuation: bool = False,
+    formula_continuation: bool = False,
 ) -> str:
     if hyphenated_word_break:
         return "hyphenated_word_continuation"
     if academic_abbreviation_continuation:
         return "academic_abbreviation_continuation"
+    if formula_continuation:
+        return "formula_continuation"
     if possible_table_continuation:
         return "table_continuation"
     if prev_block.type == next_block.type and prev_block.type in _CONTINUABLE_BLOCK_TYPES:
@@ -240,6 +262,22 @@ def _page_boundary_fragment(prev_page: PageIR, next_page: PageIR) -> dict[str, A
         and prev_block.type in _CONTINUABLE_BLOCK_TYPES
     )
     possible_table_continuation = prev_block.type == "table" and next_block.type == "table"
+    previous_formula_ends_with_operator = (
+        prev_block.type == next_block.type == "formula"
+        and _ends_with_formula_operator(prev_block.text)
+    )
+    next_formula_starts_with_math_continuation = (
+        prev_block.type == next_block.type == "formula"
+        and _starts_like_formula_continuation(next_block.text)
+    )
+    formula_continuation = (
+        prev_block.type == next_block.type == "formula"
+        and (
+            previous_formula_ends_with_operator
+            or next_formula_starts_with_math_continuation
+            or prev_unfinished
+        )
+    )
 
     reasons: list[str] = []
     if prev_unfinished:
@@ -255,6 +293,12 @@ def _page_boundary_fragment(prev_page: PageIR, next_page: PageIR) -> dict[str, A
     if academic_abbreviation_continuation:
         reasons.append("academic_abbreviation_at_page_end")
         reasons.append("next_page_starts_like_abbreviation_continuation")
+    if formula_continuation:
+        reasons.append("formula_continuation_across_page")
+        if previous_formula_ends_with_operator:
+            reasons.append("previous_formula_ends_with_operator")
+        if next_formula_starts_with_math_continuation:
+            reasons.append("next_formula_starts_with_math_continuation")
     if same_continuable_type:
         reasons.append("same_continuable_block_type_across_boundary")
     if possible_table_continuation:
@@ -265,8 +309,12 @@ def _page_boundary_fragment(prev_page: PageIR, next_page: PageIR) -> dict[str, A
         and (next_continues or same_continuable_type)
         and not title_line_break_false_positive
     )
-    is_fragment = possible_table_continuation or hyphenated_word_break or academic_abbreviation_continuation or (
-        generic_text_continuation
+    is_fragment = (
+        possible_table_continuation
+        or hyphenated_word_break
+        or academic_abbreviation_continuation
+        or formula_continuation
+        or generic_text_continuation
     )
     if not is_fragment:
         return None
@@ -276,6 +324,7 @@ def _page_boundary_fragment(prev_page: PageIR, next_page: PageIR) -> dict[str, A
         if possible_table_continuation
         or hyphenated_word_break
         or academic_abbreviation_continuation
+        or formula_continuation
         or (prev_unfinished and next_continues)
         else "medium"
     )
@@ -296,6 +345,10 @@ def _page_boundary_fragment(prev_page: PageIR, next_page: PageIR) -> dict[str, A
         suggestion = "keep_academic_abbreviation_sentence_in_same_structure_chunk"
         stitch_action = "preserve_academic_abbreviation_context_across_page"
         joiner = "space"
+    elif formula_continuation:
+        suggestion = "keep_formula_derivation_in_same_structure_chunk"
+        stitch_action = "preserve_formula_derivation_across_page_boundary"
+        joiner = "newline"
     else:
         suggestion = "keep_pages_in_same_structure_chunk_or_apply_deferred_tail"
         stitch_action = "translate_as_continuous_cross_page_text"
@@ -306,6 +359,7 @@ def _page_boundary_fragment(prev_page: PageIR, next_page: PageIR) -> dict[str, A
         possible_table_continuation,
         hyphenated_word_break,
         academic_abbreviation_continuation,
+        formula_continuation,
     )
 
     return {

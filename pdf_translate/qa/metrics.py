@@ -457,6 +457,18 @@ def build_experiment_metrics(
     academic_abbreviation_co_located_count = _as_int(
         chunk_boundary_summary.get("academic_abbreviation_co_located_count")
     )
+    formula_continuation_boundary_count = _as_int(
+        structure_summary.get("formula_continuation_boundary_count")
+    ) or _as_int(chunk_boundary_summary.get("formula_continuation_boundary_count"))
+    formula_continuation_protected_count = _as_int(
+        chunk_boundary_summary.get("formula_continuation_protected_count")
+    )
+    formula_continuation_split_count = _as_int(
+        chunk_boundary_summary.get("formula_continuation_split_count")
+    )
+    formula_continuation_co_located_count = _as_int(
+        chunk_boundary_summary.get("formula_continuation_co_located_count")
+    )
     budget_overflow_chunk_count = _as_int(chunk_boundary_summary.get("budget_overflow_chunk_count"))
     budget_overflow_char_total = _as_int(chunk_boundary_summary.get("budget_overflow_char_total"))
     structural_relation_protected_count = _as_int(
@@ -501,6 +513,18 @@ def build_experiment_metrics(
     )
     active_academic_abbreviation_split_reduction_rate_vs_baseline = _as_float(
         chunk_strategy_summary.get("active_academic_abbreviation_split_reduction_rate_vs_baseline")
+    )
+    baseline_formula_continuation_split_count = _as_int(
+        chunk_strategy_summary.get("baseline_formula_continuation_split_count")
+    )
+    active_formula_continuation_split_count = _as_int(
+        chunk_strategy_summary.get("active_formula_continuation_split_count")
+    )
+    active_formula_continuation_split_reduction_vs_baseline = _as_int(
+        chunk_strategy_summary.get("active_formula_continuation_split_reduction_vs_baseline")
+    )
+    active_formula_continuation_split_reduction_rate_vs_baseline = _as_float(
+        chunk_strategy_summary.get("active_formula_continuation_split_reduction_rate_vs_baseline")
     )
     routed_page_count = _as_int(vision_summary.get("routed_page_count"))
     vision_preview_page_count = _as_int(vision_summary.get("preview_page_count"))
@@ -1044,6 +1068,10 @@ def build_experiment_metrics(
             "academic_abbreviation_protected_count": academic_abbreviation_protected_count,
             "academic_abbreviation_split_count": academic_abbreviation_split_count,
             "academic_abbreviation_co_located_count": academic_abbreviation_co_located_count,
+            "formula_continuation_boundary_count": formula_continuation_boundary_count,
+            "formula_continuation_protected_count": formula_continuation_protected_count,
+            "formula_continuation_split_count": formula_continuation_split_count,
+            "formula_continuation_co_located_count": formula_continuation_co_located_count,
             "budget_overflow_chunk_count": budget_overflow_chunk_count,
             "budget_overflow_char_total": budget_overflow_char_total,
             "structural_relation_protected_count": structural_relation_protected_count,
@@ -1062,6 +1090,11 @@ def build_experiment_metrics(
             "active_academic_abbreviation_split_count": active_academic_abbreviation_split_count,
             "active_academic_abbreviation_split_reduction_vs_baseline": (
                 active_academic_abbreviation_split_reduction_vs_baseline
+            ),
+            "baseline_formula_continuation_split_count": baseline_formula_continuation_split_count,
+            "active_formula_continuation_split_count": active_formula_continuation_split_count,
+            "active_formula_continuation_split_reduction_vs_baseline": (
+                active_formula_continuation_split_reduction_vs_baseline
             ),
             "routed_page_count": routed_page_count,
             "vision_preview_page_count": vision_preview_page_count,
@@ -1426,6 +1459,14 @@ def build_experiment_metrics(
                 academic_abbreviation_protected_count,
                 academic_abbreviation_boundary_count,
             ),
+            "formula_continuation_boundary_split_rate": _rate(
+                formula_continuation_split_count,
+                formula_continuation_boundary_count,
+            ),
+            "formula_continuation_boundary_protected_rate": _rate(
+                formula_continuation_protected_count,
+                formula_continuation_boundary_count,
+            ),
             "budget_overflow_chunk_rate": _rate(budget_overflow_chunk_count, chunk_count),
             "active_split_reduction_rate_vs_baseline": active_split_reduction_rate_vs_baseline,
             "active_table_continuation_split_reduction_rate_vs_baseline": (
@@ -1436,6 +1477,9 @@ def build_experiment_metrics(
             ),
             "active_academic_abbreviation_split_reduction_rate_vs_baseline": (
                 active_academic_abbreviation_split_reduction_rate_vs_baseline
+            ),
+            "active_formula_continuation_split_reduction_rate_vs_baseline": (
+                active_formula_continuation_split_reduction_rate_vs_baseline
             ),
             "entity_missing_rate": _rate(missing_entity_token_count, effective_entity_candidate_count),
             "formula_token_missing_rate": _rate(missing_formula_token_count, source_formula_token_count),

@@ -45,6 +45,13 @@ def _is_academic_abbreviation_continuation(fragment: dict[str, Any]) -> bool:
     return isinstance(reasons, list) and "academic_abbreviation_at_page_end" in reasons
 
 
+def _is_formula_continuation(fragment: dict[str, Any]) -> bool:
+    if str(fragment.get("continuation_kind") or "") == "formula_continuation":
+        return True
+    reasons = fragment.get("reasons")
+    return isinstance(reasons, list) and "formula_continuation_across_page" in reasons
+
+
 def build_chunk_boundary_qa(
     chunks: list[TextChunk],
     structure_qa: dict[str, Any] | None,
@@ -111,6 +118,10 @@ def build_chunk_boundary_qa(
     academic_abbreviation_protected_count = 0
     academic_abbreviation_split_count = 0
     academic_abbreviation_co_located_count = 0
+    formula_continuation_boundary_count = 0
+    formula_continuation_protected_count = 0
+    formula_continuation_split_count = 0
+    formula_continuation_co_located_count = 0
 
     for fragment in fragments:
         pages = fragment.get("pages_1based")
@@ -137,6 +148,9 @@ def build_chunk_boundary_qa(
         is_academic_abbreviation_continuation = _is_academic_abbreviation_continuation(fragment)
         if is_academic_abbreviation_continuation:
             academic_abbreviation_boundary_count += 1
+        is_formula_continuation = _is_formula_continuation(fragment)
+        if is_formula_continuation:
+            formula_continuation_boundary_count += 1
 
         co_located_chunks = [
             row["chunk_id"]
@@ -172,6 +186,9 @@ def build_chunk_boundary_qa(
             if is_academic_abbreviation_continuation:
                 academic_abbreviation_protected_count += 1
                 academic_abbreviation_co_located_count += 1
+            if is_formula_continuation:
+                formula_continuation_protected_count += 1
+                formula_continuation_co_located_count += 1
         elif co_located_chunks:
             status = "co_located"
             co_located_count += 1
@@ -181,6 +198,8 @@ def build_chunk_boundary_qa(
                 hyphenated_co_located_count += 1
             if is_academic_abbreviation_continuation:
                 academic_abbreviation_co_located_count += 1
+            if is_formula_continuation:
+                formula_continuation_co_located_count += 1
         else:
             status = "split"
             split_count += 1
@@ -192,6 +211,8 @@ def build_chunk_boundary_qa(
                 hyphenated_split_count += 1
             if is_academic_abbreviation_continuation:
                 academic_abbreviation_split_count += 1
+            if is_formula_continuation:
+                formula_continuation_split_count += 1
 
         boundaries.append(
             {
@@ -205,6 +226,7 @@ def build_chunk_boundary_qa(
                 "is_table_continuation": is_table_continuation,
                 "is_hyphenated_continuation": is_hyphenated_continuation,
                 "is_academic_abbreviation_continuation": is_academic_abbreviation_continuation,
+                "is_formula_continuation": is_formula_continuation,
                 "status": status,
                 "co_located_chunk_ids": co_located_chunks,
                 "protected_by_chunk_ids": protected_chunks,
@@ -244,6 +266,10 @@ def build_chunk_boundary_qa(
             "academic_abbreviation_protected_count": academic_abbreviation_protected_count,
             "academic_abbreviation_split_count": academic_abbreviation_split_count,
             "academic_abbreviation_co_located_count": academic_abbreviation_co_located_count,
+            "formula_continuation_boundary_count": formula_continuation_boundary_count,
+            "formula_continuation_protected_count": formula_continuation_protected_count,
+            "formula_continuation_split_count": formula_continuation_split_count,
+            "formula_continuation_co_located_count": formula_continuation_co_located_count,
             "split_boundary_rate": round(split_count / boundary_count, 4) if boundary_count else 0.0,
             "protected_boundary_rate": round(protected_count / boundary_count, 4) if boundary_count else 0.0,
             "high_risk_split_rate": round(high_risk_split_count / high_risk_count, 4) if high_risk_count else 0.0,
@@ -276,6 +302,18 @@ def build_chunk_boundary_qa(
                 4,
             )
             if academic_abbreviation_boundary_count
+            else 0.0,
+            "formula_continuation_split_rate": round(
+                formula_continuation_split_count / formula_continuation_boundary_count,
+                4,
+            )
+            if formula_continuation_boundary_count
+            else 0.0,
+            "formula_continuation_protected_rate": round(
+                formula_continuation_protected_count / formula_continuation_boundary_count,
+                4,
+            )
+            if formula_continuation_boundary_count
             else 0.0,
             "budget_split_reason_counts": dict(sorted(budget_split_reason_counts.items())),
             "budget_pressure_counts": dict(sorted(budget_pressure_counts.items())),
@@ -330,6 +368,7 @@ def build_chunk_strategy_comparison(
     baseline_academic_abbreviation_split = int(
         baseline_summary.get("academic_abbreviation_split_count") or 0
     )
+    baseline_formula_continuation_split = int(baseline_summary.get("formula_continuation_split_count") or 0)
     best_strategy = None
     best_split_rate: float | None = None
     best_split_count: int | None = None
@@ -387,6 +426,12 @@ def build_chunk_strategy_comparison(
             if name != baseline_strategy
             else 0
         )
+        formula_continuation_split_count = int(summary.get("formula_continuation_split_count") or 0)
+        formula_continuation_split_delta = (
+            baseline_formula_continuation_split - formula_continuation_split_count
+            if name != baseline_strategy
+            else 0
+        )
         strategy_entries.append(
             {
                 "strategy": name,
@@ -424,6 +469,16 @@ def build_chunk_strategy_comparison(
                 "academic_abbreviation_co_located_count": int(
                     summary.get("academic_abbreviation_co_located_count") or 0
                 ),
+                "formula_continuation_boundary_count": int(
+                    summary.get("formula_continuation_boundary_count") or 0
+                ),
+                "formula_continuation_protected_count": int(
+                    summary.get("formula_continuation_protected_count") or 0
+                ),
+                "formula_continuation_split_count": formula_continuation_split_count,
+                "formula_continuation_co_located_count": int(
+                    summary.get("formula_continuation_co_located_count") or 0
+                ),
                 "budget_overflow_chunk_count": int(summary.get("budget_overflow_chunk_count") or 0),
                 "structural_relation_protected_count": int(
                     summary.get("structural_relation_protected_count") or 0
@@ -442,6 +497,10 @@ def build_chunk_strategy_comparison(
                 "academic_abbreviation_protected_rate": float(
                     summary.get("academic_abbreviation_protected_rate") or 0.0
                 ),
+                "formula_continuation_split_rate": float(summary.get("formula_continuation_split_rate") or 0.0),
+                "formula_continuation_protected_rate": float(
+                    summary.get("formula_continuation_protected_rate") or 0.0
+                ),
                 "split_reduction_vs_baseline": split_delta,
                 "split_reduction_rate_vs_baseline": _rate(split_delta, baseline_split),
                 "table_continuation_split_reduction_vs_baseline": table_continuation_split_delta,
@@ -459,6 +518,11 @@ def build_chunk_strategy_comparison(
                     academic_abbreviation_split_delta,
                     baseline_academic_abbreviation_split,
                 ),
+                "formula_continuation_split_reduction_vs_baseline": formula_continuation_split_delta,
+                "formula_continuation_split_reduction_rate_vs_baseline": _rate(
+                    formula_continuation_split_delta,
+                    baseline_formula_continuation_split,
+                ),
             }
         )
     strategy_entries.sort(key=lambda item: str(item["strategy"]))
@@ -468,6 +532,7 @@ def build_chunk_strategy_comparison(
     active_table_continuation_split = int(active_summary.get("table_continuation_split_count") or 0)
     active_hyphenated_split = int(active_summary.get("hyphenated_split_count") or 0)
     active_academic_abbreviation_split = int(active_summary.get("academic_abbreviation_split_count") or 0)
+    active_formula_continuation_split = int(active_summary.get("formula_continuation_split_count") or 0)
     return {
         "schema_version": "chunk-strategy-comparison-v1",
         "doc_id": (structure_qa or {}).get("doc_id") if isinstance(structure_qa, dict) else None,
@@ -510,6 +575,15 @@ def build_chunk_strategy_comparison(
             "active_academic_abbreviation_split_reduction_rate_vs_baseline": _rate(
                 baseline_academic_abbreviation_split - active_academic_abbreviation_split,
                 baseline_academic_abbreviation_split,
+            ),
+            "baseline_formula_continuation_split_count": baseline_formula_continuation_split,
+            "active_formula_continuation_split_count": active_formula_continuation_split,
+            "active_formula_continuation_split_reduction_vs_baseline": (
+                baseline_formula_continuation_split - active_formula_continuation_split
+            ),
+            "active_formula_continuation_split_reduction_rate_vs_baseline": _rate(
+                baseline_formula_continuation_split - active_formula_continuation_split,
+                baseline_formula_continuation_split,
             ),
         },
         "strategies": strategy_entries,

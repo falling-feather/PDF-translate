@@ -134,6 +134,15 @@ def _is_academic_abbreviation_fragment(fragment: dict | None) -> bool:
     return str(fragment.get("continuation_kind") or "") == "academic_abbreviation_continuation"
 
 
+def _is_formula_continuation_fragment(fragment: dict | None) -> bool:
+    if not isinstance(fragment, dict):
+        return False
+    if str(fragment.get("continuation_kind") or "") == "formula_continuation":
+        return True
+    reasons = fragment.get("reasons")
+    return isinstance(reasons, list) and "formula_continuation_across_page" in reasons
+
+
 def _make_chunk(
     chunk_index: int,
     blocks: list[BlockIR],
@@ -345,6 +354,8 @@ def build_structure_chunks(
                         current_warnings.append(f"protected_hyphenated_compound:{boundary_id}")
                     if _is_academic_abbreviation_fragment(protected_fragment):
                         current_warnings.append(f"protected_academic_abbreviation:{boundary_id}")
+                    if _is_formula_continuation_fragment(protected_fragment):
+                        current_warnings.append(f"protected_formula_continuation:{boundary_id}")
             if structural_relation_id:
                 current_structural_relation_ids.append(structural_relation_id)
                 current_warnings.append(f"protected_structural_relation:{structural_relation_id}")

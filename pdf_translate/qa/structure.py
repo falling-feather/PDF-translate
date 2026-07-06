@@ -99,6 +99,7 @@ def build_structure_qa(doc_ir: DocumentIR) -> dict[str, Any]:
         str(item.get("stitch_action") or "unknown") for item in page_boundary_fragments
     )
     table_continuation_boundary_count = int(continuation_kind_counts.get("table_continuation", 0))
+    formula_continuation_boundary_count = int(continuation_kind_counts.get("formula_continuation", 0))
     caption_count = sum(1 for item in relationships if item["type"] == "caption")
     footnote_count = sum(1 for item in relationships if item["type"] == "footnote")
     linked_relationship_count = sum(1 for item in relationships if item.get("parent_id"))
@@ -161,6 +162,7 @@ def build_structure_qa(doc_ir: DocumentIR) -> dict[str, Any]:
             "page_boundary_fragment_count": boundary_count,
             "page_boundary_stitch_candidate_count": boundary_count,
             "table_continuation_boundary_count": table_continuation_boundary_count,
+            "formula_continuation_boundary_count": formula_continuation_boundary_count,
             "continuation_kind_counts": dict(continuation_kind_counts),
             "stitch_action_counts": dict(stitch_action_counts),
             "page_boundary_fragment_rate": round(boundary_count / possible_boundary_count, 4)
