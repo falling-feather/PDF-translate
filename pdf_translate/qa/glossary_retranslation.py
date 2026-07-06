@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import time
 from datetime import datetime, timezone
@@ -15,6 +16,8 @@ from pdf_translate.translators.openai_compatible import SYSTEM_PROMPT_VERSION, p
 
 SCHEMA_VERSION = "glossary-retranslation-plan-v1"
 EXECUTION_SCHEMA_VERSION = "glossary-retranslation-execution-v1"
+PUBLISH_SCHEMA_VERSION = "glossary-retranslation-publish-v1"
+ROLLBACK_SCHEMA_VERSION = "glossary-retranslation-rollback-v1"
 
 
 def _read_json_dict(path: Path, default: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -845,3 +848,305 @@ def write_glossary_retranslation_plan(
     json_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(glossary_retranslation_plan_to_markdown(plan), encoding="utf-8")
     return plan
+
+
+def _file_sha256(path: Path | None) -> str:
+    if path is None or not path.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _copy_text_atomic(source_path: Path, target_path: Path) -> None:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target_path.with_name(f".{target_path.name}.tmp")
+    temp_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+    temp_path.replace(target_path)
+
+
+def build_glossary_retranslation_publish(
+    execution_result: dict[str, Any],
+    *,
+    confirm: bool = False,
+    candidate_full_path: Path | None = None,
+    published_full_path: Path | None = None,
+    original_full_path: Path | None = None,
+) -> dict[str, Any]:
+    """Create an explicit publication copy from the glossary retranslation candidate."""
+    summary = (
+        execution_result.get("summary")
+        if isinstance(execution_result.get("summary"), dict)
+        else {}
+    )
+    artifacts = (
+        execution_result.get("artifacts")
+        if isinstance(execution_result.get("artifacts"), dict)
+        else {}
+    )
+    candidate_path_text = str(artifacts.get("retranslated_full_path") or "")
+    candidate_path = candidate_full_path or (Path(candidate_path_text) if candidate_path_text else None)
+    target_path = published_full_path
+    original_path = original_full_path
+
+    requested_count = int(summary.get("requested_chunk_count") or 0)
+    executed_count = int(summary.get("executed_chunk_count") or 0)
+    failed_count = int(summary.get("failed_chunk_count") or 0)
+    skipped_count = int(summary.get("skipped_chunk_count") or 0)
+    open_issue_count = failed_count + skipped_count
+    warnings: list[str] = []
+    if failed_count:
+        warnings.append(f"{failed_count} 个术语重译分块执行失败。")
+    if skipped_count:
+        warnings.append(f"{skipped_count} 个术语重译分块被跳过。")
+    if requested_count and executed_count < requested_count:
+        warnings.append("候选全文中仍包含部分原始译文分块。")
+
+    status = "pending_confirmation"
+    reason = "需要显式人工确认后才生成术语重译发布副本。"
+    published = False
+    if confirm:
+        if candidate_path is None or not candidate_path.is_file():
+            status = "blocked_missing_candidate_full"
+            reason = "未找到可发布的术语候选重译全文。"
+        elif target_path is None:
+            status = "blocked_missing_publish_target"
+            reason = "未提供术语重译发布副本输出路径。"
+        elif executed_count <= 0:
+            status = "blocked_no_retranslated_chunks"
+            reason = "没有已执行的术语重译分块，未生成发布副本。"
+        else:
+            _copy_text_atomic(candidate_path, target_path)
+            published = True
+            status = "published_with_warnings" if open_issue_count else "published"
+            reason = "已生成人工确认后的术语重译发布副本。"
+
+    candidate_hash = _file_sha256(candidate_path)
+    published_hash = _file_sha256(target_path)
+    original_hash = _file_sha256(original_path)
+    return {
+        "schema_version": PUBLISH_SCHEMA_VERSION,
+        "summary": {
+            "execution_schema_version": execution_result.get("schema_version"),
+            "confirmed": bool(confirm),
+            "published": published,
+            "publish_status": status,
+            "reason": reason,
+            "requested_chunk_count": requested_count,
+            "executed_chunk_count": executed_count,
+            "failed_chunk_count": failed_count,
+            "skipped_chunk_count": skipped_count,
+            "open_issue_count": open_issue_count,
+            "candidate_full_path": candidate_path.as_posix() if candidate_path else "",
+            "published_full_path": target_path.as_posix() if target_path else "",
+            "original_full_path": original_path.as_posix() if original_path else "",
+            "candidate_sha256": candidate_hash,
+            "published_sha256": published_hash,
+            "original_sha256": original_hash,
+            "published_matches_candidate": bool(
+                published_hash and candidate_hash and published_hash == candidate_hash
+            ),
+            "rollback_available": bool(original_path and original_path.is_file()),
+            "warnings": warnings,
+        },
+        "source": {
+            "execution_summary": summary,
+            "execution_artifacts": artifacts,
+            "requested_chunk_ids": execution_result.get("requested_chunk_ids") or [],
+        },
+    }
+
+
+def glossary_retranslation_publish_to_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    warnings = summary.get("warnings") if isinstance(summary.get("warnings"), list) else []
+    lines = [
+        "# 术语候选重译发布确认",
+        "",
+        "| 指标 | 值 |",
+        "| --- | --- |",
+        f"| 状态 | `{summary.get('publish_status') or '-'}` |",
+        f"| 已请求发布确认 | {summary.get('confirmed', False)} |",
+        f"| 已发布副本 | {summary.get('published', False)} |",
+        f"| 请求重译分块 | {summary.get('requested_chunk_count', 0)} |",
+        f"| 已重译分块 | {summary.get('executed_chunk_count', 0)} |",
+        f"| 失败分块 | {summary.get('failed_chunk_count', 0)} |",
+        f"| 跳过分块 | {summary.get('skipped_chunk_count', 0)} |",
+        f"| 候选全文 | `{summary.get('candidate_full_path') or '-'}` |",
+        f"| 发布副本 | `{summary.get('published_full_path') or '-'}` |",
+        f"| 原始译文 | `{summary.get('original_full_path') or '-'}` |",
+        f"| 发布副本匹配候选全文 | {summary.get('published_matches_candidate', False)} |",
+        f"| 可回滚 | {summary.get('rollback_available', False)} |",
+        "",
+        summary.get("reason") or "",
+    ]
+    if warnings:
+        lines.extend(["", "## 警告", ""])
+        lines.extend(f"- {warning}" for warning in warnings)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_glossary_retranslation_publish(
+    execution_result: dict[str, Any],
+    json_path: Path,
+    markdown_path: Path,
+    *,
+    confirm: bool = False,
+    candidate_full_path: Path | None = None,
+    published_full_path: Path | None = None,
+    original_full_path: Path | None = None,
+) -> dict[str, Any]:
+    report = build_glossary_retranslation_publish(
+        execution_result,
+        confirm=confirm,
+        candidate_full_path=candidate_full_path,
+        published_full_path=published_full_path or json_path.parent / "glossary_retranslation_published_full.md",
+        original_full_path=original_full_path,
+    )
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(glossary_retranslation_publish_to_markdown(report), encoding="utf-8")
+    return report
+
+
+def build_glossary_retranslation_rollback(
+    publish_report: dict[str, Any],
+    *,
+    confirm: bool = False,
+    original_full_path: Path | None = None,
+    published_full_path: Path | None = None,
+    rollback_full_path: Path | None = None,
+) -> dict[str, Any]:
+    """Create an auditable rollback drill for glossary retranslation publication."""
+    summary = (
+        publish_report.get("summary")
+        if isinstance(publish_report.get("summary"), dict)
+        else {}
+    )
+    original_path_text = str(summary.get("original_full_path") or "")
+    published_path_text = str(summary.get("published_full_path") or "")
+    original_path = original_full_path or (Path(original_path_text) if original_path_text else None)
+    published_path = published_full_path or (Path(published_path_text) if published_path_text else None)
+    target_path = rollback_full_path
+
+    published = bool(summary.get("published"))
+    original_exists = bool(original_path and original_path.is_file())
+    published_exists = bool(published_path and published_path.is_file())
+    rollback_available = original_exists and published_exists and published
+    warnings: list[str] = []
+    if not published:
+        warnings.append("术语重译发布稿尚未生成，暂不能演练回滚。")
+    if not original_exists:
+        warnings.append("原始译文缺失，无法作为回滚基线。")
+    if not published_exists:
+        warnings.append("术语重译发布稿缺失，无法验证回滚目标。")
+
+    status = "pending_confirmation" if rollback_available else "not_ready"
+    reason = "需要显式确认后才生成术语重译回滚演练副本。"
+    rollback_applied = False
+    published_hash_before = _file_sha256(published_path)
+    if confirm:
+        if not published:
+            status = "blocked_unpublished"
+            reason = "术语重译发布稿尚未生成，未执行回滚演练。"
+        elif not original_exists:
+            status = "blocked_missing_original"
+            reason = "原始译文缺失，未执行回滚演练。"
+        elif not published_exists:
+            status = "blocked_missing_published"
+            reason = "术语重译发布稿缺失，未执行回滚演练。"
+        elif target_path is None:
+            status = "blocked_missing_rollback_target"
+            reason = "未提供术语重译回滚演练副本输出路径。"
+        else:
+            _copy_text_atomic(original_path, target_path)
+            rollback_applied = True
+            status = "rolled_back"
+            reason = "已生成术语重译回滚演练副本；发布稿未被覆盖。"
+    elif not rollback_available:
+        reason = "当前缺少发布稿或原始译文基线，暂不能演练回滚。"
+
+    original_hash = _file_sha256(original_path)
+    published_hash = _file_sha256(published_path)
+    rollback_hash = _file_sha256(target_path) if rollback_applied else ""
+    return {
+        "schema_version": ROLLBACK_SCHEMA_VERSION,
+        "summary": {
+            "publish_schema_version": publish_report.get("schema_version"),
+            "confirmed": bool(confirm),
+            "rollback_available": rollback_available,
+            "rollback_applied": rollback_applied,
+            "rollback_status": status,
+            "reason": reason,
+            "publish_status": summary.get("publish_status") or "",
+            "published": published,
+            "original_full_path": original_path.as_posix() if original_path else "",
+            "published_full_path": published_path.as_posix() if published_path else "",
+            "rollback_full_path": target_path.as_posix() if target_path else "",
+            "original_sha256": original_hash,
+            "published_sha256": published_hash,
+            "rollback_sha256": rollback_hash,
+            "rollback_matches_original": bool(rollback_hash and original_hash and rollback_hash == original_hash),
+            "published_preserved": bool(
+                published_hash_before and published_hash and published_hash_before == published_hash
+            ),
+            "warnings": warnings,
+        },
+        "source": {
+            "publish_summary": summary,
+        },
+    }
+
+
+def glossary_retranslation_rollback_to_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    warnings = summary.get("warnings") if isinstance(summary.get("warnings"), list) else []
+    lines = [
+        "# 术语候选重译回滚演练",
+        "",
+        "| 指标 | 值 |",
+        "| --- | --- |",
+        f"| 状态 | `{summary.get('rollback_status') or '-'}` |",
+        f"| 已请求回滚演练 | {summary.get('confirmed', False)} |",
+        f"| 可回滚 | {summary.get('rollback_available', False)} |",
+        f"| 已生成回滚副本 | {summary.get('rollback_applied', False)} |",
+        f"| 发布状态 | `{summary.get('publish_status') or '-'}` |",
+        f"| 原始译文 | `{summary.get('original_full_path') or '-'}` |",
+        f"| 发布稿 | `{summary.get('published_full_path') or '-'}` |",
+        f"| 回滚演练副本 | `{summary.get('rollback_full_path') or '-'}` |",
+        f"| 回滚副本匹配原始译文 | {summary.get('rollback_matches_original', False)} |",
+        f"| 发布稿保持不变 | {summary.get('published_preserved', False)} |",
+        "",
+        summary.get("reason") or "",
+    ]
+    if warnings:
+        lines.extend(["", "## 警告", ""])
+        lines.extend(f"- {warning}" for warning in warnings)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_glossary_retranslation_rollback(
+    publish_report: dict[str, Any],
+    json_path: Path,
+    markdown_path: Path,
+    *,
+    confirm: bool = False,
+    original_full_path: Path | None = None,
+    published_full_path: Path | None = None,
+    rollback_full_path: Path | None = None,
+) -> dict[str, Any]:
+    report = build_glossary_retranslation_rollback(
+        publish_report,
+        confirm=confirm,
+        original_full_path=original_full_path,
+        published_full_path=published_full_path,
+        rollback_full_path=rollback_full_path or json_path.parent / "glossary_retranslation_rollback_full.md",
+    )
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(glossary_retranslation_rollback_to_markdown(report), encoding="utf-8")
+    return report

@@ -611,6 +611,32 @@ class JobRegistry:
         return summary, None
 
     @staticmethod
+    def _glossary_retranslation_publish_summary(path: Path) -> tuple[dict[str, Any], str | None]:
+        if not path.is_file():
+            return {}, None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}, "glossary_retranslation_publish_invalid"
+        summary = raw.get("summary")
+        if not isinstance(summary, dict):
+            return {}, "glossary_retranslation_publish_summary_missing"
+        return summary, None
+
+    @staticmethod
+    def _glossary_retranslation_rollback_summary(path: Path) -> tuple[dict[str, Any], str | None]:
+        if not path.is_file():
+            return {}, None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}, "glossary_retranslation_rollback_invalid"
+        summary = raw.get("summary")
+        if not isinstance(summary, dict):
+            return {}, "glossary_retranslation_rollback_summary_missing"
+        return summary, None
+
+    @staticmethod
     def _as_int(value: Any) -> int:
         if isinstance(value, bool):
             return int(value)
@@ -646,6 +672,12 @@ class JobRegistry:
         glossary_retranslation_result_json = output_dir / "glossary_retranslation_result.json"
         glossary_retranslation_result_md = output_dir / "glossary_retranslation_result.md"
         glossary_retranslated_full = output_dir / "glossary_retranslated_full.md"
+        glossary_retranslation_publish_json = output_dir / "glossary_retranslation_publish.json"
+        glossary_retranslation_publish_md = output_dir / "glossary_retranslation_publish.md"
+        glossary_retranslation_published_full = output_dir / "glossary_retranslation_published_full.md"
+        glossary_retranslation_rollback_json = output_dir / "glossary_retranslation_rollback.json"
+        glossary_retranslation_rollback_md = output_dir / "glossary_retranslation_rollback.md"
+        glossary_retranslation_rollback_full = output_dir / "glossary_retranslation_rollback_full.md"
         repair_publish_json = output_dir / "repair_publish.json"
         repair_publish_md = output_dir / "repair_publish.md"
         repair_rollback_json = output_dir / "repair_rollback.json"
@@ -680,6 +712,16 @@ class JobRegistry:
         glossary_retranslation_result_json_bytes = self._file_size(glossary_retranslation_result_json)
         glossary_retranslation_result_md_bytes = self._file_size(glossary_retranslation_result_md)
         glossary_retranslated_full_bytes = self._file_size(glossary_retranslated_full)
+        glossary_retranslation_publish_json_bytes = self._file_size(glossary_retranslation_publish_json)
+        glossary_retranslation_publish_md_bytes = self._file_size(glossary_retranslation_publish_md)
+        glossary_retranslation_published_full_bytes = self._file_size(
+            glossary_retranslation_published_full
+        )
+        glossary_retranslation_rollback_json_bytes = self._file_size(glossary_retranslation_rollback_json)
+        glossary_retranslation_rollback_md_bytes = self._file_size(glossary_retranslation_rollback_md)
+        glossary_retranslation_rollback_full_bytes = self._file_size(
+            glossary_retranslation_rollback_full
+        )
         repair_publish_json_bytes = self._file_size(repair_publish_json)
         repair_publish_md_bytes = self._file_size(repair_publish_md)
         repair_rollback_json_bytes = self._file_size(repair_rollback_json)
@@ -729,6 +771,12 @@ class JobRegistry:
         glossary_retranslation_execution_summary, glossary_retranslation_execution_warning = (
             self._glossary_retranslation_execution_summary(glossary_retranslation_result_json)
         )
+        glossary_retranslation_publish_summary, glossary_retranslation_publish_warning = (
+            self._glossary_retranslation_publish_summary(glossary_retranslation_publish_json)
+        )
+        glossary_retranslation_rollback_summary, glossary_retranslation_rollback_warning = (
+            self._glossary_retranslation_rollback_summary(glossary_retranslation_rollback_json)
+        )
 
         warnings: list[str] = []
         if not rec.work_dir.is_dir():
@@ -765,6 +813,10 @@ class JobRegistry:
             warnings.append(glossary_retranslation_plan_warning)
         if glossary_retranslation_execution_warning:
             warnings.append(glossary_retranslation_execution_warning)
+        if glossary_retranslation_publish_warning:
+            warnings.append(glossary_retranslation_publish_warning)
+        if glossary_retranslation_rollback_warning:
+            warnings.append(glossary_retranslation_rollback_warning)
         if (
             rec.status == "done"
             and table_reconstruction_json.is_file()
@@ -915,6 +967,36 @@ class JobRegistry:
         glossary_retranslation_execution_skipped_count = self._as_int(
             glossary_retranslation_execution_summary.get("skipped_chunk_count")
         )
+        glossary_retranslation_publish_confirmed = bool(
+            glossary_retranslation_publish_summary.get("confirmed")
+        )
+        glossary_retranslation_publish_published = bool(
+            glossary_retranslation_publish_summary.get("published")
+        )
+        glossary_retranslation_publish_status = str(
+            glossary_retranslation_publish_summary.get("publish_status") or ""
+        )
+        glossary_retranslation_publish_open_issue_count = self._as_int(
+            glossary_retranslation_publish_summary.get("open_issue_count")
+        )
+        glossary_retranslation_publish_rollback_available = bool(
+            glossary_retranslation_publish_summary.get("rollback_available")
+        )
+        glossary_retranslation_rollback_available = bool(
+            glossary_retranslation_rollback_summary.get("rollback_available")
+        )
+        glossary_retranslation_rollback_confirmed = bool(
+            glossary_retranslation_rollback_summary.get("confirmed")
+        )
+        glossary_retranslation_rollback_applied = bool(
+            glossary_retranslation_rollback_summary.get("rollback_applied")
+        )
+        glossary_retranslation_rollback_status = str(
+            glossary_retranslation_rollback_summary.get("rollback_status") or ""
+        )
+        glossary_retranslation_rollback_matches_original = bool(
+            glossary_retranslation_rollback_summary.get("rollback_matches_original")
+        )
         if repair_publish_open_issue_count > 0:
             warnings.append("repair_publish_open_issues")
         if repair_patch_review_blocking_count > 0:
@@ -933,6 +1015,22 @@ class JobRegistry:
             warnings.append("glossary_retranslation_plan_missing_for_confirmed_terms")
         if glossary_retranslation_execution_failed_count > 0:
             warnings.append("glossary_retranslation_execution_failed_chunks")
+        if glossary_retranslation_publish_open_issue_count > 0:
+            warnings.append("glossary_retranslation_publish_open_issues")
+        if glossary_retranslation_publish_confirmed and not glossary_retranslation_publish_published:
+            warnings.append("glossary_retranslation_publish_requested_not_published")
+        if (
+            glossary_retranslation_publish_published
+            and glossary_retranslation_published_full_bytes <= 0
+        ):
+            warnings.append("glossary_retranslation_published_full_missing")
+        if glossary_retranslation_rollback_confirmed and not glossary_retranslation_rollback_applied:
+            warnings.append("glossary_retranslation_rollback_requested_not_applied")
+        if (
+            glossary_retranslation_rollback_applied
+            and glossary_retranslation_rollback_full_bytes <= 0
+        ):
+            warnings.append("glossary_retranslation_rollback_full_missing")
         if table_structure_publish_confirmed and not table_structure_publish_published:
             warnings.append("table_structure_publish_requested_not_published")
         if table_structure_publish_published and table_reconstruction_confirmed_bytes <= 0:
@@ -1040,6 +1138,50 @@ class JobRegistry:
             ),
             "glossary_retranslated_full_ready": glossary_retranslated_full_bytes > 0,
             "glossary_retranslated_full_bytes": glossary_retranslated_full_bytes,
+            "glossary_retranslation_publish_report_ready": (
+                glossary_retranslation_publish_json_bytes > 0
+                or glossary_retranslation_publish_md_bytes > 0
+            ),
+            "glossary_retranslation_publish_report_bytes": max(
+                glossary_retranslation_publish_json_bytes,
+                glossary_retranslation_publish_md_bytes,
+            ),
+            "glossary_retranslation_publish_confirmed": glossary_retranslation_publish_confirmed,
+            "glossary_retranslation_publish_published": glossary_retranslation_publish_published,
+            "glossary_retranslation_publish_status": glossary_retranslation_publish_status,
+            "glossary_retranslation_publish_open_issue_count": (
+                glossary_retranslation_publish_open_issue_count
+            ),
+            "glossary_retranslation_publish_rollback_available": (
+                glossary_retranslation_publish_rollback_available
+            ),
+            "glossary_retranslation_published_full_ready": (
+                glossary_retranslation_published_full_bytes > 0
+            ),
+            "glossary_retranslation_published_full_bytes": (
+                glossary_retranslation_published_full_bytes
+            ),
+            "glossary_retranslation_rollback_report_ready": (
+                glossary_retranslation_rollback_json_bytes > 0
+                or glossary_retranslation_rollback_md_bytes > 0
+            ),
+            "glossary_retranslation_rollback_report_bytes": max(
+                glossary_retranslation_rollback_json_bytes,
+                glossary_retranslation_rollback_md_bytes,
+            ),
+            "glossary_retranslation_rollback_available": glossary_retranslation_rollback_available,
+            "glossary_retranslation_rollback_confirmed": glossary_retranslation_rollback_confirmed,
+            "glossary_retranslation_rollback_applied": glossary_retranslation_rollback_applied,
+            "glossary_retranslation_rollback_status": glossary_retranslation_rollback_status,
+            "glossary_retranslation_rollback_matches_original": (
+                glossary_retranslation_rollback_matches_original
+            ),
+            "glossary_retranslation_rollback_full_ready": (
+                glossary_retranslation_rollback_full_bytes > 0
+            ),
+            "glossary_retranslation_rollback_full_bytes": (
+                glossary_retranslation_rollback_full_bytes
+            ),
             "repair_publish_report_ready": repair_publish_json_bytes > 0 or repair_publish_md_bytes > 0,
             "repair_publish_report_bytes": max(repair_publish_json_bytes, repair_publish_md_bytes),
             "repair_rollback_report_ready": repair_rollback_json_bytes > 0 or repair_rollback_md_bytes > 0,
@@ -1531,6 +1673,24 @@ class JobRegistry:
                 "glossary_retranslation_execution_skipped_count": 0,
                 "glossary_retranslated_full_ready": False,
                 "glossary_retranslated_full_bytes": 0,
+                "glossary_retranslation_publish_report_ready": False,
+                "glossary_retranslation_publish_report_bytes": 0,
+                "glossary_retranslation_publish_confirmed": False,
+                "glossary_retranslation_publish_published": False,
+                "glossary_retranslation_publish_status": "",
+                "glossary_retranslation_publish_open_issue_count": 0,
+                "glossary_retranslation_publish_rollback_available": False,
+                "glossary_retranslation_published_full_ready": False,
+                "glossary_retranslation_published_full_bytes": 0,
+                "glossary_retranslation_rollback_report_ready": False,
+                "glossary_retranslation_rollback_report_bytes": 0,
+                "glossary_retranslation_rollback_available": False,
+                "glossary_retranslation_rollback_confirmed": False,
+                "glossary_retranslation_rollback_applied": False,
+                "glossary_retranslation_rollback_status": "",
+                "glossary_retranslation_rollback_matches_original": False,
+                "glossary_retranslation_rollback_full_ready": False,
+                "glossary_retranslation_rollback_full_bytes": 0,
                 "repair_publish_report_ready": False,
                 "repair_publish_report_bytes": 0,
                 "repair_rollback_report_ready": False,

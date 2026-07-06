@@ -175,6 +175,10 @@ function artifactSummary(j) {
   if (j.glossary_retranslation_plan_ready) ready.push("术语重译计划");
   if (j.glossary_retranslation_result_ready) ready.push("术语重译报告");
   if (j.glossary_retranslated_full_ready) ready.push("术语候选译文");
+  if (j.glossary_retranslation_publish_report_ready) ready.push("术语重译发布报告");
+  if (j.glossary_retranslation_published_full_ready) ready.push("术语重译发布稿");
+  if (j.glossary_retranslation_rollback_report_ready) ready.push("术语重译回滚报告");
+  if (j.glossary_retranslation_rollback_full_ready) ready.push("术语重译回滚稿");
   if (j.table_merged_cell_review_ready) ready.push("表格确认");
   if (j.table_structure_publish_ready) ready.push("表格发布");
   if (j.repair_patch_review_ready) ready.push("补丁审核");
@@ -479,6 +483,52 @@ async function executeGlossaryRetranslation(jid) {
   taskMap.value = { ...taskMap.value, [jid]: data };
   await loadMyJobs();
   alert("已生成术语候选重译稿");
+}
+
+async function confirmGlossaryRetranslationPublish(jid) {
+  const job = taskMap.value[jid] || {};
+  if (!job.glossary_retranslated_full_ready) {
+    alert("术语候选重译全文尚未生成，暂不能确认发布。");
+    return;
+  }
+  const openIssues = Number(job.glossary_retranslation_publish_open_issue_count || 0);
+  const confirmText = openIssues > 0
+    ? `当前仍有 ${openIssues} 个候选重译问题。确认后会生成术语重译发布稿，但原始译文仍会保留。是否继续？`
+    : "确认生成术语重译发布稿？原始译文仍会保留。";
+  if (!window.confirm(confirmText)) return;
+  const r = await fetch(`/api/jobs/${jid}/glossary-retranslation/publish/confirm`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatErrorPayload(data));
+    return;
+  }
+  taskMap.value = { ...taskMap.value, [jid]: data };
+  await loadMyJobs();
+  alert("已生成术语重译发布稿");
+}
+
+async function confirmGlossaryRetranslationRollback(jid) {
+  const job = taskMap.value[jid] || {};
+  if (!job.glossary_retranslation_published_full_ready) {
+    alert("术语重译发布稿尚未生成，暂不能执行回滚演练。");
+    return;
+  }
+  if (!window.confirm("确认生成术语重译回滚演练稿？这会复制原始译文，不会覆盖术语重译发布稿。")) return;
+  const r = await fetch(`/api/jobs/${jid}/glossary-retranslation/rollback/confirm`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatErrorPayload(data));
+    return;
+  }
+  taskMap.value = { ...taskMap.value, [jid]: data };
+  await loadMyJobs();
+  alert("已生成术语重译回滚演练稿");
 }
 
 async function confirmRepairPublish(jid) {
@@ -954,6 +1004,60 @@ onUnmounted(() => {
                   @click="downloadFrom(`/api/jobs/${tid}/download/glossary-retranslated-full.md`, `${tid}_glossary_retranslated_full.md`)"
                 >
                   候选译文
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' && taskMap[tid].glossary_retranslated_full_ready"
+                  type="button"
+                  class="btn"
+                  :disabled="taskMap[tid].glossary_retranslation_published_full_ready"
+                  @click="confirmGlossaryRetranslationPublish(tid)"
+                >
+                  确认术语稿
+                </button>
+                <button
+                  v-if="taskMap[tid].glossary_retranslation_publish_report_ready"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].glossary_retranslation_publish_report_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/glossary-retranslation-publish.md`, `${tid}_glossary_retranslation_publish.md`)"
+                >
+                  术语发布报告
+                </button>
+                <button
+                  v-if="taskMap[tid].glossary_retranslation_published_full_ready"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].glossary_retranslation_published_full_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/glossary-retranslation-published-full.md`, `${tid}_glossary_retranslation_published_full.md`)"
+                >
+                  术语发布稿
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' && taskMap[tid].glossary_retranslation_published_full_ready"
+                  type="button"
+                  class="btn"
+                  :disabled="taskMap[tid].glossary_retranslation_rollback_full_ready"
+                  @click="confirmGlossaryRetranslationRollback(tid)"
+                >
+                  术语回滚
+                </button>
+                <button
+                  v-if="taskMap[tid].glossary_retranslation_rollback_report_ready"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].glossary_retranslation_rollback_report_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/glossary-retranslation-rollback.md`, `${tid}_glossary_retranslation_rollback.md`)"
+                >
+                  术语回滚报告
+                </button>
+                <button
+                  v-if="taskMap[tid].glossary_retranslation_rollback_full_ready"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].glossary_retranslation_rollback_full_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/glossary-retranslation-rollback-full.md`, `${tid}_glossary_retranslation_rollback_full.md`)"
+                >
+                  术语回滚稿
                 </button>
                 <button
                   v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"

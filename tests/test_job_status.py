@@ -17,8 +17,10 @@ from pdf_translate.config import AppConfig
 from pdf_translate.memory_store import MemoryStore
 from pdf_translate.pipeline_cancel import cancel_flag_path
 from pdf_translate.server import database
-from pdf_translate.server.auth_deps import Principal, bearer_principal
+from pdf_translate.server.auth_deps import Principal, bearer_principal, require_admin
 from pdf_translate.server.routes_web import (
+    _confirm_glossary_retranslation_publish_for_record,
+    _confirm_glossary_retranslation_rollback_for_record,
     _confirm_repair_formal_replace_for_record,
     _confirm_repair_formal_rollback_for_record,
     _confirm_repair_publish_for_record,
@@ -980,6 +982,10 @@ class JobStatusSnapshotTests(unittest.TestCase):
             "---\n{}\n---\n\n召回率在领域偏移下提升。\n",
             encoding="utf-8",
         )
+        (out / "translated_full.md").write_text(
+            "原始合并译文\n\n准确率在领域偏移下提升。\n\n召回率在领域偏移下提升。",
+            encoding="utf-8",
+        )
         registry.update(rec.job_id, status="done", phase="done")
 
         api = FastAPI()
@@ -988,6 +994,11 @@ class JobStatusSnapshotTests(unittest.TestCase):
             user_id=7,
             username="alice",
             role="user",
+        )
+        api.dependency_overrides[require_admin] = lambda: Principal(
+            user_id=1,
+            username="admin",
+            role="admin",
         )
         self.addCleanup(api.dependency_overrides.clear)
         client = TestClient(api)
@@ -1151,6 +1162,74 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(candidate_full.status_code, 200)
         self.assertIn("[ECHO 未翻译预览]", candidate_full.text)
 
+        publish = client.post(f"/api/jobs/{rec.job_id}/glossary-retranslation/publish/confirm")
+        self.assertEqual(publish.status_code, 200)
+        publish_payload = publish.json()
+        self.assertTrue(publish_payload["glossary_retranslation_publish_report_ready"])
+        self.assertTrue(publish_payload["glossary_retranslation_publish_published"])
+        self.assertEqual(
+            publish_payload["glossary_retranslation_publish_status"],
+            "published_with_warnings",
+        )
+        self.assertTrue(publish_payload["glossary_retranslation_published_full_ready"])
+        self.assertEqual(
+            (out / "glossary_retranslation_published_full.md").read_text(encoding="utf-8"),
+            (out / "glossary_retranslated_full.md").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "原始合并译文",
+            (out / "translated_full.md").read_text(encoding="utf-8"),
+        )
+        publish_md = client.get(f"/api/jobs/{rec.job_id}/download/glossary-retranslation-publish.md")
+        self.assertEqual(publish_md.status_code, 200)
+        self.assertIn("术语候选重译发布确认", publish_md.text)
+        published_full = client.get(
+            f"/api/jobs/{rec.job_id}/download/glossary-retranslation-published-full.md"
+        )
+        self.assertEqual(published_full.status_code, 200)
+        self.assertIn("[ECHO 未翻译预览]", published_full.text)
+        admin_publish = client.get(
+            f"/api/admin/jobs/{rec.job_id}/artifact?kind=glossary_retranslation_publish"
+        )
+        self.assertEqual(admin_publish.status_code, 200)
+        admin_published_full = client.get(
+            f"/api/admin/jobs/{rec.job_id}/artifact?kind=glossary_retranslation_published_full"
+        )
+        self.assertEqual(admin_published_full.status_code, 200)
+
+        rollback = client.post(f"/api/jobs/{rec.job_id}/glossary-retranslation/rollback/confirm")
+        self.assertEqual(rollback.status_code, 200)
+        rollback_payload = rollback.json()
+        self.assertTrue(rollback_payload["glossary_retranslation_rollback_report_ready"])
+        self.assertTrue(rollback_payload["glossary_retranslation_rollback_applied"])
+        self.assertEqual(rollback_payload["glossary_retranslation_rollback_status"], "rolled_back")
+        self.assertTrue(rollback_payload["glossary_retranslation_rollback_matches_original"])
+        self.assertTrue(rollback_payload["glossary_retranslation_rollback_full_ready"])
+        self.assertEqual(
+            (out / "glossary_retranslation_rollback_full.md").read_text(encoding="utf-8"),
+            (out / "translated_full.md").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            (out / "glossary_retranslation_published_full.md").read_text(encoding="utf-8"),
+            (out / "glossary_retranslated_full.md").read_text(encoding="utf-8"),
+        )
+        rollback_md = client.get(f"/api/jobs/{rec.job_id}/download/glossary-retranslation-rollback.md")
+        self.assertEqual(rollback_md.status_code, 200)
+        self.assertIn("术语候选重译回滚演练", rollback_md.text)
+        rollback_full = client.get(
+            f"/api/jobs/{rec.job_id}/download/glossary-retranslation-rollback-full.md"
+        )
+        self.assertEqual(rollback_full.status_code, 200)
+        self.assertIn("原始合并译文", rollback_full.text)
+        admin_rollback = client.get(
+            f"/api/admin/jobs/{rec.job_id}/artifact?kind=glossary_retranslation_rollback"
+        )
+        self.assertEqual(admin_rollback.status_code, 200)
+        admin_rollback_full = client.get(
+            f"/api/admin/jobs/{rec.job_id}/artifact?kind=glossary_retranslation_rollback_full"
+        )
+        self.assertEqual(admin_rollback_full.status_code, 200)
+
         terms = MemoryStore(rec.work_dir / "memory").load_glossary()["terms"]
         accuracy = next(term for term in terms if term["en"] == "Accuracy")
         self.assertEqual(accuracy["zh"], "分类准确率")
@@ -1179,6 +1258,14 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(precision_review["status"], "rejected")
 
         events = database.list_audit(limit=10)
+        publish_event = next(
+            event for event in events if event["action"] == "job_glossary_retranslation_publish_confirm"
+        )
+        self.assertEqual(publish_event["detail"]["publish_status"], "published_with_warnings")
+        rollback_event = next(
+            event for event in events if event["action"] == "job_glossary_retranslation_rollback_confirm"
+        )
+        self.assertEqual(rollback_event["detail"]["rollback_status"], "rolled_back")
         execute_event = next(event for event in events if event["action"] == "job_glossary_retranslation_execute")
         self.assertEqual(execute_event["detail"]["backend"], "echo")
         self.assertEqual(execute_event["detail"]["executed_chunk_count"], 1)
@@ -1188,6 +1275,73 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(batch_event["detail"]["candidate_zh_changed_count"], 1)
         single_event = next(event for event in events if event["action"] == "job_glossary_review_update")
         self.assertTrue(single_event["detail"]["candidate_zh_changed"])
+
+    def test_confirm_glossary_retranslation_publish_requires_candidate_full(self) -> None:
+        root = self._case_root("glossary-publish-missing-candidate")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        out = rec.work_dir / "output"
+        out.mkdir()
+        (out / "translated_full.md").write_text("original translation", encoding="utf-8")
+        (out / "glossary_retranslation_result.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "glossary-retranslation-execution-v1",
+                    "summary": {
+                        "status": "executed",
+                        "requested_chunk_count": 1,
+                        "executed_chunk_count": 1,
+                        "failed_chunk_count": 0,
+                        "skipped_chunk_count": 0,
+                    },
+                    "artifacts": {
+                        "retranslated_full_path": (out / "glossary_retranslated_full.md").as_posix(),
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        registry.update(rec.job_id, status="done", phase="done")
+
+        with self.assertRaises(HTTPException) as ctx:
+            _confirm_glossary_retranslation_publish_for_record(rec)
+
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIn("候选重译全文", str(ctx.exception.detail))
+        self.assertFalse((out / "glossary_retranslation_published_full.md").exists())
+
+    def test_confirm_glossary_retranslation_rollback_requires_published_full(self) -> None:
+        root = self._case_root("glossary-rollback-missing-published")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        out = rec.work_dir / "output"
+        out.mkdir()
+        (out / "translated_full.md").write_text("original translation", encoding="utf-8")
+        (out / "glossary_retranslation_publish.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "glossary-retranslation-publish-v1",
+                    "summary": {
+                        "confirmed": True,
+                        "published": False,
+                        "publish_status": "blocked_missing_candidate_full",
+                        "original_full_path": (out / "translated_full.md").as_posix(),
+                        "published_full_path": (out / "glossary_retranslation_published_full.md").as_posix(),
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        registry.update(rec.job_id, status="done", phase="done")
+
+        with self.assertRaises(HTTPException) as ctx:
+            _confirm_glossary_retranslation_rollback_for_record(rec)
+
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIn("发布稿尚未生成", str(ctx.exception.detail))
+        self.assertFalse((out / "glossary_retranslation_rollback_full.md").exists())
 
     def test_confirm_repair_publish_for_completed_job_writes_publish_copy(self) -> None:
         root = self._case_root("repair-publish-confirm")

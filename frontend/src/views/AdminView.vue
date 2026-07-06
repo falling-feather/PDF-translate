@@ -177,6 +177,10 @@ function artifactReadySummary(job) {
   if (job.glossary_retranslation_plan_ready) ready.push("术语重译计划");
   if (job.glossary_retranslation_result_ready) ready.push("术语重译报告");
   if (job.glossary_retranslated_full_ready) ready.push("术语候选稿");
+  if (job.glossary_retranslation_publish_report_ready) ready.push("术语发布报告");
+  if (job.glossary_retranslation_published_full_ready) ready.push("术语发布稿");
+  if (job.glossary_retranslation_rollback_report_ready) ready.push("术语回滚报告");
+  if (job.glossary_retranslation_rollback_full_ready) ready.push("术语回滚稿");
   if (job.table_merged_cell_review_ready) ready.push("表格确认");
   if (job.table_structure_publish_ready) ready.push("表格发布");
   if (job.repair_patch_review_ready) ready.push("补丁审核");
@@ -409,6 +413,50 @@ async function adminExecuteGlossaryRetranslation(job) {
   await loadJobs();
   await loadAudit();
   alert("已生成术语候选重译稿");
+}
+
+async function adminConfirmGlossaryRetranslationPublish(job) {
+  if (!job.glossary_retranslated_full_ready) {
+    alert("术语候选重译全文尚未生成，暂不能确认发布。");
+    return;
+  }
+  const openIssues = Number(job.glossary_retranslation_publish_open_issue_count || 0);
+  const confirmText = openIssues > 0
+    ? `当前仍有 ${openIssues} 个候选重译问题。确认后会生成术语重译发布稿，但原始译文仍会保留。是否继续？`
+    : "确认生成术语重译发布稿？原始译文仍会保留。";
+  if (!window.confirm(confirmText)) return;
+  const r = await fetch(`/api/jobs/${job.job_id}/glossary-retranslation/publish/confirm`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatAdminError(data));
+    return;
+  }
+  await loadJobs();
+  await loadAudit();
+  alert("已生成术语重译发布稿");
+}
+
+async function adminConfirmGlossaryRetranslationRollback(job) {
+  if (!job.glossary_retranslation_published_full_ready) {
+    alert("术语重译发布稿尚未生成，暂不能执行回滚演练。");
+    return;
+  }
+  if (!window.confirm("确认生成术语重译回滚演练稿？这会复制原始译文，不会覆盖术语重译发布稿。")) return;
+  const r = await fetch(`/api/jobs/${job.job_id}/glossary-retranslation/rollback/confirm`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alert(formatAdminError(data));
+    return;
+  }
+  await loadJobs();
+  await loadAudit();
+  alert("已生成术语重译回滚演练稿");
 }
 
 async function adminConfirmRepairPublish(job) {
@@ -727,6 +775,12 @@ onMounted(() => {
                 <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.glossary_retranslation_plan_ready || Number(j.glossary_retranslation_plan_retranslate_chunk_count || 0) <= 0" @click="adminExecuteGlossaryRetranslation(j)">执行重译</button>
                 <button type="button" class="linkish" :disabled="!j.glossary_retranslation_result_ready" @click="adminDownload(j.job_id, 'glossary_retranslation_result_md', 'glossary_retranslation_result.md')">重译报告</button>
                 <button type="button" class="linkish" :disabled="!j.glossary_retranslated_full_ready" @click="adminDownload(j.job_id, 'glossary_retranslated_full', 'glossary_retranslated_full.md')">候选译文</button>
+                <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.glossary_retranslated_full_ready || j.glossary_retranslation_published_full_ready" @click="adminConfirmGlossaryRetranslationPublish(j)">确认术语稿</button>
+                <button type="button" class="linkish" :disabled="!j.glossary_retranslation_publish_report_ready" @click="adminDownload(j.job_id, 'glossary_retranslation_publish', 'glossary_retranslation_publish.md')">术语发布报告</button>
+                <button type="button" class="linkish" :disabled="!j.glossary_retranslation_published_full_ready" @click="adminDownload(j.job_id, 'glossary_retranslation_published_full', 'glossary_retranslation_published_full.md')">术语发布稿</button>
+                <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.glossary_retranslation_published_full_ready || j.glossary_retranslation_rollback_full_ready" @click="adminConfirmGlossaryRetranslationRollback(j)">术语回滚</button>
+                <button type="button" class="linkish" :disabled="!j.glossary_retranslation_rollback_report_ready" @click="adminDownload(j.job_id, 'glossary_retranslation_rollback', 'glossary_retranslation_rollback.md')">术语回滚报告</button>
+                <button type="button" class="linkish" :disabled="!j.glossary_retranslation_rollback_full_ready" @click="adminDownload(j.job_id, 'glossary_retranslation_rollback_full', 'glossary_retranslation_rollback_full.md')">术语回滚稿</button>
                 <button type="button" class="linkish" :disabled="!j.repair_publish_report_ready" @click="adminDownload(j.job_id, 'repair_publish', 'repair_publish.md')">修复报告</button>
                 <button type="button" class="linkish" :disabled="!j.repair_effectiveness_report_ready" @click="adminDownload(j.job_id, 'repair_effectiveness', 'repair_effectiveness.md')">修复效果</button>
                 <button type="button" class="linkish" :disabled="!j.repair_rollback_report_ready" @click="adminDownload(j.job_id, 'repair_rollback', 'repair_rollback.md')">回滚报告</button>

@@ -32,7 +32,9 @@ from pdf_translate.memory_store import MemoryStore
 from pdf_translate.qa.chunk_boundary import build_chunk_boundary_qa, build_chunk_strategy_comparison
 from pdf_translate.qa.glossary_retranslation import (
     execute_glossary_retranslation,
+    write_glossary_retranslation_publish,
     write_glossary_retranslation_plan,
+    write_glossary_retranslation_rollback,
 )
 from pdf_translate.qa.metrics import build_experiment_metrics
 from pdf_translate.qa.ocr_candidates import build_ocr_candidate_qa, write_ocr_candidate_qa
@@ -6409,6 +6411,75 @@ class StructureIRTests(unittest.TestCase):
             if parent.is_dir() and not any(parent.iterdir()):
                 shutil.rmtree(parent)
 
+    def test_glossary_retranslation_publish_and_rollback_preserve_baselines(self) -> None:
+        root = Path.cwd() / "test-output" / "glossary-retranslation-publish"
+        if root.exists():
+            shutil.rmtree(root)
+        try:
+            out = root / "output"
+            out.mkdir(parents=True)
+            original = out / "translated_full.md"
+            candidate = out / "glossary_retranslated_full.md"
+            original.write_text("original translation", encoding="utf-8")
+            candidate.write_text("candidate glossary translation", encoding="utf-8")
+            execution_result = {
+                "schema_version": "glossary-retranslation-execution-v1",
+                "summary": {
+                    "status": "executed",
+                    "requested_chunk_count": 1,
+                    "executed_chunk_count": 1,
+                    "failed_chunk_count": 0,
+                    "skipped_chunk_count": 0,
+                },
+                "artifacts": {
+                    "retranslated_full_path": candidate.as_posix(),
+                },
+                "requested_chunk_ids": ["c0000"],
+            }
+
+            publish = write_glossary_retranslation_publish(
+                execution_result,
+                out / "glossary_retranslation_publish.json",
+                out / "glossary_retranslation_publish.md",
+                confirm=True,
+                candidate_full_path=candidate,
+                published_full_path=out / "glossary_retranslation_published_full.md",
+                original_full_path=original,
+            )
+
+            published = out / "glossary_retranslation_published_full.md"
+            self.assertEqual(publish["schema_version"], "glossary-retranslation-publish-v1")
+            self.assertTrue(publish["summary"]["published"])
+            self.assertEqual(publish["summary"]["publish_status"], "published")
+            self.assertTrue(publish["summary"]["published_matches_candidate"])
+            self.assertEqual(published.read_text(encoding="utf-8"), "candidate glossary translation")
+            self.assertEqual(original.read_text(encoding="utf-8"), "original translation")
+
+            rollback = write_glossary_retranslation_rollback(
+                publish,
+                out / "glossary_retranslation_rollback.json",
+                out / "glossary_retranslation_rollback.md",
+                confirm=True,
+                original_full_path=original,
+                published_full_path=published,
+                rollback_full_path=out / "glossary_retranslation_rollback_full.md",
+            )
+
+            rollback_full = out / "glossary_retranslation_rollback_full.md"
+            self.assertEqual(rollback["schema_version"], "glossary-retranslation-rollback-v1")
+            self.assertTrue(rollback["summary"]["rollback_applied"])
+            self.assertEqual(rollback["summary"]["rollback_status"], "rolled_back")
+            self.assertTrue(rollback["summary"]["rollback_matches_original"])
+            self.assertTrue(rollback["summary"]["published_preserved"])
+            self.assertEqual(rollback_full.read_text(encoding="utf-8"), "original translation")
+            self.assertEqual(published.read_text(encoding="utf-8"), "candidate glossary translation")
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
     def test_translation_qa_reports_glossary_conflicts(self) -> None:
         root = Path.cwd() / "test-output" / "translation-qa-glossary-conflict"
         if root.exists():
@@ -7788,6 +7859,15 @@ class StructureIRTests(unittest.TestCase):
                 "experiment_metrics.json",
                 "run_metrics.json",
                 "cost_estimate.json",
+                "glossary_retranslation_result.json",
+                "glossary_retranslation_result.md",
+                "glossary_retranslated_full.md",
+                "glossary_retranslation_publish.json",
+                "glossary_retranslation_publish.md",
+                "glossary_retranslation_published_full.md",
+                "glossary_retranslation_rollback.json",
+                "glossary_retranslation_rollback.md",
+                "glossary_retranslation_rollback_full.md",
             ]:
                 (output / name).write_text("{}", encoding="utf-8")
             (repairs_dir / "rq0000.md").write_text("候选修复片段", encoding="utf-8")
@@ -7840,6 +7920,15 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/bilingual.html", rels)
             self.assertIn("output/glossary_retranslation_plan.json", rels)
             self.assertIn("output/glossary_retranslation_plan.md", rels)
+            self.assertIn("output/glossary_retranslation_result.json", rels)
+            self.assertIn("output/glossary_retranslation_result.md", rels)
+            self.assertIn("output/glossary_retranslated_full.md", rels)
+            self.assertIn("output/glossary_retranslation_publish.json", rels)
+            self.assertIn("output/glossary_retranslation_publish.md", rels)
+            self.assertIn("output/glossary_retranslation_published_full.md", rels)
+            self.assertIn("output/glossary_retranslation_rollback.json", rels)
+            self.assertIn("output/glossary_retranslation_rollback.md", rels)
+            self.assertIn("output/glossary_retranslation_rollback_full.md", rels)
             self.assertIn("output/qa_report.md", rels)
             self.assertIn("output/document_ir.json", rels)
             self.assertIn("output/table_reconstruction.json", rels)
@@ -7869,6 +7958,42 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(
                 map_bundle_arcname("output/glossary_retranslation_plan.md"),
                 "质量/术语确认重译计划.md",
+            )
+            self.assertEqual(
+                map_bundle_arcname("output/glossary_retranslation_result.json"),
+                "质量/术语重译执行报告.json",
+            )
+            self.assertEqual(
+                map_bundle_arcname("output/glossary_retranslation_result.md"),
+                "质量/术语重译执行报告.md",
+            )
+            self.assertEqual(
+                map_bundle_arcname("output/glossary_retranslated_full.md"),
+                "译文/术语候选重译全文.md",
+            )
+            self.assertEqual(
+                map_bundle_arcname("output/glossary_retranslation_publish.json"),
+                "质量/术语重译发布确认.json",
+            )
+            self.assertEqual(
+                map_bundle_arcname("output/glossary_retranslation_publish.md"),
+                "质量/术语重译发布确认.md",
+            )
+            self.assertEqual(
+                map_bundle_arcname("output/glossary_retranslation_published_full.md"),
+                "译文/术语重译发布稿.md",
+            )
+            self.assertEqual(
+                map_bundle_arcname("output/glossary_retranslation_rollback.json"),
+                "质量/术语重译回滚演练.json",
+            )
+            self.assertEqual(
+                map_bundle_arcname("output/glossary_retranslation_rollback.md"),
+                "质量/术语重译回滚演练.md",
+            )
+            self.assertEqual(
+                map_bundle_arcname("output/glossary_retranslation_rollback_full.md"),
+                "译文/术语重译回滚演练稿.md",
             )
             self.assertEqual(map_bundle_arcname("output/translated_full.pdf"), "译文/结构化译文.pdf")
             self.assertEqual(map_bundle_arcname("output/translated_pdf_report.json"), "质量/PDF译文生成报告.json")
