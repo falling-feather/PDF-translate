@@ -31,6 +31,13 @@ def _is_table_continuation(fragment: dict[str, Any]) -> bool:
     return isinstance(reasons, list) and "possible_table_continuation" in reasons
 
 
+def _is_hyphenated_continuation(fragment: dict[str, Any]) -> bool:
+    if str(fragment.get("continuation_kind") or "") == "hyphenated_word_continuation":
+        return True
+    reasons = fragment.get("reasons")
+    return isinstance(reasons, list) and "hyphenated_word_break_across_page" in reasons
+
+
 def build_chunk_boundary_qa(
     chunks: list[TextChunk],
     structure_qa: dict[str, Any] | None,
@@ -87,6 +94,10 @@ def build_chunk_boundary_qa(
     table_continuation_protected_count = 0
     table_continuation_split_count = 0
     table_continuation_co_located_count = 0
+    hyphenated_boundary_count = 0
+    hyphenated_protected_count = 0
+    hyphenated_split_count = 0
+    hyphenated_co_located_count = 0
 
     for fragment in fragments:
         pages = fragment.get("pages_1based")
@@ -103,6 +114,9 @@ def build_chunk_boundary_qa(
         is_table_continuation = _is_table_continuation(fragment)
         if is_table_continuation:
             table_continuation_boundary_count += 1
+        is_hyphenated_continuation = _is_hyphenated_continuation(fragment)
+        if is_hyphenated_continuation:
+            hyphenated_boundary_count += 1
 
         co_located_chunks = [
             row["chunk_id"]
@@ -132,11 +146,16 @@ def build_chunk_boundary_qa(
             if is_table_continuation:
                 table_continuation_protected_count += 1
                 table_continuation_co_located_count += 1
+            if is_hyphenated_continuation:
+                hyphenated_protected_count += 1
+                hyphenated_co_located_count += 1
         elif co_located_chunks:
             status = "co_located"
             co_located_count += 1
             if is_table_continuation:
                 table_continuation_co_located_count += 1
+            if is_hyphenated_continuation:
+                hyphenated_co_located_count += 1
         else:
             status = "split"
             split_count += 1
@@ -144,6 +163,8 @@ def build_chunk_boundary_qa(
                 high_risk_split_count += 1
             if is_table_continuation:
                 table_continuation_split_count += 1
+            if is_hyphenated_continuation:
+                hyphenated_split_count += 1
 
         boundaries.append(
             {
@@ -152,7 +173,9 @@ def build_chunk_boundary_qa(
                 "severity": severity,
                 "continuation_kind": fragment.get("continuation_kind"),
                 "stitch_action": fragment.get("stitch_action"),
+                "joiner": fragment.get("joiner"),
                 "is_table_continuation": is_table_continuation,
+                "is_hyphenated_continuation": is_hyphenated_continuation,
                 "status": status,
                 "co_located_chunk_ids": co_located_chunks,
                 "protected_by_chunk_ids": protected_chunks,
@@ -182,6 +205,10 @@ def build_chunk_boundary_qa(
             "table_continuation_protected_count": table_continuation_protected_count,
             "table_continuation_split_count": table_continuation_split_count,
             "table_continuation_co_located_count": table_continuation_co_located_count,
+            "hyphenated_boundary_count": hyphenated_boundary_count,
+            "hyphenated_protected_count": hyphenated_protected_count,
+            "hyphenated_split_count": hyphenated_split_count,
+            "hyphenated_co_located_count": hyphenated_co_located_count,
             "split_boundary_rate": round(split_count / boundary_count, 4) if boundary_count else 0.0,
             "protected_boundary_rate": round(protected_count / boundary_count, 4) if boundary_count else 0.0,
             "high_risk_split_rate": round(high_risk_split_count / high_risk_count, 4) if high_risk_count else 0.0,
@@ -196,6 +223,12 @@ def build_chunk_boundary_qa(
                 4,
             )
             if table_continuation_boundary_count
+            else 0.0,
+            "hyphenated_split_rate": round(hyphenated_split_count / hyphenated_boundary_count, 4)
+            if hyphenated_boundary_count
+            else 0.0,
+            "hyphenated_protected_rate": round(hyphenated_protected_count / hyphenated_boundary_count, 4)
+            if hyphenated_boundary_count
             else 0.0,
             "budget_split_reason_counts": dict(sorted(budget_split_reason_counts.items())),
             "budget_pressure_counts": dict(sorted(budget_pressure_counts.items())),
@@ -246,6 +279,7 @@ def build_chunk_strategy_comparison(
     baseline_summary = strategy_summaries.get(baseline_strategy, {})
     baseline_split = int(baseline_summary.get("split_boundary_count") or 0)
     baseline_table_continuation_split = int(baseline_summary.get("table_continuation_split_count") or 0)
+    baseline_hyphenated_split = int(baseline_summary.get("hyphenated_split_count") or 0)
     best_strategy = None
     best_split_rate: float | None = None
     best_split_count: int | None = None
@@ -291,6 +325,12 @@ def build_chunk_strategy_comparison(
             if name != baseline_strategy
             else 0
         )
+        hyphenated_split_count = int(summary.get("hyphenated_split_count") or 0)
+        hyphenated_split_delta = (
+            baseline_hyphenated_split - hyphenated_split_count
+            if name != baseline_strategy
+            else 0
+        )
         strategy_entries.append(
             {
                 "strategy": name,
@@ -308,6 +348,10 @@ def build_chunk_strategy_comparison(
                 "table_continuation_co_located_count": int(
                     summary.get("table_continuation_co_located_count") or 0
                 ),
+                "hyphenated_boundary_count": int(summary.get("hyphenated_boundary_count") or 0),
+                "hyphenated_protected_count": int(summary.get("hyphenated_protected_count") or 0),
+                "hyphenated_split_count": hyphenated_split_count,
+                "hyphenated_co_located_count": int(summary.get("hyphenated_co_located_count") or 0),
                 "budget_overflow_chunk_count": int(summary.get("budget_overflow_chunk_count") or 0),
                 "structural_relation_protected_count": int(
                     summary.get("structural_relation_protected_count") or 0
@@ -318,12 +362,19 @@ def build_chunk_strategy_comparison(
                 "table_continuation_protected_rate": float(
                     summary.get("table_continuation_protected_rate") or 0.0
                 ),
+                "hyphenated_split_rate": float(summary.get("hyphenated_split_rate") or 0.0),
+                "hyphenated_protected_rate": float(summary.get("hyphenated_protected_rate") or 0.0),
                 "split_reduction_vs_baseline": split_delta,
                 "split_reduction_rate_vs_baseline": _rate(split_delta, baseline_split),
                 "table_continuation_split_reduction_vs_baseline": table_continuation_split_delta,
                 "table_continuation_split_reduction_rate_vs_baseline": _rate(
                     table_continuation_split_delta,
                     baseline_table_continuation_split,
+                ),
+                "hyphenated_split_reduction_vs_baseline": hyphenated_split_delta,
+                "hyphenated_split_reduction_rate_vs_baseline": _rate(
+                    hyphenated_split_delta,
+                    baseline_hyphenated_split,
                 ),
             }
         )
@@ -332,6 +383,7 @@ def build_chunk_strategy_comparison(
     active_summary = strategy_summaries.get(active_strategy or "", {})
     active_split = int(active_summary.get("split_boundary_count") or 0)
     active_table_continuation_split = int(active_summary.get("table_continuation_split_count") or 0)
+    active_hyphenated_split = int(active_summary.get("hyphenated_split_count") or 0)
     return {
         "schema_version": "chunk-strategy-comparison-v1",
         "doc_id": (structure_qa or {}).get("doc_id") if isinstance(structure_qa, dict) else None,
@@ -356,6 +408,15 @@ def build_chunk_strategy_comparison(
             "active_table_continuation_split_reduction_rate_vs_baseline": _rate(
                 baseline_table_continuation_split - active_table_continuation_split,
                 baseline_table_continuation_split,
+            ),
+            "baseline_hyphenated_split_count": baseline_hyphenated_split,
+            "active_hyphenated_split_count": active_hyphenated_split,
+            "active_hyphenated_split_reduction_vs_baseline": (
+                baseline_hyphenated_split - active_hyphenated_split
+            ),
+            "active_hyphenated_split_reduction_rate_vs_baseline": _rate(
+                baseline_hyphenated_split - active_hyphenated_split,
+                baseline_hyphenated_split,
             ),
         },
         "strategies": strategy_entries,

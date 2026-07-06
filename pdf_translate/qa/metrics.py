@@ -435,6 +435,10 @@ def build_experiment_metrics(
     table_continuation_co_located_count = _as_int(
         chunk_boundary_summary.get("table_continuation_co_located_count")
     )
+    hyphenated_boundary_count = _as_int(chunk_boundary_summary.get("hyphenated_boundary_count"))
+    hyphenated_protected_count = _as_int(chunk_boundary_summary.get("hyphenated_protected_count"))
+    hyphenated_split_count = _as_int(chunk_boundary_summary.get("hyphenated_split_count"))
+    hyphenated_co_located_count = _as_int(chunk_boundary_summary.get("hyphenated_co_located_count"))
     budget_overflow_chunk_count = _as_int(chunk_boundary_summary.get("budget_overflow_chunk_count"))
     budget_overflow_char_total = _as_int(chunk_boundary_summary.get("budget_overflow_char_total"))
     structural_relation_protected_count = _as_int(
@@ -459,6 +463,14 @@ def build_experiment_metrics(
     )
     active_table_continuation_split_reduction_rate_vs_baseline = _as_float(
         chunk_strategy_summary.get("active_table_continuation_split_reduction_rate_vs_baseline")
+    )
+    baseline_hyphenated_split_count = _as_int(chunk_strategy_summary.get("baseline_hyphenated_split_count"))
+    active_hyphenated_split_count = _as_int(chunk_strategy_summary.get("active_hyphenated_split_count"))
+    active_hyphenated_split_reduction_vs_baseline = _as_int(
+        chunk_strategy_summary.get("active_hyphenated_split_reduction_vs_baseline")
+    )
+    active_hyphenated_split_reduction_rate_vs_baseline = _as_float(
+        chunk_strategy_summary.get("active_hyphenated_split_reduction_rate_vs_baseline")
     )
     routed_page_count = _as_int(vision_summary.get("routed_page_count"))
     vision_preview_page_count = _as_int(vision_summary.get("preview_page_count"))
@@ -992,6 +1004,10 @@ def build_experiment_metrics(
             "table_continuation_protected_count": table_continuation_protected_count,
             "table_continuation_split_count": table_continuation_split_count,
             "table_continuation_co_located_count": table_continuation_co_located_count,
+            "hyphenated_boundary_count": hyphenated_boundary_count,
+            "hyphenated_protected_count": hyphenated_protected_count,
+            "hyphenated_split_count": hyphenated_split_count,
+            "hyphenated_co_located_count": hyphenated_co_located_count,
             "budget_overflow_chunk_count": budget_overflow_chunk_count,
             "budget_overflow_char_total": budget_overflow_char_total,
             "structural_relation_protected_count": structural_relation_protected_count,
@@ -1003,6 +1019,9 @@ def build_experiment_metrics(
             "active_table_continuation_split_reduction_vs_baseline": (
                 active_table_continuation_split_reduction_vs_baseline
             ),
+            "baseline_hyphenated_split_count": baseline_hyphenated_split_count,
+            "active_hyphenated_split_count": active_hyphenated_split_count,
+            "active_hyphenated_split_reduction_vs_baseline": active_hyphenated_split_reduction_vs_baseline,
             "routed_page_count": routed_page_count,
             "vision_preview_page_count": vision_preview_page_count,
             "vision_region_crop_count": vision_region_crop_count,
@@ -1356,10 +1375,15 @@ def build_experiment_metrics(
                 table_continuation_protected_count,
                 table_continuation_boundary_count,
             ),
+            "hyphenated_boundary_split_rate": _rate(hyphenated_split_count, hyphenated_boundary_count),
+            "hyphenated_boundary_protected_rate": _rate(hyphenated_protected_count, hyphenated_boundary_count),
             "budget_overflow_chunk_rate": _rate(budget_overflow_chunk_count, chunk_count),
             "active_split_reduction_rate_vs_baseline": active_split_reduction_rate_vs_baseline,
             "active_table_continuation_split_reduction_rate_vs_baseline": (
                 active_table_continuation_split_reduction_rate_vs_baseline
+            ),
+            "active_hyphenated_split_reduction_rate_vs_baseline": (
+                active_hyphenated_split_reduction_rate_vs_baseline
             ),
             "entity_missing_rate": _rate(missing_entity_token_count, effective_entity_candidate_count),
             "formula_token_missing_rate": _rate(missing_formula_token_count, source_formula_token_count),
