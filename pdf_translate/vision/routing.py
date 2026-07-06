@@ -136,6 +136,8 @@ def build_vision_route(doc_ir: DocumentIR) -> dict[str, Any]:
     pages: list[dict[str, Any]] = []
     action_counts: Counter[str] = Counter()
     risk_counts: Counter[str] = Counter()
+    reason_counts: Counter[str] = Counter()
+    context_page_counts: Counter[str] = Counter()
 
     for page in doc_ir.pages:
         block_counts = Counter(block.type for block in page.blocks)
@@ -163,6 +165,19 @@ def build_vision_route(doc_ir: DocumentIR) -> dict[str, Any]:
         risk_level = "high" if risk_score >= 0.65 else "medium" if risk_score >= 0.35 else "low"
         action_counts[action] += 1
         risk_counts[risk_level] += 1
+        reason_counts.update(reasons)
+        has_image_context = page.image_count > 0 or block_counts.get("image", 0) > 0 or image_area_ratio > 0.05
+        has_image_caption_context = "image_caption_context" in reasons
+        has_possible_image_table_context = "possible_image_table" in reasons
+        has_formula_dense_low_text_context = "formula_dense_low_text" in reasons
+        if has_image_context:
+            context_page_counts["image"] += 1
+        if has_image_caption_context:
+            context_page_counts["image_caption"] += 1
+        if has_possible_image_table_context:
+            context_page_counts["image_table"] += 1
+        if has_formula_dense_low_text_context:
+            context_page_counts["formula_low_text"] += 1
         pages.append(
             {
                 "page_no": page.page_no,
@@ -176,6 +191,13 @@ def build_vision_route(doc_ir: DocumentIR) -> dict[str, Any]:
                     "text_area_ratio": round(text_area_ratio, 4),
                     "image_count": page.image_count,
                     "image_area_ratio": round(image_area_ratio, 4),
+                    "caption_count": block_counts.get("caption", 0),
+                    "table_count": block_counts.get("table", 0),
+                    "formula_count": block_counts.get("formula", 0),
+                    "has_image_context": has_image_context,
+                    "has_image_caption_context": has_image_caption_context,
+                    "has_possible_image_table_context": has_possible_image_table_context,
+                    "has_formula_dense_low_text_context": has_formula_dense_low_text_context,
                     "block_counts": dict(block_counts),
                     "page_warnings": page.warnings,
                 },
@@ -201,6 +223,11 @@ def build_vision_route(doc_ir: DocumentIR) -> dict[str, Any]:
             "high_risk_page_count": risk_counts.get("high", 0),
             "preview_page_count": 0,
             "preview_crop_count": 0,
+            "reason_counts": dict(reason_counts),
+            "image_context_page_count": context_page_counts.get("image", 0),
+            "image_caption_context_page_count": context_page_counts.get("image_caption", 0),
+            "image_table_context_page_count": context_page_counts.get("image_table", 0),
+            "formula_low_text_context_page_count": context_page_counts.get("formula_low_text", 0),
             "action_counts": dict(action_counts),
             "risk_counts": dict(risk_counts),
         },

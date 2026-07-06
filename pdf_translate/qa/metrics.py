@@ -178,11 +178,13 @@ def build_experiment_metrics(
     stitch_action_counts = _counter_dict(structure_summary.get("stitch_action_counts"))
     vision_action_counts = _counter_dict(vision_summary.get("action_counts"))
     vision_risk_counts = _counter_dict(vision_summary.get("risk_counts"))
+    vision_reason_counts = _counter_dict(vision_summary.get("reason_counts"))
     ocr_task_scope_counts = _counter_dict(ocr_task_summary.get("scope_counts"))
     ocr_task_status_counts = _counter_dict(ocr_task_summary.get("status_counts"))
     ocr_task_priority_counts = _counter_dict(ocr_task_summary.get("priority_counts"))
     ocr_task_engine_counts = _counter_dict(ocr_task_summary.get("recommended_engine_counts"))
     ocr_task_block_type_counts = _counter_dict(ocr_task_summary.get("block_type_counts"))
+    ocr_task_route_reason_counts = _counter_dict(ocr_task_summary.get("route_reason_counts"))
     ocr_task_structure_target_counts = _counter_dict(ocr_task_summary.get("structure_target_counts"))
     ocr_result_payload_status_counts = _counter_dict(ocr_result_summary.get("status_counts"))
     ocr_result_payload_engine_counts = _counter_dict(ocr_result_summary.get("engine_counts"))
@@ -529,12 +531,27 @@ def build_experiment_metrics(
     routed_page_count = _as_int(vision_summary.get("routed_page_count"))
     vision_preview_page_count = _as_int(vision_summary.get("preview_page_count"))
     vision_region_crop_count = _as_int(vision_summary.get("preview_crop_count"))
+    vision_image_context_page_count = _as_int(vision_summary.get("image_context_page_count"))
+    vision_image_caption_context_page_count = _as_int(vision_summary.get("image_caption_context_page_count"))
+    vision_image_table_context_page_count = _as_int(vision_summary.get("image_table_context_page_count"))
+    vision_formula_low_text_context_page_count = _as_int(
+        vision_summary.get("formula_low_text_context_page_count")
+    )
     ocr_task_count = _as_int(ocr_task_summary.get("task_count"))
     ocr_region_task_count = _as_int(ocr_task_summary.get("region_task_count"))
     ocr_page_task_count = _as_int(ocr_task_summary.get("page_task_count"))
     ocr_ready_task_count = _as_int(ocr_task_summary.get("ready_task_count"))
     ocr_blocked_task_count = _as_int(ocr_task_summary.get("blocked_by_missing_evidence_count"))
     ocr_vlm_fallback_task_count = _as_int(ocr_task_summary.get("vlm_fallback_task_count"))
+    ocr_vision_image_caption_context_task_count = _as_int(
+        ocr_task_summary.get("vision_image_caption_context_task_count")
+    )
+    ocr_vision_image_table_context_task_count = _as_int(
+        ocr_task_summary.get("vision_image_table_context_task_count")
+    )
+    ocr_vision_formula_low_text_context_task_count = _as_int(
+        ocr_task_summary.get("vision_formula_low_text_context_task_count")
+    )
     ocr_structured_contract_task_count = _as_int(ocr_task_summary.get("structured_contract_task_count"))
     ocr_table_context_task_count = _as_int(ocr_task_summary.get("table_context_task_count"))
     ocr_table_context_ready_task_count = _as_int(ocr_task_summary.get("table_context_ready_task_count"))
@@ -1099,12 +1116,19 @@ def build_experiment_metrics(
             "routed_page_count": routed_page_count,
             "vision_preview_page_count": vision_preview_page_count,
             "vision_region_crop_count": vision_region_crop_count,
+            "vision_image_context_page_count": vision_image_context_page_count,
+            "vision_image_caption_context_page_count": vision_image_caption_context_page_count,
+            "vision_image_table_context_page_count": vision_image_table_context_page_count,
+            "vision_formula_low_text_context_page_count": vision_formula_low_text_context_page_count,
             "ocr_task_count": ocr_task_count,
             "ocr_region_task_count": ocr_region_task_count,
             "ocr_page_task_count": ocr_page_task_count,
             "ocr_ready_task_count": ocr_ready_task_count,
             "ocr_blocked_task_count": ocr_blocked_task_count,
             "ocr_vlm_fallback_task_count": ocr_vlm_fallback_task_count,
+            "ocr_vision_image_caption_context_task_count": ocr_vision_image_caption_context_task_count,
+            "ocr_vision_image_table_context_task_count": ocr_vision_image_table_context_task_count,
+            "ocr_vision_formula_low_text_context_task_count": ocr_vision_formula_low_text_context_task_count,
             "ocr_structured_contract_task_count": ocr_structured_contract_task_count,
             "ocr_table_context_task_count": ocr_table_context_task_count,
             "ocr_table_context_ready_task_count": ocr_table_context_ready_task_count,
@@ -1550,9 +1574,34 @@ def build_experiment_metrics(
                 vision_region_crop_count,
                 routed_page_count,
             ),
+            "vision_image_context_page_rate": _rate(vision_image_context_page_count, page_count),
+            "vision_image_caption_context_page_rate": _rate(
+                vision_image_caption_context_page_count,
+                page_count,
+            ),
+            "vision_image_table_context_page_rate": _rate(
+                vision_image_table_context_page_count,
+                page_count,
+            ),
+            "vision_formula_low_text_context_page_rate": _rate(
+                vision_formula_low_text_context_page_count,
+                page_count,
+            ),
             "ocr_task_per_routed_page": _rate(ocr_task_count, routed_page_count),
             "ocr_region_task_rate": _rate(ocr_region_task_count, ocr_task_count),
             "ocr_ready_task_rate": _rate(ocr_ready_task_count, ocr_task_count),
+            "ocr_vision_image_caption_context_task_rate": _rate(
+                ocr_vision_image_caption_context_task_count,
+                ocr_task_count,
+            ),
+            "ocr_vision_image_table_context_task_rate": _rate(
+                ocr_vision_image_table_context_task_count,
+                ocr_task_count,
+            ),
+            "ocr_vision_formula_low_text_context_task_rate": _rate(
+                ocr_vision_formula_low_text_context_task_count,
+                ocr_task_count,
+            ),
             "ocr_structured_contract_task_rate": _rate(ocr_structured_contract_task_count, ocr_task_count),
             "ocr_table_context_task_rate": _rate(ocr_table_context_task_count, ocr_task_count),
             "ocr_table_context_ready_rate": _rate(
@@ -1678,11 +1727,13 @@ def build_experiment_metrics(
             "stitch_action_counts": stitch_action_counts,
             "vision_action_counts": vision_action_counts,
             "vision_risk_counts": vision_risk_counts,
+            "vision_reason_counts": vision_reason_counts,
             "ocr_task_scope_counts": ocr_task_scope_counts,
             "ocr_task_status_counts": ocr_task_status_counts,
             "ocr_task_priority_counts": ocr_task_priority_counts,
             "ocr_task_engine_counts": ocr_task_engine_counts,
             "ocr_task_block_type_counts": ocr_task_block_type_counts,
+            "ocr_task_route_reason_counts": ocr_task_route_reason_counts,
             "ocr_task_structure_target_counts": ocr_task_structure_target_counts,
             "ocr_result_payload_status_counts": ocr_result_payload_status_counts,
             "ocr_result_payload_engine_counts": ocr_result_payload_engine_counts,

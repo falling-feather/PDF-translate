@@ -425,8 +425,20 @@ def build_ocr_task_manifest(
     engine_counts = Counter(str(task.get("recommended_engine") or "unknown") for task in tasks)
     block_type_counts = Counter(str(task.get("block_type") or "unknown") for task in tasks)
     route_action_counts = Counter(str(task.get("route_action") or "unknown") for task in tasks)
+    route_reason_counts: Counter[str] = Counter()
+    for task in tasks:
+        route_reason_counts.update(str(reason) for reason in task.get("reasons") or [] if str(reason))
     structure_target_counts = Counter(str(task.get("target_structure_type") or "unknown") for task in tasks)
     fallback_count = sum(1 for task in tasks if str(task.get("fallback_engine") or ""))
+    vision_image_caption_context_task_count = sum(
+        1 for task in tasks if "image_caption_context" in set(task.get("reasons") or [])
+    )
+    vision_image_table_context_task_count = sum(
+        1 for task in tasks if "possible_image_table" in set(task.get("reasons") or [])
+    )
+    vision_formula_low_text_context_task_count = sum(
+        1 for task in tasks if "formula_dense_low_text" in set(task.get("reasons") or [])
+    )
     structured_contract_count = sum(1 for task in tasks if isinstance(task.get("structure_contract"), dict))
     table_context_count = sum(1 for task in tasks if isinstance(task.get("table_context"), dict))
     table_context_ready_count = sum(
@@ -452,6 +464,9 @@ def build_ocr_task_manifest(
             "ready_task_count": status_counts.get("pending_engine", 0),
             "blocked_by_missing_evidence_count": status_counts.get("blocked_missing_visual_evidence", 0),
             "vlm_fallback_task_count": fallback_count,
+            "vision_image_caption_context_task_count": vision_image_caption_context_task_count,
+            "vision_image_table_context_task_count": vision_image_table_context_task_count,
+            "vision_formula_low_text_context_task_count": vision_formula_low_text_context_task_count,
             "structured_contract_task_count": structured_contract_count,
             "table_context_task_count": table_context_count,
             "table_context_ready_task_count": table_context_ready_count,
@@ -463,6 +478,7 @@ def build_ocr_task_manifest(
             "recommended_engine_counts": dict(engine_counts),
             "block_type_counts": dict(block_type_counts),
             "route_action_counts": dict(route_action_counts),
+            "route_reason_counts": dict(route_reason_counts),
             "structure_target_counts": dict(structure_target_counts),
             "skipped_page_count": len(skipped_pages),
         },

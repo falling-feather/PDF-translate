@@ -3628,9 +3628,15 @@ class StructureIRTests(unittest.TestCase):
         route = build_vision_route(doc_ir)
         self.assertEqual(route["schema_version"], "vision-route-v1")
         self.assertEqual(route["summary"]["routed_page_count"], 1)
+        self.assertEqual(route["summary"]["reason_counts"]["image_caption_context"], 1)
+        self.assertEqual(route["summary"]["image_context_page_count"], 1)
+        self.assertEqual(route["summary"]["image_caption_context_page_count"], 1)
         self.assertEqual(route["pages"][0]["action"], "local_ocr")
         self.assertIn("very_low_text", route["pages"][0]["reasons"])
         self.assertEqual(route["pages"][0]["metrics"]["image_count"], 1)
+        self.assertEqual(route["pages"][0]["metrics"]["caption_count"], 1)
+        self.assertTrue(route["pages"][0]["metrics"]["has_image_context"])
+        self.assertTrue(route["pages"][0]["metrics"]["has_image_caption_context"])
 
     def test_write_vision_route_renders_routed_page_preview(self) -> None:
         root = Path.cwd() / "test-output" / "vision-preview"
@@ -3776,6 +3782,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(manifest["summary"]["ready_task_count"], 2)
             self.assertEqual(manifest["summary"]["blocked_by_missing_evidence_count"], 0)
             self.assertEqual(manifest["summary"]["recommended_engine_counts"]["local_table_ocr"], 1)
+            self.assertEqual(manifest["summary"]["vision_image_table_context_task_count"], 2)
+            self.assertEqual(manifest["summary"]["route_reason_counts"]["possible_image_table"], 2)
             self.assertEqual(manifest["summary"]["structured_contract_task_count"], 1)
             self.assertEqual(manifest["summary"]["table_context_task_count"], 1)
             self.assertEqual(manifest["summary"]["table_context_ready_task_count"], 1)
@@ -5208,6 +5216,15 @@ class StructureIRTests(unittest.TestCase):
                     "routed_page_count": 2,
                     "preview_page_count": 2,
                     "preview_crop_count": 3,
+                    "reason_counts": {
+                        "image_caption_context": 1,
+                        "possible_image_table": 1,
+                        "formula_dense_low_text": 1,
+                    },
+                    "image_context_page_count": 2,
+                    "image_caption_context_page_count": 1,
+                    "image_table_context_page_count": 1,
+                    "formula_low_text_context_page_count": 1,
                     "action_counts": {"text_only": 2, "local_ocr": 1, "vlm_review": 1},
                     "risk_counts": {"low": 2, "medium": 1, "high": 1},
                 },
@@ -5438,6 +5455,9 @@ class StructureIRTests(unittest.TestCase):
                     "ready_task_count": 3,
                     "blocked_by_missing_evidence_count": 1,
                     "vlm_fallback_task_count": 1,
+                    "vision_image_caption_context_task_count": 1,
+                    "vision_image_table_context_task_count": 2,
+                    "vision_formula_low_text_context_task_count": 1,
                     "structured_contract_task_count": 2,
                     "table_context_task_count": 1,
                     "table_context_ready_task_count": 1,
@@ -5452,6 +5472,11 @@ class StructureIRTests(unittest.TestCase):
                         "local_formula_ocr": 1,
                     },
                     "block_type_counts": {"image": 2, "table": 1, "formula": 1},
+                    "route_reason_counts": {
+                        "image_caption_context": 1,
+                        "possible_image_table": 2,
+                        "formula_dense_low_text": 1,
+                    },
                     "structure_target_counts": {"image": 2, "table": 1, "formula": 1},
                 },
             },
@@ -6179,12 +6204,19 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["relationship_warning_rate"], 0.3333)
         self.assertEqual(metrics["quality"]["vision_preview_page_count"], 2)
         self.assertEqual(metrics["quality"]["vision_region_crop_count"], 3)
+        self.assertEqual(metrics["quality"]["vision_image_context_page_count"], 2)
+        self.assertEqual(metrics["quality"]["vision_image_caption_context_page_count"], 1)
+        self.assertEqual(metrics["quality"]["vision_image_table_context_page_count"], 1)
+        self.assertEqual(metrics["quality"]["vision_formula_low_text_context_page_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_task_count"], 4)
         self.assertEqual(metrics["quality"]["ocr_region_task_count"], 3)
         self.assertEqual(metrics["quality"]["ocr_page_task_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_ready_task_count"], 3)
         self.assertEqual(metrics["quality"]["ocr_blocked_task_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_vlm_fallback_task_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_vision_image_caption_context_task_count"], 1)
+        self.assertEqual(metrics["quality"]["ocr_vision_image_table_context_task_count"], 2)
+        self.assertEqual(metrics["quality"]["ocr_vision_formula_low_text_context_task_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_structured_contract_task_count"], 2)
         self.assertEqual(metrics["quality"]["ocr_table_context_task_count"], 1)
         self.assertEqual(metrics["quality"]["ocr_table_context_ready_task_count"], 1)
@@ -6255,9 +6287,16 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["ocr_candidate_promoted_text_char_count"], 120)
         self.assertEqual(metrics["rates"]["vision_preview_page_rate"], 0.5)
         self.assertEqual(metrics["rates"]["vision_region_crop_per_routed_page"], 1.5)
+        self.assertEqual(metrics["rates"]["vision_image_context_page_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["vision_image_caption_context_page_rate"], 0.25)
+        self.assertEqual(metrics["rates"]["vision_image_table_context_page_rate"], 0.25)
+        self.assertEqual(metrics["rates"]["vision_formula_low_text_context_page_rate"], 0.25)
         self.assertEqual(metrics["rates"]["ocr_task_per_routed_page"], 2.0)
         self.assertEqual(metrics["rates"]["ocr_region_task_rate"], 0.75)
         self.assertEqual(metrics["rates"]["ocr_ready_task_rate"], 0.75)
+        self.assertEqual(metrics["rates"]["ocr_vision_image_caption_context_task_rate"], 0.25)
+        self.assertEqual(metrics["rates"]["ocr_vision_image_table_context_task_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["ocr_vision_formula_low_text_context_task_rate"], 0.25)
         self.assertEqual(metrics["rates"]["ocr_structured_contract_task_rate"], 0.5)
         self.assertEqual(metrics["rates"]["ocr_table_context_task_rate"], 0.25)
         self.assertEqual(metrics["rates"]["ocr_table_context_ready_rate"], 1.0)
@@ -6289,7 +6328,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["ocr_structured_formula_promotion_rate"], 0.0)
         self.assertEqual(metrics["rates"]["ocr_candidate_eligible_promotion_rate"], 1.0)
         self.assertEqual(metrics["breakdowns"]["vision_action_counts"]["local_ocr"], 1)
+        self.assertEqual(metrics["breakdowns"]["vision_reason_counts"]["possible_image_table"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_task_engine_counts"]["local_table_ocr"], 1)
+        self.assertEqual(metrics["breakdowns"]["ocr_task_route_reason_counts"]["possible_image_table"], 2)
         self.assertEqual(metrics["breakdowns"]["ocr_task_structure_target_counts"]["table"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_result_payload_engine_counts"]["vlm_fallback"], 1)
         self.assertEqual(metrics["breakdowns"]["ocr_execution_status_counts"]["failed"], 1)
