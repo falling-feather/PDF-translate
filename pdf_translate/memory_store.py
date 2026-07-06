@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -82,6 +84,137 @@ def _normalize_candidate_zh_override(value: Any) -> str | None:
     if len(normalized) > 120:
         raise ValueError("candidate_zh must be at most 120 characters")
     return normalized
+
+
+_SCOPE_SPLIT_RE = re.compile(r"[,，;；、|/\n]+")
+_SCOPE_WORD_RE = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
+_BLOCK_ID_RE = re.compile(r"^p\d+-b\d+$", re.I)
+_SECTION_SCOPE_PREFIXES = {"section", "sec", "chapter", "heading", "章节", "小节", "标题"}
+_STRUCTURE_SCOPE_PREFIXES = {"structure", "type", "block_type", "layout", "结构", "类型", "版式"}
+_BLOCK_SCOPE_PREFIXES = {"block", "block_id", "id", "块"}
+_STRUCTURE_ALIASES: dict[str, set[str]] = {
+    "paragraph": {"paragraph", "body", "text", "正文", "段落"},
+    "heading": {"heading", "title", "section", "标题", "章节"},
+    "table": {"table", "tabular", "表格", "表"},
+    "caption": {"caption", "figure caption", "table caption", "图注", "表注", "图表注"},
+    "footnote": {"footnote", "note", "annotation", "脚注", "注释"},
+    "formula": {"formula", "equation", "math", "公式", "方程"},
+    "reference": {"reference", "references", "bibliography", "参考文献"},
+    "image": {"image", "figure", "picture", "图像", "图片", "图"},
+}
+_STRUCTURE_ALIAS_LOOKUP = {
+    alias: canonical
+    for canonical, aliases in _STRUCTURE_ALIASES.items()
+    for alias in aliases | {canonical}
+}
+
+
+def _scope_token(value: Any) -> str:
+    return _SCOPE_WORD_RE.sub(" ", str(value or "").strip().casefold()).strip()
+
+
+def _scope_raw_token(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().casefold())
+
+
+def _scope_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_values = _SCOPE_SPLIT_RE.split(value)
+    elif isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, dict)):
+        raw_values = []
+        for item in value:
+            raw_values.extend(_scope_values(item))
+    else:
+        raw_values = [str(value)]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw_values:
+        token = _scope_raw_token(item)
+        if token and token not in seen:
+            out.append(token)
+            seen.add(token)
+    return out
+
+
+def _scope_prefixed_value(token: str) -> tuple[str, str]:
+    for separator in (":", "：", "="):
+        if separator in token:
+            prefix, value = token.split(separator, 1)
+            return _scope_token(prefix), _scope_raw_token(value)
+    return "", _scope_raw_token(token)
+
+
+def _normalize_structure_type(value: Any) -> str:
+    token = _scope_token(value)
+    return _STRUCTURE_ALIAS_LOOKUP.get(token, token)
+
+
+def _scope_text_matches(needle: str, contexts: set[str]) -> bool:
+    if not needle or not contexts:
+        return False
+    needle_parts = needle.split()
+    for context in contexts:
+        if needle == context:
+            return True
+        context_parts = context.split()
+        if needle_parts and all(part in context_parts for part in needle_parts):
+            return True
+        if len(needle) >= 4 and needle in context:
+            return True
+    return False
+
+
+def _term_scope_matches(
+    term: dict[str, Any],
+    *,
+    section_scope: Any = None,
+    structure_types: Any = None,
+    block_ids: Any = None,
+) -> bool:
+    tokens = _scope_values(term.get("section_scope"))
+    if not tokens:
+        return True
+
+    section_contexts = {_scope_token(item) for item in _scope_values(section_scope)}
+    type_contexts = {_normalize_structure_type(item) for item in _scope_values(structure_types)}
+    block_contexts = {str(item).strip().casefold() for item in _scope_values(block_ids)}
+    if not section_contexts and not type_contexts and not block_contexts:
+        return True
+
+    for raw_token in tokens:
+        prefix, value = _scope_prefixed_value(raw_token)
+        if not value:
+            continue
+        if prefix in _BLOCK_SCOPE_PREFIXES:
+            if not block_contexts or value in block_contexts:
+                return True
+            continue
+        if prefix in _STRUCTURE_SCOPE_PREFIXES:
+            if not type_contexts or _normalize_structure_type(value) in type_contexts:
+                return True
+            continue
+        if prefix in _SECTION_SCOPE_PREFIXES:
+            if not section_contexts or _scope_text_matches(_scope_token(value), section_contexts):
+                return True
+            continue
+
+        if _BLOCK_ID_RE.match(value):
+            if not block_contexts or value in block_contexts:
+                return True
+            continue
+        normalized_type = _normalize_structure_type(value)
+        if normalized_type in _STRUCTURE_ALIASES:
+            if not type_contexts or normalized_type in type_contexts:
+                return True
+            continue
+        if _scope_text_matches(_scope_token(value), section_contexts):
+            return True
+        if not section_contexts:
+            return True
+
+    return False
 
 
 class MemoryStore:
@@ -462,8 +595,11 @@ class MemoryStore:
         end_page_1based: int,
         *,
         max_terms: int = 40,
+        section_scope: Any = None,
+        structure_types: Any = None,
+        block_ids: Any = None,
     ) -> str:
-        """按 first_page 落在块内的术语注入；若无 first_page 则计入全局直至上限。"""
+        """按页码和可选章节/结构上下文注入术语；无上下文时保留全局兼容行为。"""
         data = self.load_glossary()
         terms = data.get("terms") or []
         picked: list[dict[str, Any]] = []
@@ -472,12 +608,25 @@ class MemoryStore:
         for t in terms:
             if str(t.get("status") or "").strip().lower() == "rejected":
                 continue
+            if not _term_scope_matches(
+                t,
+                section_scope=section_scope,
+                structure_types=structure_types,
+                block_ids=block_ids,
+            ):
+                continue
             fp = t.get("first_page")
             if fp is None:
                 no_page.append(t)
-            elif start_page_1based <= int(fp) <= end_page_1based:
+                continue
+            try:
+                first_page = int(fp)
+            except (TypeError, ValueError):
+                no_page.append(t)
+                continue
+            if start_page_1based <= first_page <= end_page_1based:
                 in_range.append(t)
-        picked.extend(in_range)
+        picked.extend(in_range[:max_terms])
         rest = max_terms - len(picked)
         if rest > 0:
             picked.extend(no_page[:rest])

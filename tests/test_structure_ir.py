@@ -70,7 +70,7 @@ from pdf_translate.qa.table_reconstruction import (
     write_table_structure_publish,
 )
 from pdf_translate.qa.translation import build_translation_qa, translation_qa_to_markdown
-from pdf_translate.pipeline import init_workdir, run_split, run_translate
+from pdf_translate.pipeline import _chunk_glossary_context, init_workdir, run_split, run_translate
 from pdf_translate.run_metrics import build_run_metrics
 from pdf_translate.translators.base import TranslationRequest
 from pdf_translate.translators.factory import build_translator
@@ -393,6 +393,60 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(qa["tables"][0]["column_count"], 3)
         self.assertEqual(qa["tables"][0]["numeric_tokens"], ["91", "88"])
         self.assertIn("page_boundary_fragment_count", qa["summary"])
+
+    def test_chunk_glossary_context_uses_heading_structure_and_block_ids(self) -> None:
+        doc_ir = DocumentIR(
+            doc_id="glossary-context",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text="Methods\n\nAccuracy is measured.",
+                    blocks=[
+                        BlockIR("p1-b0000", 1, "heading", "2 Methods", (0, 0, 100, 20), 0),
+                        BlockIR(
+                            "p1-b0001",
+                            1,
+                            "paragraph",
+                            "Accuracy is measured.",
+                            (0, 30, 300, 90),
+                            1,
+                        ),
+                    ],
+                ),
+                PageIR(
+                    page_no=2,
+                    width=600,
+                    height=800,
+                    text="Results\n\nMetric Acc F1\nA 91 88",
+                    blocks=[
+                        BlockIR("p2-b0000", 2, "heading", "3 Results", (0, 0, 100, 20), 0),
+                        BlockIR(
+                            "p2-b0001",
+                            2,
+                            "table",
+                            "Metric Acc F1\nA 91 88",
+                            (0, 30, 300, 90),
+                            1,
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+        chunks = build_structure_chunks(doc_ir, max_pages_per_chunk=1)
+        methods_context = _chunk_glossary_context(chunks[0], doc_ir)
+        results_context = _chunk_glossary_context(chunks[1], doc_ir)
+
+        self.assertEqual(methods_context["section_scope"], ["2 Methods"])
+        self.assertEqual(methods_context["block_ids"], ["p1-b0000", "p1-b0001"])
+        self.assertIn("heading", methods_context["structure_types"])
+        self.assertIn("paragraph", methods_context["structure_types"])
+        self.assertEqual(results_context["section_scope"], ["3 Results"])
+        self.assertIn("table", results_context["structure_types"])
+        self.assertEqual(results_context["block_ids"], ["p2-b0000", "p2-b0001"])
 
     def test_structure_chunks_record_budget_metadata_and_split_reasons(self) -> None:
         first_text = ("Alpha method " * 85).strip() + "."
@@ -5922,6 +5976,54 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(active_terms[0]["section_scope"], "Methods")
             self.assertIn("Accuracy → 分类准确率", mem.glossary_snippet_for_pages(1, 2))
             self.assertNotIn("Accuracy → 准确率", mem.glossary_snippet_for_pages(1, 2))
+            self.assertIn(
+                "Accuracy → 分类准确率",
+                mem.glossary_snippet_for_pages(1, 2, section_scope="2 Methods"),
+            )
+            self.assertNotIn(
+                "Accuracy → 分类准确率",
+                mem.glossary_snippet_for_pages(1, 2, section_scope="3 Results"),
+            )
+
+            glossary_data = mem.load_glossary()
+            glossary_data["terms"].append(
+                {
+                    "en": "F1 score",
+                    "zh": "F1 值",
+                    "first_page": 1,
+                    "status": "confirmed",
+                    "section_scope": "structure:table",
+                }
+            )
+            glossary_data["terms"].append(
+                {
+                    "en": "Ablation",
+                    "zh": "消融实验",
+                    "first_page": 1,
+                    "status": "confirmed",
+                    "section_scope": "block:p1-b0001",
+                }
+            )
+            mem.glossary_path.write_text(
+                json.dumps(glossary_data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            self.assertIn(
+                "F1 score → F1 值",
+                mem.glossary_snippet_for_pages(1, 1, structure_types=["table"]),
+            )
+            self.assertNotIn(
+                "F1 score → F1 值",
+                mem.glossary_snippet_for_pages(1, 1, structure_types=["paragraph"]),
+            )
+            self.assertIn(
+                "Ablation → 消融实验",
+                mem.glossary_snippet_for_pages(1, 1, block_ids=["p1-b0001"]),
+            )
+            self.assertNotIn(
+                "Ablation → 消融实验",
+                mem.glossary_snippet_for_pages(1, 1, block_ids=["p1-b0002"]),
+            )
 
             with self.assertRaisesRegex(ValueError, "already been reviewed"):
                 mem.apply_glossary_review_decision(

@@ -16,7 +16,7 @@ from pdf_translate.config import AppConfig
 from pdf_translate.costing import backend_model_name, load_cost_profile, write_cost_estimate
 from pdf_translate.exporters.bilingual_html import write_bilingual_html
 from pdf_translate.exporters.translated_pdf import write_translated_pdf
-from pdf_translate.extractors.document_ir import document_ir_from_json_dict, extract_document_ir
+from pdf_translate.extractors.document_ir import BlockIR, document_ir_from_json_dict, extract_document_ir
 from pdf_translate.memory_store import MemoryStore
 from pdf_translate.pdf_structure import SplitManifest, split_main_and_references
 from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
@@ -189,6 +189,89 @@ def _chunk_body_and_meta(ch: TextChunk, zh: str, translator_name: str) -> tuple[
     return body, meta
 
 
+def _chunk_block_ids(ch: TextChunk) -> list[str]:
+    raw = getattr(ch, "block_ids", [])
+    if not isinstance(raw, list):
+        return []
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def _document_block_lookup(document_ir: object | None) -> dict[str, BlockIR]:
+    pages = getattr(document_ir, "pages", None)
+    if not isinstance(pages, list):
+        return {}
+    out: dict[str, BlockIR] = {}
+    for page in pages:
+        blocks = getattr(page, "blocks", None)
+        if not isinstance(blocks, list):
+            continue
+        for block in blocks:
+            block_id = str(getattr(block, "block_id", "") or "")
+            if block_id:
+                out[block_id] = block
+    return out
+
+
+def _chunk_structure_types(ch: TextChunk, document_ir: object | None = None) -> list[str]:
+    block_types = getattr(ch, "block_types", None)
+    if isinstance(block_types, dict):
+        return [
+            str(block_type).strip()
+            for block_type, count in block_types.items()
+            if str(block_type).strip() and int(count or 0) > 0
+        ]
+    lookup = _document_block_lookup(document_ir)
+    seen: set[str] = set()
+    out: list[str] = []
+    for block_id in _chunk_block_ids(ch):
+        block = lookup.get(block_id)
+        block_type = str(getattr(block, "type", "") or "").strip() if block is not None else ""
+        if block_type and block_type not in seen:
+            out.append(block_type)
+            seen.add(block_type)
+    return out
+
+
+def _chunk_section_scopes(ch: TextChunk, document_ir: object | None = None) -> list[str]:
+    block_ids = _chunk_block_ids(ch)
+    if not block_ids:
+        return []
+    lookup = _document_block_lookup(document_ir)
+    if not lookup:
+        return []
+    all_blocks = sorted(
+        lookup.values(),
+        key=lambda block: (int(getattr(block, "page_no", 0) or 0), int(getattr(block, "order", 0) or 0)),
+    )
+    headings = [block for block in all_blocks if str(getattr(block, "type", "") or "") == "heading"]
+    chunk_blocks = [lookup[block_id] for block_id in block_ids if block_id in lookup]
+    scopes: list[str] = []
+    seen: set[str] = set()
+    for block in chunk_blocks:
+        block_pos = (int(getattr(block, "page_no", 0) or 0), int(getattr(block, "order", 0) or 0))
+        previous = [
+            heading
+            for heading in headings
+            if (int(getattr(heading, "page_no", 0) or 0), int(getattr(heading, "order", 0) or 0)) <= block_pos
+        ]
+        if not previous:
+            continue
+        heading = previous[-1]
+        text = " ".join(str(getattr(heading, "text", "") or "").split())
+        if text and text not in seen:
+            scopes.append(text)
+            seen.add(text)
+    return scopes
+
+
+def _chunk_glossary_context(ch: TextChunk, document_ir: object | None = None) -> dict[str, object]:
+    return {
+        "section_scope": _chunk_section_scopes(ch, document_ir),
+        "structure_types": _chunk_structure_types(ch, document_ir),
+        "block_ids": _chunk_block_ids(ch),
+    }
+
+
 def _parallel_translate_one(
     work_dir: Path,
     cfg: AppConfig,
@@ -207,7 +290,11 @@ def _parallel_translate_one(
     p1 = ch.pages_0based[-1] + 1
     mem = MemoryStore(work_dir / "memory")
     _write_survey_and_merge_glossary(work_dir, cfg, mem, ch, text)
-    gloss = mem.glossary_snippet_for_pages(p0, p1)
+    gloss = mem.glossary_snippet_for_pages(
+        p0,
+        p1,
+        **_chunk_glossary_context(ch, document_ir),
+    )
     structure_hints = (structure_hints_by_chunk or {}).get(ch.chunk_id)
     if structure_hints is None:
         structure_hints = build_structure_translation_hints(ch, table_reconstruction, document_ir)
@@ -406,6 +493,7 @@ def run_translate(
                 "strategy": chunk_strategy,
                 "block_ids": getattr(c, "block_ids", []),
                 "block_types": getattr(c, "block_types", {}),
+                "section_scopes": _chunk_section_scopes(c, doc_ir),
                 "warnings": getattr(c, "warnings", []),
                 "boundary_fragment_ids": getattr(c, "boundary_fragment_ids", []),
                 "structural_relation_ids": getattr(c, "structural_relation_ids", []),
@@ -824,7 +912,11 @@ def run_translate(
         p1 = ch.pages_0based[-1] + 1
         text = collapse_toc_dot_leaders(ch.text)
         _write_survey_and_merge_glossary(work_dir, cfg, mem, ch, text)
-        gloss = mem.glossary_snippet_for_pages(p0, p1)
+        gloss = mem.glossary_snippet_for_pages(
+            p0,
+            p1,
+            **_chunk_glossary_context(ch, doc_ir),
+        )
         priors = mem.load_recent_summaries(max_chunks=3)
 
         prior_tail = mem.load_prior_tail_zh()
