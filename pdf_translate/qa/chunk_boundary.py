@@ -38,6 +38,13 @@ def _is_hyphenated_continuation(fragment: dict[str, Any]) -> bool:
     return isinstance(reasons, list) and "hyphenated_word_break_across_page" in reasons
 
 
+def _is_academic_abbreviation_continuation(fragment: dict[str, Any]) -> bool:
+    if str(fragment.get("continuation_kind") or "") == "academic_abbreviation_continuation":
+        return True
+    reasons = fragment.get("reasons")
+    return isinstance(reasons, list) and "academic_abbreviation_at_page_end" in reasons
+
+
 def build_chunk_boundary_qa(
     chunks: list[TextChunk],
     structure_qa: dict[str, Any] | None,
@@ -98,6 +105,12 @@ def build_chunk_boundary_qa(
     hyphenated_protected_count = 0
     hyphenated_split_count = 0
     hyphenated_co_located_count = 0
+    hyphenated_elision_boundary_count = 0
+    hyphenated_preserved_hyphen_boundary_count = 0
+    academic_abbreviation_boundary_count = 0
+    academic_abbreviation_protected_count = 0
+    academic_abbreviation_split_count = 0
+    academic_abbreviation_co_located_count = 0
 
     for fragment in fragments:
         pages = fragment.get("pages_1based")
@@ -117,6 +130,13 @@ def build_chunk_boundary_qa(
         is_hyphenated_continuation = _is_hyphenated_continuation(fragment)
         if is_hyphenated_continuation:
             hyphenated_boundary_count += 1
+            if str(fragment.get("joiner") or "") == "hyphen_preserve":
+                hyphenated_preserved_hyphen_boundary_count += 1
+            elif str(fragment.get("joiner") or "") == "hyphen_elision":
+                hyphenated_elision_boundary_count += 1
+        is_academic_abbreviation_continuation = _is_academic_abbreviation_continuation(fragment)
+        if is_academic_abbreviation_continuation:
+            academic_abbreviation_boundary_count += 1
 
         co_located_chunks = [
             row["chunk_id"]
@@ -149,6 +169,9 @@ def build_chunk_boundary_qa(
             if is_hyphenated_continuation:
                 hyphenated_protected_count += 1
                 hyphenated_co_located_count += 1
+            if is_academic_abbreviation_continuation:
+                academic_abbreviation_protected_count += 1
+                academic_abbreviation_co_located_count += 1
         elif co_located_chunks:
             status = "co_located"
             co_located_count += 1
@@ -156,6 +179,8 @@ def build_chunk_boundary_qa(
                 table_continuation_co_located_count += 1
             if is_hyphenated_continuation:
                 hyphenated_co_located_count += 1
+            if is_academic_abbreviation_continuation:
+                academic_abbreviation_co_located_count += 1
         else:
             status = "split"
             split_count += 1
@@ -165,6 +190,8 @@ def build_chunk_boundary_qa(
                 table_continuation_split_count += 1
             if is_hyphenated_continuation:
                 hyphenated_split_count += 1
+            if is_academic_abbreviation_continuation:
+                academic_abbreviation_split_count += 1
 
         boundaries.append(
             {
@@ -174,8 +201,10 @@ def build_chunk_boundary_qa(
                 "continuation_kind": fragment.get("continuation_kind"),
                 "stitch_action": fragment.get("stitch_action"),
                 "joiner": fragment.get("joiner"),
+                "hyphenation_decision": fragment.get("hyphenation_decision"),
                 "is_table_continuation": is_table_continuation,
                 "is_hyphenated_continuation": is_hyphenated_continuation,
+                "is_academic_abbreviation_continuation": is_academic_abbreviation_continuation,
                 "status": status,
                 "co_located_chunk_ids": co_located_chunks,
                 "protected_by_chunk_ids": protected_chunks,
@@ -209,6 +238,12 @@ def build_chunk_boundary_qa(
             "hyphenated_protected_count": hyphenated_protected_count,
             "hyphenated_split_count": hyphenated_split_count,
             "hyphenated_co_located_count": hyphenated_co_located_count,
+            "hyphenated_elision_boundary_count": hyphenated_elision_boundary_count,
+            "hyphenated_preserved_hyphen_boundary_count": hyphenated_preserved_hyphen_boundary_count,
+            "academic_abbreviation_boundary_count": academic_abbreviation_boundary_count,
+            "academic_abbreviation_protected_count": academic_abbreviation_protected_count,
+            "academic_abbreviation_split_count": academic_abbreviation_split_count,
+            "academic_abbreviation_co_located_count": academic_abbreviation_co_located_count,
             "split_boundary_rate": round(split_count / boundary_count, 4) if boundary_count else 0.0,
             "protected_boundary_rate": round(protected_count / boundary_count, 4) if boundary_count else 0.0,
             "high_risk_split_rate": round(high_risk_split_count / high_risk_count, 4) if high_risk_count else 0.0,
@@ -229,6 +264,18 @@ def build_chunk_boundary_qa(
             else 0.0,
             "hyphenated_protected_rate": round(hyphenated_protected_count / hyphenated_boundary_count, 4)
             if hyphenated_boundary_count
+            else 0.0,
+            "academic_abbreviation_split_rate": round(
+                academic_abbreviation_split_count / academic_abbreviation_boundary_count,
+                4,
+            )
+            if academic_abbreviation_boundary_count
+            else 0.0,
+            "academic_abbreviation_protected_rate": round(
+                academic_abbreviation_protected_count / academic_abbreviation_boundary_count,
+                4,
+            )
+            if academic_abbreviation_boundary_count
             else 0.0,
             "budget_split_reason_counts": dict(sorted(budget_split_reason_counts.items())),
             "budget_pressure_counts": dict(sorted(budget_pressure_counts.items())),
@@ -280,6 +327,9 @@ def build_chunk_strategy_comparison(
     baseline_split = int(baseline_summary.get("split_boundary_count") or 0)
     baseline_table_continuation_split = int(baseline_summary.get("table_continuation_split_count") or 0)
     baseline_hyphenated_split = int(baseline_summary.get("hyphenated_split_count") or 0)
+    baseline_academic_abbreviation_split = int(
+        baseline_summary.get("academic_abbreviation_split_count") or 0
+    )
     best_strategy = None
     best_split_rate: float | None = None
     best_split_count: int | None = None
@@ -331,6 +381,12 @@ def build_chunk_strategy_comparison(
             if name != baseline_strategy
             else 0
         )
+        academic_abbreviation_split_count = int(summary.get("academic_abbreviation_split_count") or 0)
+        academic_abbreviation_split_delta = (
+            baseline_academic_abbreviation_split - academic_abbreviation_split_count
+            if name != baseline_strategy
+            else 0
+        )
         strategy_entries.append(
             {
                 "strategy": name,
@@ -352,6 +408,22 @@ def build_chunk_strategy_comparison(
                 "hyphenated_protected_count": int(summary.get("hyphenated_protected_count") or 0),
                 "hyphenated_split_count": hyphenated_split_count,
                 "hyphenated_co_located_count": int(summary.get("hyphenated_co_located_count") or 0),
+                "hyphenated_elision_boundary_count": int(
+                    summary.get("hyphenated_elision_boundary_count") or 0
+                ),
+                "hyphenated_preserved_hyphen_boundary_count": int(
+                    summary.get("hyphenated_preserved_hyphen_boundary_count") or 0
+                ),
+                "academic_abbreviation_boundary_count": int(
+                    summary.get("academic_abbreviation_boundary_count") or 0
+                ),
+                "academic_abbreviation_protected_count": int(
+                    summary.get("academic_abbreviation_protected_count") or 0
+                ),
+                "academic_abbreviation_split_count": academic_abbreviation_split_count,
+                "academic_abbreviation_co_located_count": int(
+                    summary.get("academic_abbreviation_co_located_count") or 0
+                ),
                 "budget_overflow_chunk_count": int(summary.get("budget_overflow_chunk_count") or 0),
                 "structural_relation_protected_count": int(
                     summary.get("structural_relation_protected_count") or 0
@@ -364,6 +436,12 @@ def build_chunk_strategy_comparison(
                 ),
                 "hyphenated_split_rate": float(summary.get("hyphenated_split_rate") or 0.0),
                 "hyphenated_protected_rate": float(summary.get("hyphenated_protected_rate") or 0.0),
+                "academic_abbreviation_split_rate": float(
+                    summary.get("academic_abbreviation_split_rate") or 0.0
+                ),
+                "academic_abbreviation_protected_rate": float(
+                    summary.get("academic_abbreviation_protected_rate") or 0.0
+                ),
                 "split_reduction_vs_baseline": split_delta,
                 "split_reduction_rate_vs_baseline": _rate(split_delta, baseline_split),
                 "table_continuation_split_reduction_vs_baseline": table_continuation_split_delta,
@@ -376,6 +454,11 @@ def build_chunk_strategy_comparison(
                     hyphenated_split_delta,
                     baseline_hyphenated_split,
                 ),
+                "academic_abbreviation_split_reduction_vs_baseline": academic_abbreviation_split_delta,
+                "academic_abbreviation_split_reduction_rate_vs_baseline": _rate(
+                    academic_abbreviation_split_delta,
+                    baseline_academic_abbreviation_split,
+                ),
             }
         )
     strategy_entries.sort(key=lambda item: str(item["strategy"]))
@@ -384,6 +467,7 @@ def build_chunk_strategy_comparison(
     active_split = int(active_summary.get("split_boundary_count") or 0)
     active_table_continuation_split = int(active_summary.get("table_continuation_split_count") or 0)
     active_hyphenated_split = int(active_summary.get("hyphenated_split_count") or 0)
+    active_academic_abbreviation_split = int(active_summary.get("academic_abbreviation_split_count") or 0)
     return {
         "schema_version": "chunk-strategy-comparison-v1",
         "doc_id": (structure_qa or {}).get("doc_id") if isinstance(structure_qa, dict) else None,
@@ -417,6 +501,15 @@ def build_chunk_strategy_comparison(
             "active_hyphenated_split_reduction_rate_vs_baseline": _rate(
                 baseline_hyphenated_split - active_hyphenated_split,
                 baseline_hyphenated_split,
+            ),
+            "baseline_academic_abbreviation_split_count": baseline_academic_abbreviation_split,
+            "active_academic_abbreviation_split_count": active_academic_abbreviation_split,
+            "active_academic_abbreviation_split_reduction_vs_baseline": (
+                baseline_academic_abbreviation_split - active_academic_abbreviation_split
+            ),
+            "active_academic_abbreviation_split_reduction_rate_vs_baseline": _rate(
+                baseline_academic_abbreviation_split - active_academic_abbreviation_split,
+                baseline_academic_abbreviation_split,
             ),
         },
         "strategies": strategy_entries,

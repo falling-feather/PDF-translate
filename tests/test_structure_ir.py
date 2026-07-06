@@ -3040,7 +3040,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(fragment["continuation_kind"], "hyphenated_word_continuation")
         self.assertEqual(fragment["stitch_action"], "join_hyphenated_word_across_page_boundary")
         self.assertEqual(fragment["joiner"], "hyphen_elision")
+        self.assertEqual(fragment["hyphenation_decision"], "hyphen_elision")
         self.assertIn("hyphenated_word_break_across_page", fragment["reasons"])
+        self.assertIn("elide_soft_line_break_hyphen", fragment["reasons"])
         self.assertIn("translation quality", fragment["merged_preview"])
         self.assertEqual(
             structure_qa["summary"]["continuation_kind_counts"]["hyphenated_word_continuation"],
@@ -3057,9 +3059,12 @@ class StructureIRTests(unittest.TestCase):
         ]
         page_report = build_chunk_boundary_qa(page_chunks, structure_qa, pipeline_variant="page")
         self.assertEqual(page_report["summary"]["hyphenated_boundary_count"], 1)
+        self.assertEqual(page_report["summary"]["hyphenated_elision_boundary_count"], 1)
+        self.assertEqual(page_report["summary"]["hyphenated_preserved_hyphen_boundary_count"], 0)
         self.assertEqual(page_report["summary"]["hyphenated_split_count"], 1)
         self.assertEqual(page_report["summary"]["hyphenated_split_rate"], 1.0)
         self.assertTrue(page_report["boundaries"][0]["is_hyphenated_continuation"])
+        self.assertEqual(page_report["boundaries"][0]["hyphenation_decision"], "hyphen_elision")
 
         structure_chunks = build_structure_chunks(
             doc_ir,
@@ -3087,6 +3092,189 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(comparison["summary"]["baseline_hyphenated_split_count"], 1)
         self.assertEqual(comparison["summary"]["active_hyphenated_split_count"], 0)
         self.assertEqual(comparison["summary"]["active_hyphenated_split_reduction_vs_baseline"], 1)
+
+    def test_structure_qa_preserves_hyphenated_academic_compounds(self) -> None:
+        doc_ir = DocumentIR(
+            doc_id="hyphenated-compound-sample",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text="The encoder uses BERT-",
+                    blocks=[
+                        BlockIR(
+                            "p1-b0000",
+                            1,
+                            "paragraph",
+                            "The encoder uses BERT-",
+                            (40, 100, 520, 180),
+                            0,
+                        ),
+                    ],
+                ),
+                PageIR(
+                    page_no=2,
+                    width=600,
+                    height=800,
+                    text="based representations for retrieval.",
+                    blocks=[
+                        BlockIR(
+                            "p2-b0000",
+                            2,
+                            "paragraph",
+                            "based representations for retrieval.",
+                            (40, 80, 520, 140),
+                            0,
+                        ),
+                    ],
+                ),
+            ],
+        )
+        structure_qa = build_structure_qa(doc_ir)
+        fragment = structure_qa["page_boundary_fragments"][0]
+        self.assertEqual(fragment["continuation_kind"], "hyphenated_word_continuation")
+        self.assertEqual(fragment["stitch_action"], "preserve_hyphenated_compound_across_page_boundary")
+        self.assertEqual(fragment["joiner"], "hyphen_preserve")
+        self.assertEqual(fragment["hyphenation_decision"], "hyphen_preserve")
+        self.assertIn("preserve_hyphenated_compound", fragment["reasons"])
+        self.assertIn("BERT-based representations", fragment["merged_preview"])
+        self.assertNotIn("BERTbased", fragment["merged_preview"])
+
+        structure_chunks = build_structure_chunks(
+            doc_ir,
+            target_chars=1000,
+            max_chars=2000,
+            max_pages_per_chunk=1,
+        )
+        self.assertEqual(len(structure_chunks), 1)
+        self.assertIn("preserve_hyphenated_compound_across_page_boundary", structure_chunks[0].boundary_stitch_notes[0])
+        self.assertIn("protected_hyphenated_compound:p1-p2", structure_chunks[0].warnings)
+
+        report = build_chunk_boundary_qa(structure_chunks, structure_qa, pipeline_variant="structure")
+        self.assertEqual(report["summary"]["hyphenated_preserved_hyphen_boundary_count"], 1)
+        self.assertEqual(report["summary"]["hyphenated_elision_boundary_count"], 0)
+        self.assertEqual(report["summary"]["hyphenated_protected_count"], 1)
+
+    def test_structure_qa_suppresses_short_title_hyphen_false_positive(self) -> None:
+        doc_ir = DocumentIR(
+            doc_id="title-break-sample",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text="Related-",
+                    blocks=[
+                        BlockIR("p1-b0000", 1, "paragraph", "Related-", (40, 100, 520, 130), 0),
+                    ],
+                ),
+                PageIR(
+                    page_no=2,
+                    width=600,
+                    height=800,
+                    text="Work",
+                    blocks=[
+                        BlockIR("p2-b0000", 2, "paragraph", "Work", (40, 80, 520, 110), 0),
+                    ],
+                ),
+            ],
+        )
+        structure_qa = build_structure_qa(doc_ir)
+        self.assertEqual(structure_qa["summary"]["page_boundary_fragment_count"], 0)
+        self.assertEqual(structure_qa["page_boundary_fragments"], [])
+
+    def test_structure_qa_reports_academic_abbreviation_page_boundary_fragments(self) -> None:
+        doc_ir = DocumentIR(
+            doc_id="academic-abbreviation-boundary-sample",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    text="The method follows Smith et al.",
+                    blocks=[
+                        BlockIR(
+                            "p1-b0000",
+                            1,
+                            "paragraph",
+                            "The method follows Smith et al.",
+                            (40, 100, 520, 180),
+                            0,
+                        ),
+                    ],
+                ),
+                PageIR(
+                    page_no=2,
+                    width=600,
+                    height=800,
+                    text="who introduced a robust baseline.",
+                    blocks=[
+                        BlockIR(
+                            "p2-b0000",
+                            2,
+                            "paragraph",
+                            "who introduced a robust baseline.",
+                            (40, 80, 520, 140),
+                            0,
+                        ),
+                    ],
+                ),
+            ],
+        )
+        structure_qa = build_structure_qa(doc_ir)
+        fragment = structure_qa["page_boundary_fragments"][0]
+        self.assertEqual(fragment["continuation_kind"], "academic_abbreviation_continuation")
+        self.assertEqual(fragment["stitch_action"], "preserve_academic_abbreviation_context_across_page")
+        self.assertEqual(fragment["joiner"], "space")
+        self.assertIn("academic_abbreviation_at_page_end", fragment["reasons"])
+        self.assertIn("Smith et al. who introduced", fragment["merged_preview"])
+        self.assertEqual(
+            structure_qa["summary"]["continuation_kind_counts"]["academic_abbreviation_continuation"],
+            1,
+        )
+
+        page_chunks = [
+            TextChunk("c0000", [0], "The method follows Smith et al.", 0, 0),
+            TextChunk("c0001", [1], "who introduced a robust baseline.", 0, 0),
+        ]
+        page_report = build_chunk_boundary_qa(page_chunks, structure_qa, pipeline_variant="page")
+        self.assertEqual(page_report["summary"]["academic_abbreviation_boundary_count"], 1)
+        self.assertEqual(page_report["summary"]["academic_abbreviation_split_count"], 1)
+        self.assertEqual(page_report["summary"]["academic_abbreviation_split_rate"], 1.0)
+        self.assertTrue(page_report["boundaries"][0]["is_academic_abbreviation_continuation"])
+
+        structure_chunks = build_structure_chunks(
+            doc_ir,
+            target_chars=1000,
+            max_chars=2000,
+            max_pages_per_chunk=1,
+        )
+        self.assertEqual(len(structure_chunks), 1)
+        self.assertIn("protected_academic_abbreviation:p1-p2", structure_chunks[0].warnings)
+        structure_report = build_chunk_boundary_qa(
+            structure_chunks,
+            structure_qa,
+            pipeline_variant="structure",
+        )
+        self.assertEqual(structure_report["summary"]["academic_abbreviation_protected_count"], 1)
+        self.assertEqual(structure_report["summary"]["academic_abbreviation_split_count"], 0)
+        self.assertEqual(structure_report["summary"]["academic_abbreviation_protected_rate"], 1.0)
+
+        comparison = build_chunk_strategy_comparison(
+            {"page": page_chunks, "structure": structure_chunks},
+            structure_qa,
+            active_strategy="structure",
+        )
+        self.assertEqual(comparison["summary"]["baseline_academic_abbreviation_split_count"], 1)
+        self.assertEqual(comparison["summary"]["active_academic_abbreviation_split_count"], 0)
+        self.assertEqual(
+            comparison["summary"]["active_academic_abbreviation_split_reduction_vs_baseline"],
+            1,
+        )
 
     def test_structure_chunks_protect_page_boundary_fragments(self) -> None:
         long_unfinished = "The proposed method improves " + ("robustness " * 105)
@@ -4896,18 +5084,20 @@ class StructureIRTests(unittest.TestCase):
                     "entity_candidate_count": 6,
                     "entity_unique_count": 5,
                     "entity_type_counts": {"model_or_dataset": 2, "person": 1},
-                    "page_boundary_fragment_count": 2,
-                    "page_boundary_stitch_candidate_count": 2,
+                    "page_boundary_fragment_count": 3,
+                    "page_boundary_stitch_candidate_count": 3,
                     "table_continuation_boundary_count": 1,
                     "continuation_kind_counts": {
                         "table_continuation": 1,
                         "hyphenated_word_continuation": 1,
+                        "academic_abbreviation_continuation": 1,
                     },
                     "stitch_action_counts": {
                         "preserve_table_segments_together": 1,
-                        "join_hyphenated_word_across_page_boundary": 1,
+                        "preserve_hyphenated_compound_across_page_boundary": 1,
+                        "preserve_academic_abbreviation_context_across_page": 1,
                     },
-                    "page_boundary_fragment_rate": 0.6667,
+                    "page_boundary_fragment_rate": 1.0,
                 },
             },
             {
@@ -4971,10 +5161,10 @@ class StructureIRTests(unittest.TestCase):
             chunk_boundary_qa={
                 "schema_version": "chunk-boundary-qa-v1",
                 "summary": {
-                    "split_boundary_count": 1,
-                    "protected_boundary_count": 1,
-                    "co_located_boundary_count": 1,
-                    "high_risk_split_count": 1,
+                    "split_boundary_count": 0,
+                    "protected_boundary_count": 3,
+                    "co_located_boundary_count": 3,
+                    "high_risk_split_count": 0,
                     "table_continuation_boundary_count": 1,
                     "table_continuation_protected_count": 1,
                     "table_continuation_split_count": 0,
@@ -4983,6 +5173,12 @@ class StructureIRTests(unittest.TestCase):
                     "hyphenated_protected_count": 1,
                     "hyphenated_split_count": 0,
                     "hyphenated_co_located_count": 1,
+                    "hyphenated_elision_boundary_count": 0,
+                    "hyphenated_preserved_hyphen_boundary_count": 1,
+                    "academic_abbreviation_boundary_count": 1,
+                    "academic_abbreviation_protected_count": 1,
+                    "academic_abbreviation_split_count": 0,
+                    "academic_abbreviation_co_located_count": 1,
                     "budget_overflow_chunk_count": 1,
                     "budget_overflow_char_total": 160,
                     "structural_relation_protected_count": 2,
@@ -4993,10 +5189,10 @@ class StructureIRTests(unittest.TestCase):
             chunk_strategy_comparison={
                 "schema_version": "chunk-strategy-comparison-v1",
                 "summary": {
-                    "baseline_split_boundary_count": 2,
-                    "active_split_boundary_count": 1,
-                    "active_split_reduction_vs_baseline": 1,
-                    "active_split_reduction_rate_vs_baseline": 0.5,
+                    "baseline_split_boundary_count": 3,
+                    "active_split_boundary_count": 0,
+                    "active_split_reduction_vs_baseline": 3,
+                    "active_split_reduction_rate_vs_baseline": 1.0,
                     "baseline_table_continuation_split_count": 1,
                     "active_table_continuation_split_count": 0,
                     "active_table_continuation_split_reduction_vs_baseline": 1,
@@ -5005,6 +5201,10 @@ class StructureIRTests(unittest.TestCase):
                     "active_hyphenated_split_count": 0,
                     "active_hyphenated_split_reduction_vs_baseline": 1,
                     "active_hyphenated_split_reduction_rate_vs_baseline": 1.0,
+                    "baseline_academic_abbreviation_split_count": 1,
+                    "active_academic_abbreviation_split_count": 0,
+                    "active_academic_abbreviation_split_reduction_vs_baseline": 1,
+                    "active_academic_abbreviation_split_reduction_rate_vs_baseline": 1.0,
                 },
             },
             structure_hints_manifest={
@@ -5660,9 +5860,9 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["missing_equation_label_count"], 1)
         self.assertEqual(metrics["rates"]["formula_token_missing_rate"], 0.4)
         self.assertEqual(metrics["rates"]["equation_label_missing_rate"], 1.0)
-        self.assertEqual(metrics["quality"]["split_boundary_count"], 1)
-        self.assertEqual(metrics["quality"]["protected_boundary_count"], 1)
-        self.assertEqual(metrics["quality"]["page_boundary_stitch_candidate_count"], 2)
+        self.assertEqual(metrics["quality"]["split_boundary_count"], 0)
+        self.assertEqual(metrics["quality"]["protected_boundary_count"], 3)
+        self.assertEqual(metrics["quality"]["page_boundary_stitch_candidate_count"], 3)
         self.assertEqual(metrics["quality"]["table_continuation_boundary_count"], 1)
         self.assertEqual(metrics["quality"]["table_continuation_protected_count"], 1)
         self.assertEqual(metrics["quality"]["table_continuation_split_count"], 0)
@@ -5671,20 +5871,30 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["hyphenated_protected_count"], 1)
         self.assertEqual(metrics["quality"]["hyphenated_split_count"], 0)
         self.assertEqual(metrics["quality"]["hyphenated_co_located_count"], 1)
+        self.assertEqual(metrics["quality"]["hyphenated_elision_boundary_count"], 0)
+        self.assertEqual(metrics["quality"]["hyphenated_preserved_hyphen_boundary_count"], 1)
+        self.assertEqual(metrics["quality"]["academic_abbreviation_boundary_count"], 1)
+        self.assertEqual(metrics["quality"]["academic_abbreviation_protected_count"], 1)
+        self.assertEqual(metrics["quality"]["academic_abbreviation_split_count"], 0)
+        self.assertEqual(metrics["quality"]["academic_abbreviation_co_located_count"], 1)
         self.assertEqual(metrics["quality"]["budget_overflow_chunk_count"], 1)
         self.assertEqual(metrics["quality"]["budget_overflow_char_total"], 160)
         self.assertEqual(metrics["quality"]["structural_relation_protected_count"], 2)
         self.assertEqual(metrics["quality"]["cross_page_relationship_count"], 1)
         self.assertEqual(metrics["quality"]["caption_cross_page_linked_count"], 1)
         self.assertEqual(metrics["quality"]["cross_page_parent_gap_max"], 1)
-        self.assertEqual(metrics["quality"]["baseline_split_boundary_count"], 2)
-        self.assertEqual(metrics["quality"]["active_split_reduction_vs_baseline"], 1)
+        self.assertEqual(metrics["quality"]["baseline_split_boundary_count"], 3)
+        self.assertEqual(metrics["quality"]["active_split_boundary_count"], 0)
+        self.assertEqual(metrics["quality"]["active_split_reduction_vs_baseline"], 3)
         self.assertEqual(metrics["quality"]["baseline_table_continuation_split_count"], 1)
         self.assertEqual(metrics["quality"]["active_table_continuation_split_count"], 0)
         self.assertEqual(metrics["quality"]["active_table_continuation_split_reduction_vs_baseline"], 1)
         self.assertEqual(metrics["quality"]["baseline_hyphenated_split_count"], 1)
         self.assertEqual(metrics["quality"]["active_hyphenated_split_count"], 0)
         self.assertEqual(metrics["quality"]["active_hyphenated_split_reduction_vs_baseline"], 1)
+        self.assertEqual(metrics["quality"]["baseline_academic_abbreviation_split_count"], 1)
+        self.assertEqual(metrics["quality"]["active_academic_abbreviation_split_count"], 0)
+        self.assertEqual(metrics["quality"]["active_academic_abbreviation_split_reduction_vs_baseline"], 1)
         self.assertEqual(metrics["quality"]["reconstructable_table_count"], 1)
         self.assertEqual(metrics["quality"]["table_cell_count"], 8)
         self.assertEqual(metrics["quality"]["table_empty_cell_count"], 2)
@@ -5751,16 +5961,19 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["rates"]["table_footnote_binding_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_footnote_cell_binding_rate"], 0.5)
         self.assertEqual(metrics["rates"]["table_footnote_unbound_rate"], 0.5)
-        self.assertEqual(metrics["rates"]["split_boundary_rate"], 0.5)
-        self.assertEqual(metrics["rates"]["protected_boundary_rate"], 0.5)
+        self.assertEqual(metrics["rates"]["split_boundary_rate"], 0.0)
+        self.assertEqual(metrics["rates"]["protected_boundary_rate"], 1.0)
         self.assertEqual(metrics["rates"]["table_continuation_boundary_split_rate"], 0.0)
         self.assertEqual(metrics["rates"]["table_continuation_boundary_protected_rate"], 1.0)
         self.assertEqual(metrics["rates"]["hyphenated_boundary_split_rate"], 0.0)
         self.assertEqual(metrics["rates"]["hyphenated_boundary_protected_rate"], 1.0)
+        self.assertEqual(metrics["rates"]["academic_abbreviation_boundary_split_rate"], 0.0)
+        self.assertEqual(metrics["rates"]["academic_abbreviation_boundary_protected_rate"], 1.0)
         self.assertEqual(metrics["rates"]["budget_overflow_chunk_rate"], 0.5)
-        self.assertEqual(metrics["rates"]["active_split_reduction_rate_vs_baseline"], 0.5)
+        self.assertEqual(metrics["rates"]["active_split_reduction_rate_vs_baseline"], 1.0)
         self.assertEqual(metrics["rates"]["active_table_continuation_split_reduction_rate_vs_baseline"], 1.0)
         self.assertEqual(metrics["rates"]["active_hyphenated_split_reduction_rate_vs_baseline"], 1.0)
+        self.assertEqual(metrics["rates"]["active_academic_abbreviation_split_reduction_rate_vs_baseline"], 1.0)
         self.assertEqual(metrics["rates"]["cross_page_relationship_rate"], 0.3333)
         self.assertEqual(metrics["rates"]["cross_page_parent_success_rate"], 1.0)
         self.assertEqual(metrics["rates"]["caption_cross_page_link_rate"], 0.5)
@@ -5769,8 +5982,16 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["breakdowns"]["budget_pressure_counts"]["over_max"], 1)
         self.assertEqual(metrics["breakdowns"]["continuation_kind_counts"]["table_continuation"], 1)
         self.assertEqual(metrics["breakdowns"]["continuation_kind_counts"]["hyphenated_word_continuation"], 1)
+        self.assertEqual(metrics["breakdowns"]["continuation_kind_counts"]["academic_abbreviation_continuation"], 1)
         self.assertEqual(metrics["breakdowns"]["stitch_action_counts"]["preserve_table_segments_together"], 1)
-        self.assertEqual(metrics["breakdowns"]["stitch_action_counts"]["join_hyphenated_word_across_page_boundary"], 1)
+        self.assertEqual(
+            metrics["breakdowns"]["stitch_action_counts"]["preserve_hyphenated_compound_across_page_boundary"],
+            1,
+        )
+        self.assertEqual(
+            metrics["breakdowns"]["stitch_action_counts"]["preserve_academic_abbreviation_context_across_page"],
+            1,
+        )
         self.assertEqual(metrics["breakdowns"]["table_merged_cell_candidate_type_counts"]["colspan"], 2)
         self.assertEqual(
             metrics["breakdowns"]["table_merged_cell_candidate_reason_counts"]["single_cell_ragged_row"],
