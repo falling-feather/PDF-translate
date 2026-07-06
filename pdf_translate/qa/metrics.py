@@ -630,6 +630,16 @@ def build_experiment_metrics(
     structure_hint_footnote_binding_count = _as_int(
         structure_hints_summary.get("structure_hint_footnote_binding_count")
     )
+    structure_hint_relationship_count = _as_int(
+        structure_hints_summary.get("structure_hint_relationship_count")
+    )
+    structure_hint_relationship_cross_page_count = _as_int(
+        structure_hints_summary.get("structure_hint_relationship_cross_page_count")
+    )
+    structure_hint_relationship_type_counts = _counter_dict(
+        structure_hints_summary.get("structure_hint_relationship_type_counts")
+    )
+    structure_hint_entity_count = _as_int(structure_hints_summary.get("structure_hint_entity_count"))
     structure_hint_locked_token_count = _as_int(structure_hints_summary.get("structure_hint_locked_token_count"))
     structure_hint_total_chunk_count = _as_int(structure_hints_summary.get("chunk_count"))
     translation_issue_count = _as_int(translation_summary.get("issue_count"))
@@ -831,6 +841,9 @@ def build_experiment_metrics(
                 structure_hint_merged_cell_candidate_status_counts.get("visually_supported", 0)
             ),
             "structure_hint_footnote_binding_count": structure_hint_footnote_binding_count,
+            "structure_hint_relationship_count": structure_hint_relationship_count,
+            "structure_hint_relationship_cross_page_count": structure_hint_relationship_cross_page_count,
+            "structure_hint_entity_count": structure_hint_entity_count,
             "structure_hint_locked_token_count": structure_hint_locked_token_count,
             "table_count": table_count,
             "reconstructable_table_count": reconstructable_table_count,
@@ -1183,6 +1196,14 @@ def build_experiment_metrics(
                 structure_hint_footnote_binding_count,
                 structure_hint_chunk_count,
             ),
+            "structure_hint_relationship_per_chunk": _rate(
+                structure_hint_relationship_count,
+                structure_hint_chunk_count,
+            ),
+            "structure_hint_entity_per_chunk": _rate(
+                structure_hint_entity_count,
+                structure_hint_chunk_count,
+            ),
             "structure_hint_locked_token_per_chunk": _rate(
                 structure_hint_locked_token_count,
                 structure_hint_chunk_count,
@@ -1518,6 +1539,7 @@ def build_experiment_metrics(
             "structure_hint_merged_cell_candidate_bbox_evidence_counts": (
                 structure_hint_merged_cell_candidate_bbox_evidence_counts
             ),
+            "structure_hint_relationship_type_counts": structure_hint_relationship_type_counts,
             "table_merged_cell_candidate_type_counts": table_merged_cell_candidate_type_counts,
             "table_merged_cell_candidate_reason_counts": table_merged_cell_candidate_reason_counts,
             "table_merged_cell_candidate_status_counts": table_merged_cell_candidate_status_counts,

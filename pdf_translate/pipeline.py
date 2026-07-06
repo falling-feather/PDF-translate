@@ -38,7 +38,7 @@ from pdf_translate.qa.repair import (
 )
 from pdf_translate.qa.structure import write_structure_qa
 from pdf_translate.qa.table_reconstruction import (
-    build_table_translation_hints,
+    build_structure_translation_hints,
     load_preferred_table_reconstruction,
     write_structure_hints_manifest,
     write_table_merged_cell_review,
@@ -195,6 +195,7 @@ def _parallel_translate_one(
     style_text: str,
     ch: TextChunk,
     table_reconstruction: dict | None = None,
+    document_ir: object | None = None,
     structure_hints_by_chunk: dict[str, str] | None = None,
 ) -> tuple[TextChunk, str, str, dict]:
     if is_cancel_requested(work_dir):
@@ -208,7 +209,7 @@ def _parallel_translate_one(
     gloss = mem.glossary_snippet_for_pages(p0, p1)
     structure_hints = (structure_hints_by_chunk or {}).get(ch.chunk_id)
     if structure_hints is None:
-        structure_hints = build_table_translation_hints(ch, table_reconstruction)
+        structure_hints = build_structure_translation_hints(ch, table_reconstruction, document_ir)
     req = TranslationRequest(
         source_text=text,
         glossary_excerpt=gloss,
@@ -443,6 +444,7 @@ def run_translate(
             chunks,
             table_reconstruction,
             out_dir / "structure_hints_manifest.json",
+            doc_ir,
         )
     structure_hints_by_chunk = {
         str(entry.get("chunk_id")): str(entry.get("hint_text") or "")
@@ -713,6 +715,7 @@ def run_translate(
                         style_text,
                         ch,
                         table_reconstruction,
+                        doc_ir,
                         structure_hints_by_chunk,
                     )
                     for _idx, ch in batch
@@ -827,7 +830,7 @@ def run_translate(
         use_defer = defer_protocol and not is_doc_last
         structure_hints = structure_hints_by_chunk.get(ch.chunk_id)
         if structure_hints is None:
-            structure_hints = build_table_translation_hints(ch, table_reconstruction)
+            structure_hints = build_structure_translation_hints(ch, table_reconstruction, doc_ir)
 
         req = TranslationRequest(
             source_text=text,

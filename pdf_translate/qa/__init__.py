@@ -23,6 +23,7 @@ from pdf_translate.qa.repair import (
 from pdf_translate.qa.structure import build_structure_qa, write_structure_qa
 from pdf_translate.qa.table_reconstruction import (
     build_structure_hints_manifest,
+    build_structure_translation_hints,
     build_table_reconstruction_report,
     write_structure_hints_manifest,
     write_table_reconstruction_report,
@@ -51,6 +52,7 @@ __all__ = [
     "build_structure_qa",
     "write_structure_qa",
     "build_structure_hints_manifest",
+    "build_structure_translation_hints",
     "build_table_reconstruction_report",
     "write_structure_hints_manifest",
     "write_table_reconstruction_report",

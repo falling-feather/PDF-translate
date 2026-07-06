@@ -51,6 +51,7 @@ from pdf_translate.qa.table_reconstruction import (
     apply_table_merged_cell_review_decision,
     build_confirmed_table_reconstruction,
     build_structure_hints_manifest,
+    build_structure_translation_hints,
     build_table_merged_cell_review,
     build_table_reconstruction_report,
     build_table_translation_hints,
@@ -775,6 +776,150 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(hint_manifest["chunks"][0]["hint_char_count"], len(hint_manifest["chunks"][0]["hint_text"]))
         self.assertEqual(hint_manifest["chunks"][0]["merged_cell_candidate_type_counts"]["colspan"], 1)
         self.assertIn("疑似合并单元格候选", hint_manifest["chunks"][0]["hint_text"])
+
+    def test_structure_translation_hints_include_relationships_and_entities(self) -> None:
+        caption = BlockIR(
+            "p1-b0000",
+            1,
+            "caption",
+            "Table 1. Accuracy results on ImageNet.",
+            (40, 80, 540, 110),
+            0,
+        )
+        table = BlockIR(
+            "p1-b0001",
+            1,
+            "table",
+            "Model Acc\nBERT 91.2*",
+            (40, 120, 540, 220),
+            1,
+            meta={
+                "table": {
+                    "rows": [["Model", "Acc"], ["BERT", "91.2*"]],
+                    "row_count": 2,
+                    "column_count": 2,
+                    "header": ["Model", "Acc"],
+                    "confidence": "medium",
+                }
+            },
+        )
+        footnote = BlockIR(
+            "p1-b0002",
+            1,
+            "footnote",
+            "* p < 0.05.",
+            (40, 230, 540, 250),
+            2,
+        )
+        paragraph = BlockIR(
+            "p1-b0003",
+            1,
+            "paragraph",
+            "BERT was evaluated by Stanford University.",
+            (40, 270, 540, 310),
+            3,
+            meta={
+                "entities": [
+                    {
+                        "type": "model_or_dataset",
+                        "text": "BERT",
+                        "source": "model_dataset_pattern",
+                        "confidence": "medium",
+                    },
+                    {
+                        "type": "organization",
+                        "text": "Stanford University",
+                        "source": "organization_suffix",
+                        "confidence": "medium",
+                    },
+                ]
+            },
+        )
+        blocks = [caption, table, footnote, paragraph]
+        assign_block_parents(blocks)
+        doc_ir = DocumentIR(
+            doc_id="relationship-hints",
+            source_pdf="sample.pdf",
+            pages=[PageIR(1, 600, 800, "\n".join(block.text for block in blocks), blocks)],
+        )
+        report = build_table_reconstruction_report(doc_ir, build_structure_qa(doc_ir))
+        chunk = TextChunk("c0000", [0], doc_ir.pages[0].text, 0, 0)
+        chunk.block_ids = [block.block_id for block in blocks]
+
+        hints = build_structure_translation_hints(chunk, report, doc_ir)
+
+        self.assertIn("以下表格结构来自本地 DocumentIR", hints)
+        self.assertIn("以下图注/脚注归属来自本地 DocumentIR", hints)
+        self.assertIn("caption_for_table", hints)
+        self.assertIn("footnote_for_table", hints)
+        self.assertIn("p1-b0000(caption) -> p1-b0001(table)", hints)
+        self.assertIn("p1-b0002(footnote) -> p1-b0001(table)", hints)
+        self.assertIn("以下实体候选", hints)
+        self.assertIn("BERT", hints)
+        self.assertIn("Stanford University", hints)
+
+        hint_manifest = build_structure_hints_manifest([chunk], report, doc_ir)
+        entry = hint_manifest["chunks"][0]
+        self.assertEqual(entry["relationship_count"], 2)
+        self.assertEqual(entry["relationship_type_counts"]["caption_for_table"], 1)
+        self.assertEqual(entry["relationship_type_counts"]["footnote_for_table"], 1)
+        self.assertEqual(entry["entity_hint_count"], 2)
+        self.assertEqual(hint_manifest["summary"]["structure_hint_relationship_count"], 2)
+        self.assertEqual(hint_manifest["summary"]["structure_hint_entity_count"], 2)
+        self.assertEqual(
+            hint_manifest["summary"]["structure_hint_relationship_type_counts"]["caption_for_table"],
+            1,
+        )
+
+    def test_structure_translation_hints_record_cross_page_relationships(self) -> None:
+        table = BlockIR(
+            "p1-b0000",
+            1,
+            "table",
+            "Model Acc\nA 91.2",
+            (40, 680, 540, 760),
+            0,
+            meta={
+                "table": {
+                    "rows": [["Model", "Acc"], ["A", "91.2"]],
+                    "row_count": 2,
+                    "column_count": 2,
+                    "header": ["Model", "Acc"],
+                    "confidence": "medium",
+                }
+            },
+        )
+        caption = BlockIR(
+            "p2-b0000",
+            2,
+            "caption",
+            "Table 1. Continued accuracy results.",
+            (40, 70, 540, 100),
+            0,
+        )
+        blocks = [table, caption]
+        assign_block_parents(blocks)
+        doc_ir = DocumentIR(
+            doc_id="cross-page-relationship-hints",
+            source_pdf="sample.pdf",
+            pages=[
+                PageIR(1, 600, 800, table.text, [table]),
+                PageIR(2, 600, 800, caption.text, [caption]),
+            ],
+        )
+        report = build_table_reconstruction_report(doc_ir, build_structure_qa(doc_ir))
+        chunk = TextChunk("c0000", [0, 1], table.text + "\n" + caption.text, 0, 0)
+
+        hints = build_structure_translation_hints(chunk, report, doc_ir)
+
+        self.assertIn("caption_for_table", hints)
+        self.assertIn("跨页", hints)
+        self.assertIn("页差=1", hints)
+
+        hint_manifest = build_structure_hints_manifest([chunk], report, doc_ir)
+        self.assertEqual(hint_manifest["chunks"][0]["relationship_cross_page_count"], 1)
+        self.assertEqual(hint_manifest["summary"]["structure_hint_relationship_count"], 1)
+        self.assertEqual(hint_manifest["summary"]["structure_hint_relationship_cross_page_count"], 1)
 
     def test_table_reconstruction_uses_meta_merged_cell_candidates(self) -> None:
         table = BlockIR(
@@ -4216,6 +4361,14 @@ class StructureIRTests(unittest.TestCase):
                         "empty_cell_right_of_nonempty_anchor": 1,
                     },
                     "structure_hint_footnote_binding_count": 1,
+                    "structure_hint_relationship_count": 3,
+                    "structure_hint_relationship_cross_page_count": 1,
+                    "structure_hint_relationship_type_counts": {
+                        "caption_for_table": 1,
+                        "footnote_for_table": 1,
+                        "footnote_for_block": 1,
+                    },
+                    "structure_hint_entity_count": 4,
                     "structure_hint_locked_token_count": 4,
                 },
             },
@@ -4691,11 +4844,16 @@ class StructureIRTests(unittest.TestCase):
         self.assertEqual(metrics["quality"]["structure_hint_continued_group_count"], 1)
         self.assertEqual(metrics["quality"]["structure_hint_merged_cell_candidate_count"], 2)
         self.assertEqual(metrics["quality"]["structure_hint_footnote_binding_count"], 1)
+        self.assertEqual(metrics["quality"]["structure_hint_relationship_count"], 3)
+        self.assertEqual(metrics["quality"]["structure_hint_relationship_cross_page_count"], 1)
+        self.assertEqual(metrics["quality"]["structure_hint_entity_count"], 4)
         self.assertEqual(metrics["quality"]["structure_hint_locked_token_count"], 4)
         self.assertEqual(metrics["rates"]["structure_hint_chunk_rate"], 0.5)
         self.assertEqual(metrics["rates"]["structure_hint_table_per_chunk"], 2.0)
         self.assertEqual(metrics["rates"]["structure_hint_merged_cell_candidate_per_chunk"], 2.0)
         self.assertEqual(metrics["rates"]["structure_hint_footnote_binding_per_chunk"], 1.0)
+        self.assertEqual(metrics["rates"]["structure_hint_relationship_per_chunk"], 3.0)
+        self.assertEqual(metrics["rates"]["structure_hint_entity_per_chunk"], 4.0)
         self.assertEqual(metrics["rates"]["structure_hint_locked_token_per_chunk"], 4.0)
         self.assertEqual(metrics["breakdowns"]["structure_hint_merged_cell_candidate_type_counts"]["colspan"], 2)
         self.assertEqual(
@@ -4704,6 +4862,7 @@ class StructureIRTests(unittest.TestCase):
             ],
             1,
         )
+        self.assertEqual(metrics["breakdowns"]["structure_hint_relationship_type_counts"]["caption_for_table"], 1)
         self.assertEqual(metrics["evidence_files"]["structure_hints_manifest"], "output/structure_hints_manifest.json")
         self.assertEqual(metrics["performance"]["total_elapsed_ms"], 1000)
         self.assertEqual(metrics["performance"]["translation_request_count"], 2)
@@ -6221,9 +6380,14 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("structure_hint_max_char_count", structure_hints_manifest["summary"])
             self.assertIn("structure_hint_merged_cell_candidate_type_counts", structure_hints_manifest["summary"])
             self.assertIn("structure_hint_merged_cell_candidate_reason_counts", structure_hints_manifest["summary"])
+            self.assertIn("structure_hint_relationship_count", structure_hints_manifest["summary"])
+            self.assertIn("structure_hint_relationship_type_counts", structure_hints_manifest["summary"])
+            self.assertIn("structure_hint_entity_count", structure_hints_manifest["summary"])
             self.assertGreaterEqual(len(structure_hints_manifest["chunks"]), 1)
             self.assertIn("has_structure_hints", structure_hints_manifest["chunks"][0])
             self.assertIn("hint_text", structure_hints_manifest["chunks"][0])
+            self.assertIn("relationship_count", structure_hints_manifest["chunks"][0])
+            self.assertIn("entity_hint_count", structure_hints_manifest["chunks"][0])
             self.assertEqual(
                 structure_hints_manifest["chunks"][0]["hint_char_count"],
                 len(structure_hints_manifest["chunks"][0]["hint_text"]),
@@ -6330,8 +6494,13 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("structure_hint_empty_chunk_count", metrics["quality"])
             self.assertIn("structure_hint_avg_char_count", metrics["quality"])
             self.assertIn("structure_hint_max_char_count", metrics["quality"])
+            self.assertIn("structure_hint_relationship_count", metrics["quality"])
+            self.assertIn("structure_hint_entity_count", metrics["quality"])
             self.assertIn("structure_hint_chunk_rate", metrics["rates"])
+            self.assertIn("structure_hint_relationship_per_chunk", metrics["rates"])
+            self.assertIn("structure_hint_entity_per_chunk", metrics["rates"])
             self.assertIn("structure_hint_merged_cell_candidate_type_counts", metrics["breakdowns"])
+            self.assertIn("structure_hint_relationship_type_counts", metrics["breakdowns"])
             self.assertIn("table_merged_cell_candidate_rate", metrics["rates"])
             self.assertIn("table_merged_cell_candidate_type_counts", metrics["breakdowns"])
             self.assertIn("continued_table_group_count", metrics["quality"])

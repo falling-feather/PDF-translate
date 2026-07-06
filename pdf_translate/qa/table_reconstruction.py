@@ -2777,9 +2777,206 @@ def build_table_translation_hints(
     return "\n".join(lines)
 
 
+def _document_blocks(document_ir: DocumentIR | dict[str, Any] | None) -> list[BlockIR | dict[str, Any]]:
+    if isinstance(document_ir, DocumentIR):
+        return [block for page in document_ir.pages for block in page.blocks]
+    if not isinstance(document_ir, dict):
+        return []
+    out: list[dict[str, Any]] = []
+    for page in document_ir.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        for block in page.get("blocks") or []:
+            if isinstance(block, dict):
+                out.append(block)
+    return out
+
+
+def _block_value(block: BlockIR | dict[str, Any], key: str, default: Any = None) -> Any:
+    if isinstance(block, BlockIR):
+        return getattr(block, key, default)
+    return block.get(key, default)
+
+
+def _block_meta(block: BlockIR | dict[str, Any]) -> dict[str, Any]:
+    meta = _block_value(block, "meta", {})
+    return meta if isinstance(meta, dict) else {}
+
+
+def _block_id(block: BlockIR | dict[str, Any]) -> str:
+    return str(_block_value(block, "block_id", "") or "")
+
+
+def _block_page_no(block: BlockIR | dict[str, Any]) -> int:
+    try:
+        return int(_block_value(block, "page_no", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _block_text(block: BlockIR | dict[str, Any]) -> str:
+    return str(_block_value(block, "text", "") or "")
+
+
+def _block_type(block: BlockIR | dict[str, Any]) -> str:
+    return str(_block_value(block, "type", "") or "")
+
+
+def _block_parent_id(block: BlockIR | dict[str, Any]) -> str:
+    return str(_block_value(block, "parent_id", "") or "")
+
+
+def _block_matches_chunk(block: BlockIR | dict[str, Any], chunk: TextChunk, block_ids: set[str]) -> bool:
+    bid = _block_id(block)
+    parent_id = _block_parent_id(block)
+    if block_ids:
+        return bid in block_ids or bool(parent_id and parent_id in block_ids)
+    pages = {page + 1 for page in chunk.pages_0based}
+    return _block_page_no(block) in pages
+
+
+def _relationship_hint(
+    child: BlockIR | dict[str, Any],
+    block_by_id: dict[str, BlockIR | dict[str, Any]],
+) -> str:
+    meta = _block_meta(child)
+    child_id = _block_id(child)
+    parent_id = _block_parent_id(child)
+    parent = block_by_id.get(parent_id)
+    relation = str(meta.get("parent_relation") or "structural_relation")
+    child_type = _block_type(child)
+    parent_type = _block_type(parent) if parent is not None else "unknown"
+    page_gap = meta.get("parent_page_gap")
+    try:
+        page_gap_text = str(int(page_gap))
+    except (TypeError, ValueError):
+        page_gap_text = "?"
+    cross_page = bool(meta.get("cross_page_parent"))
+    scope = "跨页" if cross_page else "同页"
+    text = _clip(_block_text(child), 120)
+    return (
+        f"{child_id}({child_type}) -> {parent_id or 'unknown'}({parent_type})；"
+        f"关系={relation}；{scope}；页差={page_gap_text}；文本={text}"
+    )
+
+
+def _entity_hint(entity: dict[str, Any], block: BlockIR | dict[str, Any]) -> str:
+    text = _clip(str(entity.get("text") or ""), 80)
+    entity_type = str(entity.get("type") or "unknown")
+    confidence = str(entity.get("confidence") or "unknown")
+    source = str(entity.get("source") or "unknown")
+    return f"{text}（{entity_type}，置信={confidence}，页={_block_page_no(block)}，来源={source}）"
+
+
+def _selected_relationship_blocks(
+    chunk: TextChunk,
+    document_ir: DocumentIR | dict[str, Any] | None,
+    *,
+    max_relationships: int,
+) -> tuple[list[BlockIR | dict[str, Any]], dict[str, BlockIR | dict[str, Any]]]:
+    blocks = _document_blocks(document_ir)
+    block_by_id = {_block_id(block): block for block in blocks if _block_id(block)}
+    block_ids = _chunk_block_ids(chunk)
+    selected: list[BlockIR | dict[str, Any]] = []
+    for block in blocks:
+        btype = _block_type(block)
+        if btype not in {"caption", "footnote"}:
+            continue
+        meta = _block_meta(block)
+        parent_id = _block_parent_id(block)
+        if not parent_id or not meta.get("parent_relation"):
+            continue
+        if not _block_matches_chunk(block, chunk, block_ids):
+            continue
+        selected.append(block)
+    selected.sort(key=lambda block: (_block_page_no(block), _block_value(block, "order", 0), _block_id(block)))
+    return selected[:max_relationships], block_by_id
+
+
+def _selected_entity_hints(
+    chunk: TextChunk,
+    document_ir: DocumentIR | dict[str, Any] | None,
+    *,
+    max_entities: int,
+) -> list[str]:
+    block_ids = _chunk_block_ids(chunk)
+    seen: set[tuple[str, str]] = set()
+    hints: list[str] = []
+    for block in _document_blocks(document_ir):
+        if not _block_matches_chunk(block, chunk, block_ids):
+            continue
+        entities = _block_meta(block).get("entities")
+        if not isinstance(entities, list):
+            continue
+        for entity in entities:
+            if not isinstance(entity, dict):
+                continue
+            text = str(entity.get("text") or "").strip()
+            entity_type = str(entity.get("type") or "unknown").strip()
+            if not text:
+                continue
+            key = (text.casefold(), entity_type)
+            if key in seen:
+                continue
+            seen.add(key)
+            hints.append(_entity_hint(entity, block))
+            if len(hints) >= max_entities:
+                return hints
+    return hints
+
+
+def build_structure_translation_hints(
+    chunk: TextChunk,
+    table_reconstruction: dict[str, Any] | None,
+    document_ir: DocumentIR | dict[str, Any] | None = None,
+    *,
+    max_tables: int = 3,
+    max_cells_per_table: int = 18,
+    max_merged_candidates_per_table: int = 3,
+    max_relationships: int = 6,
+    max_entities: int = 12,
+) -> str:
+    """Build compact structure-preservation instructions for one translation chunk."""
+    sections: list[str] = []
+    table_hints = build_table_translation_hints(
+        chunk,
+        table_reconstruction,
+        max_tables=max_tables,
+        max_cells_per_table=max_cells_per_table,
+        max_merged_candidates_per_table=max_merged_candidates_per_table,
+    )
+    if table_hints.strip():
+        sections.append(table_hints.strip())
+
+    relationships, block_by_id = _selected_relationship_blocks(
+        chunk,
+        document_ir,
+        max_relationships=max_relationships,
+    )
+    if relationships:
+        lines = [
+            "以下图注/脚注归属来自本地 DocumentIR。翻译时请保持它们与父结构的关系；不要把图注、表注或脚注误并入普通正文；跨页关系按语义连续处理。",
+        ]
+        for block in relationships:
+            lines.append("- " + _relationship_hint(block, block_by_id))
+        sections.append("\n".join(lines))
+
+    entity_hints = _selected_entity_hints(chunk, document_ir, max_entities=max_entities)
+    if entity_hints:
+        lines = [
+            "以下实体候选仅作专名保留和术语一致性的弱提示；若无术语表译法，可保留英文或采用常见中文译名，避免遗漏。",
+        ]
+        for hint in entity_hints:
+            lines.append("- " + hint)
+        sections.append("\n".join(lines))
+
+    return "\n\n".join(section for section in sections if section.strip())
+
+
 def build_structure_hints_manifest(
     chunks: list[TextChunk],
     table_reconstruction: dict[str, Any] | None,
+    document_ir: DocumentIR | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build an audit manifest for per-chunk structure hints sent to translators."""
     if not isinstance(table_reconstruction, dict):
@@ -2807,7 +3004,17 @@ def build_structure_hints_manifest(
                 {str(table_id) for table_id in group.get("table_ids") or [] if str(table_id)}
             )
         ]
-        hints = build_table_translation_hints(chunk, table_reconstruction)
+        hints = build_structure_translation_hints(chunk, table_reconstruction, document_ir)
+        relationships, _block_by_id = _selected_relationship_blocks(
+            chunk,
+            document_ir,
+            max_relationships=6,
+        )
+        entity_hints = _selected_entity_hints(chunk, document_ir, max_entities=12)
+        relationship_type_counts = _count_values(
+            [str(_block_meta(block).get("parent_relation") or "structural_relation") for block in relationships]
+        )
+        relationship_cross_page_count = sum(1 for block in relationships if bool(_block_meta(block).get("cross_page_parent")))
         merged_candidates = [
             candidate
             for table in selected
@@ -2843,6 +3050,10 @@ def build_structure_hints_manifest(
                 "merged_cell_candidate_bbox_evidence_counts": _count_candidate_evidence_statuses(
                     merged_candidates
                 ),
+                "relationship_count": len(relationships),
+                "relationship_type_counts": relationship_type_counts,
+                "relationship_cross_page_count": relationship_cross_page_count,
+                "entity_hint_count": len(entity_hints),
                 "footnote_binding_count": footnote_binding_count,
                 "locked_token_count": locked_token_count,
                 "hint_text": hints,
@@ -2911,6 +3122,18 @@ def build_structure_hints_manifest(
             "structure_hint_footnote_binding_count": sum(
                 int(entry["footnote_binding_count"]) for entry in chunk_entries
             ),
+            "structure_hint_relationship_count": sum(int(entry["relationship_count"]) for entry in chunk_entries),
+            "structure_hint_relationship_cross_page_count": sum(
+                int(entry["relationship_cross_page_count"]) for entry in chunk_entries
+            ),
+            "structure_hint_relationship_type_counts": _sum_count_dicts(
+                [
+                    entry["relationship_type_counts"]
+                    for entry in chunk_entries
+                    if isinstance(entry["relationship_type_counts"], dict)
+                ]
+            ),
+            "structure_hint_entity_count": sum(int(entry["entity_hint_count"]) for entry in chunk_entries),
             "structure_hint_locked_token_count": sum(int(entry["locked_token_count"]) for entry in chunk_entries),
         },
         "chunks": chunk_entries,
@@ -2921,8 +3144,9 @@ def write_structure_hints_manifest(
     chunks: list[TextChunk],
     table_reconstruction: dict[str, Any] | None,
     path: Path,
+    document_ir: DocumentIR | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    manifest = build_structure_hints_manifest(chunks, table_reconstruction)
+    manifest = build_structure_hints_manifest(chunks, table_reconstruction, document_ir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return manifest

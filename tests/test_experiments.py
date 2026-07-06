@@ -250,10 +250,18 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("translation_issue_count", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("structure_hint_chunk_count", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("structure_hint_avg_char_count", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("structure_hint_relationship_count", loaded["records"][0]["metrics"]["quality"])
+            self.assertIn("structure_hint_entity_count", loaded["records"][0]["metrics"]["quality"])
             self.assertIn("structure_hint_chunk_rate", loaded["records"][0]["metrics"]["rates"])
+            self.assertIn("structure_hint_relationship_per_chunk", loaded["records"][0]["metrics"]["rates"])
+            self.assertIn("structure_hint_entity_per_chunk", loaded["records"][0]["metrics"]["rates"])
             self.assertIn("structure_hint_locked_token_per_chunk", loaded["records"][0]["metrics"]["rates"])
             self.assertIn(
                 "structure_hint_merged_cell_candidate_type_counts",
+                loaded["records"][0]["metrics"]["breakdowns"],
+            )
+            self.assertIn(
+                "structure_hint_relationship_type_counts",
                 loaded["records"][0]["metrics"]["breakdowns"],
             )
             self.assertIn("table_merged_cell_candidate_count", loaded["records"][0]["metrics"]["quality"])
@@ -319,6 +327,7 @@ class BatchExperimentTests(unittest.TestCase):
             )
             self.assertIn("breakdowns", loaded["aggregates"][0])
             self.assertIn("structure_hint_merged_cell_candidate_type_counts", loaded["aggregates"][0]["breakdowns"])
+            self.assertIn("structure_hint_relationship_type_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("table_merged_cell_candidate_type_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("repair_merge_strategy_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("repair_patch_review_default_decision_counts", loaded["aggregates"][0]["breakdowns"])
@@ -329,6 +338,8 @@ class BatchExperimentTests(unittest.TestCase):
             self.assertIn("table_chain_reject_reason_category_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("ocr_candidate_structured_table_gate_issue_counts", loaded["aggregates"][0]["breakdowns"])
             self.assertIn("ocr_candidate_structured_formula_gate_issue_counts", loaded["aggregates"][0]["breakdowns"])
+            self.assertIn("rates.structure_hint_relationship_per_chunk", loaded["comparisons"][0]["deltas"])
+            self.assertIn("rates.structure_hint_entity_per_chunk", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.ocr_structured_table_gate_pass_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.ocr_structured_table_promotion_rate", loaded["comparisons"][0]["deltas"])
             self.assertIn("rates.ocr_structured_formula_gate_pass_rate", loaded["comparisons"][0]["deltas"])
