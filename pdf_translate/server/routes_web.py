@@ -262,6 +262,108 @@ def _validate_glossary_review_ids(report: dict[str, Any], review_ids: list[str])
             raise HTTPException(400, f"术语审核项已处理：{review_id}")
 
 
+def _normalize_glossary_review_batch_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    def normalize_decision(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if text in {"confirm", "confirmed", "confirm_candidate", "accept", "approve"}:
+            return "confirm_candidate"
+        if text in {"reject", "rejected", "reject_candidate", "deny"}:
+            return "reject_candidate"
+        raise HTTPException(400, "decision must be confirm_candidate or reject_candidate")
+
+    raw_items = payload.get("items")
+    if raw_items is None:
+        review_ids = _normalize_glossary_review_ids(
+            payload.get("review_ids") if "review_ids" in payload else payload.get("pending_keys")
+        )
+        if "candidate_zh" in payload or "confirmed_zh" in payload:
+            raise HTTPException(400, "批量接口不支持顶层统一改写候选译名，请使用 items[].candidate_zh")
+        normalize_decision(payload.get("decision"))
+        return [
+            {
+                "review_id": review_id,
+                "payload": payload,
+            }
+            for review_id in review_ids
+        ]
+    if "candidate_zh" in payload or "confirmed_zh" in payload:
+        raise HTTPException(400, "批量接口不支持顶层统一改写候选译名，请使用 items[].candidate_zh")
+    if not isinstance(raw_items, list) or not raw_items:
+        raise HTTPException(400, "items 必须是非空数组")
+
+    default_decision = str(payload.get("decision") or "").strip()
+    default_comment = str(payload.get("comment") or "").strip()
+    default_section_scope = str(payload.get("section_scope") or "").strip()
+    default_confidence = payload.get("confidence")
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            raise HTTPException(400, "items[] 必须是对象")
+        review_id = str(
+            raw.get("review_id") or raw.get("pending_key") or raw.get("dedupe_key") or ""
+        ).strip()
+        if not review_id:
+            raise HTTPException(400, "items[].review_id 不能为空")
+        if review_id in seen:
+            raise HTTPException(400, f"重复的术语审核项：{review_id}")
+        seen.add(review_id)
+        item_decision = normalize_decision(raw.get("decision") or default_decision)
+
+        item_payload: dict[str, Any] = {
+            "decision": item_decision,
+            "comment": str(raw.get("comment") if raw.get("comment") is not None else default_comment),
+            "section_scope": str(
+                raw.get("section_scope")
+                if raw.get("section_scope") is not None
+                else default_section_scope
+            ),
+            "confidence": raw.get("confidence")
+            if raw.get("confidence") is not None
+            else default_confidence,
+        }
+        if "candidate_zh" in raw:
+            item_payload["candidate_zh"] = raw.get("candidate_zh")
+        if "confirmed_zh" in raw:
+            item_payload["confirmed_zh"] = raw.get("confirmed_zh")
+        normalized.append({"review_id": review_id, "payload": item_payload})
+    return normalized
+
+
+def _validate_glossary_review_batch_payloads(
+    report: dict[str, Any],
+    batch_items: list[dict[str, Any]],
+) -> None:
+    lookup = _glossary_review_lookup(report)
+    for batch_item in batch_items:
+        review_id = str(batch_item.get("review_id") or "")
+        payload = batch_item.get("payload") if isinstance(batch_item.get("payload"), dict) else {}
+        decision = str(payload.get("decision") or "").strip().lower()
+        if decision in {"confirm", "confirmed", "confirm_candidate", "accept", "approve"}:
+            item = lookup.get(review_id) or {}
+            candidate_value = (
+                payload.get("candidate_zh")
+                if "candidate_zh" in payload
+                else payload.get("confirmed_zh")
+                if "confirmed_zh" in payload
+                else item.get("candidate_zh")
+            )
+            candidate_text = str(candidate_value or "").strip()
+            if not candidate_text:
+                raise HTTPException(400, f"candidate_zh must not be empty: {review_id}")
+            if len(candidate_text) > 120:
+                raise HTTPException(400, f"candidate_zh must be at most 120 characters: {review_id}")
+        confidence = payload.get("confidence")
+        if confidence is None or confidence == "":
+            continue
+        try:
+            confidence_value = float(confidence)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, f"confidence must be between 0 and 1: {review_id}") from exc
+        if confidence_value < 0 or confidence_value > 1:
+            raise HTTPException(400, f"confidence must be between 0 and 1: {review_id}")
+
+
 def _apply_glossary_review_decision(
     rec: JobRecord,
     review_id: str,
@@ -1259,16 +1361,14 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         rec = app_registry.get(job_id)
         if not rec or not _can_access_job(p, rec):
             raise HTTPException(404, "任务不存在或无权访问")
-        review_ids = _normalize_glossary_review_ids(
-            payload.get("review_ids") if "review_ids" in payload else payload.get("pending_keys")
-        )
-        if "candidate_zh" in payload or "confirmed_zh" in payload:
-            raise HTTPException(400, "批量接口暂不支持改写候选译名")
+        batch_items = _normalize_glossary_review_batch_items(payload)
+        review_ids = [item["review_id"] for item in batch_items]
         before_report = _glossary_review_report_for_record(rec)
         _validate_glossary_review_ids(before_report, review_ids)
+        _validate_glossary_review_batch_payloads(before_report, batch_items)
         updated_items = [
-            _apply_glossary_review_decision(rec, review_id, payload, p.username)
-            for review_id in review_ids
+            _apply_glossary_review_decision(rec, item["review_id"], item["payload"], p.username)
+            for item in batch_items
         ]
         retranslation_plan = _refresh_glossary_retranslation_plan_for_record(rec)
         plan_summary = (
@@ -1279,6 +1379,13 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
         report = _glossary_review_report_for_record(rec)
         summary = _glossary_review_summary(report)
         app_registry.update(job_id, message=f"已批量更新 {len(updated_items)} 个术语审核项")
+        decisions = sorted(
+            {
+                str(item.get("review_decision") or item.get("status") or "")
+                for item in updated_items
+                if isinstance(item, dict)
+            }
+        )
         database.log_audit(
             action="job_glossary_review_batch_update",
             ip=client_ip(request),
@@ -1288,7 +1395,11 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             detail={
                 "review_ids": review_ids,
                 "updated_count": len(updated_items),
-                "decision": payload.get("decision"),
+                "decision": decisions[0] if len(decisions) == 1 else "mixed",
+                "batch_schema": "items" if payload.get("items") is not None else "review_ids",
+                "candidate_zh_changed_count": sum(
+                    1 for item in updated_items if item.get("edited_candidate_zh")
+                ),
                 "pending_count": summary.get("pending_count"),
                 "confirmed_count": summary.get("confirmed_count"),
                 "rejected_count": summary.get("rejected_count"),

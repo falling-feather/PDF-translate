@@ -269,6 +269,19 @@ async function submitBatchDecision(decision) {
     .filter(([, selected]) => selected)
     .map(([reviewId]) => reviewId);
   if (!reviewIds.length || workingId.value || batchWorking.value) return;
+  const items = reviewIds.map((reviewId) => {
+    const review = reviews.value.find((item) => item.review_id === reviewId) || {};
+    const rowComment = String(comments.value[reviewId] || "").trim();
+    const itemPayload = { review_id: reviewId };
+    if (rowComment) itemPayload.comment = rowComment;
+    if (decision === "confirm_candidate") {
+      itemPayload.candidate_zh =
+        candidateEdits.value[reviewId] ?? review.candidate_zh ?? review.confirmed_zh ?? "";
+      itemPayload.section_scope = sectionScopes.value[reviewId] || "";
+      itemPayload.confidence = confidences.value[reviewId] || null;
+    }
+    return itemPayload;
+  });
   batchWorking.value = true;
   errorText.value = "";
   try {
@@ -279,6 +292,7 @@ async function submitBatchDecision(decision) {
         review_ids: reviewIds,
         decision,
         comment: batchComment.value || "",
+        items,
       }),
     });
     const data = await r.json().catch(() => ({}));

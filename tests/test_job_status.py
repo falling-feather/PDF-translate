@@ -936,6 +936,14 @@ class JobStatusSnapshotTests(unittest.TestCase):
             [{"en": "Recall", "zh": "查全率"}],
             first_page_1based=2,
         )
+        store.merge_glossary_terms_from_survey(
+            [{"en": "Precision", "zh": "精确率"}],
+            first_page_1based=1,
+        )
+        store.merge_glossary_terms_from_survey(
+            [{"en": "Precision", "zh": "查准率"}],
+            first_page_1based=2,
+        )
         out = rec.work_dir / "output"
         chunk_dir = out / "chunks"
         chunk_dir.mkdir(parents=True)
@@ -987,10 +995,11 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         report = response.json()
         self.assertEqual(report["schema_version"], "glossary-review-v1")
-        self.assertEqual(report["summary"]["pending_count"], 2)
+        self.assertEqual(report["summary"]["pending_count"], 3)
         review_by_en = {item["en"].lower(): item["review_id"] for item in report["pending_reviews"]}
         accuracy_review_id = review_by_en["accuracy"]
         recall_review_id = review_by_en["recall"]
+        precision_review_id = review_by_en["precision"]
 
         single = client.post(
             f"/api/jobs/{rec.job_id}/glossary-review/{quote(accuracy_review_id, safe='')}",
@@ -1053,26 +1062,63 @@ class JobStatusSnapshotTests(unittest.TestCase):
             },
         )
         self.assertEqual(batch_with_candidate.status_code, 400)
-        self.assertIn("批量接口暂不支持改写候选译名", batch_with_candidate.json()["detail"])
+        self.assertIn("顶层统一改写候选译名", batch_with_candidate.json()["detail"])
+
+        invalid_batch = client.post(
+            f"/api/jobs/{rec.job_id}/glossary-review/batch",
+            json={
+                "decision": "confirm_candidate",
+                "items": [
+                    {
+                        "review_id": recall_review_id,
+                        "candidate_zh": "检出率",
+                    },
+                    {
+                        "review_id": precision_review_id,
+                        "candidate_zh": " ",
+                    },
+                ],
+            },
+        )
+        self.assertEqual(invalid_batch.status_code, 400)
+        self.assertIn("candidate_zh must not be empty", invalid_batch.json()["detail"])
+        after_invalid = client.get(f"/api/jobs/{rec.job_id}/glossary-review").json()
+        invalid_status = {item["en"].lower(): item["status"] for item in after_invalid["pending_reviews"]}
+        self.assertEqual(invalid_status["recall"], "pending")
+        self.assertEqual(invalid_status["precision"], "pending")
+        self.assertEqual(after_invalid["summary"]["confirmed_count"], 1)
 
         batch = client.post(
             f"/api/jobs/{rec.job_id}/glossary-review/batch",
             json={
-                "review_ids": [recall_review_id],
-                "decision": "reject_candidate",
-                "comment": "保持原译名",
+                "decision": "confirm_candidate",
+                "comment": "批量校准",
+                "items": [
+                    {
+                        "review_id": recall_review_id,
+                        "confirmed_zh": "检出率",
+                        "section_scope": "Methods",
+                        "confidence": 0.81,
+                        "comment": "按导师术语表确认",
+                    },
+                    {
+                        "review_id": precision_review_id,
+                        "decision": "reject_candidate",
+                        "comment": "保持原译名",
+                    },
+                ],
             },
         )
         self.assertEqual(batch.status_code, 200)
         payload = batch.json()
         self.assertEqual(payload["glossary_review_summary"]["pending_count"], 0)
-        self.assertEqual(payload["glossary_review_summary"]["confirmed_count"], 1)
+        self.assertEqual(payload["glossary_review_summary"]["confirmed_count"], 2)
         self.assertEqual(payload["glossary_review_summary"]["rejected_count"], 1)
         self.assertEqual(payload["glossary_review_pending_count"], 0)
-        self.assertEqual(payload["glossary_review_confirmed_count"], 1)
+        self.assertEqual(payload["glossary_review_confirmed_count"], 2)
         self.assertEqual(payload["glossary_review_rejected_count"], 1)
         self.assertTrue(payload["glossary_retranslation_plan_ready"])
-        self.assertEqual(payload["glossary_retranslation_plan_retranslate_chunk_count"], 1)
+        self.assertEqual(payload["glossary_retranslation_plan_retranslate_chunk_count"], 2)
 
         terms = MemoryStore(rec.work_dir / "memory").load_glossary()["terms"]
         accuracy = next(term for term in terms if term["en"] == "Accuracy")
@@ -1083,9 +1129,29 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(accuracy["reviewed_by"], "alice")
         self.assertEqual(accuracy["confidence"], 0.93)
         self.assertEqual(accuracy["section_scope"], "Methods")
+        recall = next(term for term in terms if term["en"] == "Recall")
+        self.assertEqual(recall["zh"], "检出率")
+        self.assertEqual(recall["status"], "confirmed")
+        self.assertEqual(recall["original_candidate_zh"], "查全率")
+        self.assertEqual(recall["edited_candidate_zh"], "检出率")
+        self.assertEqual(recall["reviewed_by"], "alice")
+        self.assertEqual(recall["confidence"], 0.81)
+        self.assertEqual(recall["section_scope"], "Methods")
+        pending_items = MemoryStore(rec.work_dir / "memory").load_pending_review()["items"]
+        recall_review = next(item for item in pending_items if item.get("dedupe_key") == recall_review_id)
+        precision_review = next(item for item in pending_items if item.get("dedupe_key") == precision_review_id)
+        self.assertEqual(recall_review["status"], "confirmed")
+        self.assertEqual(recall_review["candidate_zh"], "检出率")
+        self.assertEqual(recall_review["confirmed_zh"], "检出率")
+        self.assertEqual(recall_review["original_candidate_zh"], "查全率")
+        self.assertEqual(recall_review["edited_candidate_zh"], "检出率")
+        self.assertEqual(precision_review["status"], "rejected")
 
         events = database.list_audit(limit=10)
         self.assertEqual(events[0]["action"], "job_glossary_review_batch_update")
+        self.assertEqual(events[0]["detail"]["decision"], "mixed")
+        self.assertEqual(events[0]["detail"]["batch_schema"], "items")
+        self.assertEqual(events[0]["detail"]["candidate_zh_changed_count"], 1)
         self.assertEqual(events[1]["action"], "job_glossary_review_update")
         self.assertTrue(events[1]["detail"]["candidate_zh_changed"])
 
