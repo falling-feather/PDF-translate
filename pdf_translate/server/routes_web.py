@@ -21,6 +21,7 @@ from pdf_translate.qa.repair import (
     write_repair_formal_replace,
     write_repair_formal_rollback,
     write_repair_patch_review,
+    write_repair_patch_review_batch_decision,
     write_repair_patch_review_decision,
     write_repair_publish,
     write_repair_rollback,
@@ -1290,6 +1291,71 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             invalid_message="局部修复合并报告无法解析",
         )
         return _read_or_create_repair_patch_review(out_dir, repair_merge)
+
+    @api.post("/jobs/{job_id}/repair-patch-review/batch")
+    def update_repair_patch_review_batch(
+        job_id: str,
+        request: Request,
+        payload: dict[str, Any] = Body(...),
+        p: Principal = Depends(bearer_principal),
+    ) -> dict:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        if rec.status != "done":
+            raise HTTPException(409, "任务尚未完成，暂不能批量审核局部修复补丁")
+        out_dir = rec.work_dir / "output"
+        repair_merge = _read_json_artifact(
+            out_dir / "repair_merge.json",
+            missing_message="局部修复合并报告尚未生成",
+            invalid_message="局部修复合并报告无法解析",
+        )
+        _read_or_create_repair_patch_review(out_dir, repair_merge)
+        review_ids = payload.get("review_ids")
+        try:
+            report = write_repair_patch_review_batch_decision(
+                out_dir / "repair_patch_review.json",
+                out_dir / "repair_patch_review.md",
+                review_ids,
+                decision=payload.get("decision"),
+                reviewer=p.username,
+                comment=payload.get("comment") or "",
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(404, f"补丁审核项不存在：{exc}") from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "局部修复补丁审核报告尚未生成") from exc
+        updated_review_ids: list[str] = []
+        seen_review_ids: set[str] = set()
+        if isinstance(review_ids, list):
+            for item in review_ids:
+                item_id = str(item or "").strip()
+                if item_id and item_id not in seen_review_ids:
+                    seen_review_ids.add(item_id)
+                    updated_review_ids.append(item_id)
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        updated_count = len(updated_review_ids)
+        app_registry.update(job_id, message=f"已批量更新 {updated_count} 个局部修复补丁审核项")
+        database.log_audit(
+            action="job_repair_patch_review_batch_update",
+            ip=client_ip(request),
+            user_id=p.user_id,
+            username=p.username,
+            job_id=job_id,
+            detail={
+                "review_ids": updated_review_ids,
+                "updated_count": updated_count,
+                "decision": payload.get("decision"),
+                "publish_blocking_count": summary.get("publish_blocking_count"),
+                "human_reviewed_count": summary.get("human_reviewed_count"),
+            },
+        )
+        updated = app_registry.get(job_id) or rec
+        d = _job_dict(updated)
+        d["repair_patch_review_summary"] = summary
+        return d
 
     @api.post("/jobs/{job_id}/repair-patch-review/{review_id}")
     def update_repair_patch_review(

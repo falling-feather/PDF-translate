@@ -1785,6 +1785,12 @@ def repair_patch_review_to_markdown(report: dict[str, Any]) -> str:
         lines.append(f"- 合并状态：`{review.get('merge_status') or '-'}`，策略 `{review.get('merge_strategy') or '-'}`")
         lines.append(f"- 风险等级：`{review.get('risk_level') or '-'}`")
         lines.append(f"- 建议：{review.get('decision_reason') or '-'}")
+        lines.append(
+            f"- 人工决策：`{review.get('human_decision') or 'pending'}`，"
+            f"审核人 `{review.get('reviewed_by') or '-'}`，时间 `{review.get('reviewed_at') or '-'}`"
+        )
+        if review.get("human_comment"):
+            lines.append(f"- 人工备注：{review.get('human_comment')}")
         merge_target = review.get("merge_target") if isinstance(review.get("merge_target"), dict) else {}
         if merge_target:
             table_index = _safe_nonnegative_int(merge_target.get("table_index"))
@@ -1857,6 +1863,60 @@ def apply_repair_patch_review_decision(
     raise KeyError(target_id)
 
 
+def _normalise_repair_patch_review_ids(review_ids: Any) -> list[str]:
+    if not isinstance(review_ids, (list, tuple, set)):
+        raise ValueError("review_ids must be a non-empty list")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in review_ids:
+        review_id = str(value or "").strip()
+        if not review_id or review_id in seen:
+            continue
+        seen.add(review_id)
+        normalized.append(review_id)
+    if not normalized:
+        raise ValueError("review_ids must be a non-empty list")
+    if len(normalized) > 500:
+        raise ValueError("review_ids cannot include more than 500 items")
+    return normalized
+
+
+def apply_repair_patch_review_batch_decision(
+    report: dict[str, Any],
+    review_ids: Any,
+    *,
+    decision: Any,
+    reviewer: str = "",
+    comment: str = "",
+    reviewed_at: str | None = None,
+) -> dict[str, Any]:
+    normalized_decision = normalize_patch_review_human_decision(decision)
+    target_ids = _normalise_repair_patch_review_ids(review_ids)
+    reviews = report.get("patch_reviews") if isinstance(report.get("patch_reviews"), list) else []
+    review_by_id = {
+        str(review.get("review_id") or ""): review
+        for review in reviews
+        if isinstance(review, dict) and str(review.get("review_id") or "")
+    }
+    missing_ids = [review_id for review_id in target_ids if review_id not in review_by_id]
+    if missing_ids:
+        raise KeyError(", ".join(missing_ids))
+
+    timestamp = reviewed_at or datetime.now(timezone.utc).isoformat()
+    for review_id in target_ids:
+        review = review_by_id[review_id]
+        review["human_decision"] = normalized_decision
+        if normalized_decision:
+            review["human_comment"] = str(comment or "").strip()
+            review["reviewed_by"] = str(reviewer or "").strip()
+            review["reviewed_at"] = timestamp
+        else:
+            review["human_comment"] = ""
+            review["reviewed_by"] = ""
+            review["reviewed_at"] = ""
+    return _refresh_repair_patch_review_summary(report)
+
+
 def write_repair_patch_review_decision(
     json_path: Path,
     markdown_path: Path,
@@ -1878,6 +1938,39 @@ def write_repair_patch_review_decision(
     updated = apply_repair_patch_review_decision(
         report,
         review_id,
+        decision=decision,
+        reviewer=reviewer,
+        comment=comment,
+        reviewed_at=reviewed_at,
+    )
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(repair_patch_review_to_markdown(updated), encoding="utf-8")
+    return updated
+
+
+def write_repair_patch_review_batch_decision(
+    json_path: Path,
+    markdown_path: Path,
+    review_ids: Any,
+    *,
+    decision: Any,
+    reviewer: str = "",
+    comment: str = "",
+    reviewed_at: str | None = None,
+) -> dict[str, Any]:
+    if not json_path.is_file() or json_path.stat().st_size == 0:
+        raise FileNotFoundError(json_path)
+    try:
+        report = json.loads(json_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("repair patch review report is invalid") from exc
+    if not isinstance(report, dict):
+        raise ValueError("repair patch review report is invalid")
+    updated = apply_repair_patch_review_batch_decision(
+        report,
+        review_ids,
         decision=decision,
         reviewer=reviewer,
         comment=comment,

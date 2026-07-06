@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { authHeaders, clearSession, getUsername } from "../auth";
+import RepairPatchReviewModal from "../components/RepairPatchReviewModal.vue";
 import TableMergedCellReviewModal from "../components/TableMergedCellReviewModal.vue";
 
 const router = useRouter();
@@ -14,6 +15,7 @@ const users = ref([]);
 const jobs = ref([]);
 const reconcile = ref(null);
 const reconciling = ref(false);
+const repairPatchReviewJobId = ref("");
 const tableReviewJobId = ref("");
 
 const auditExpanded = ref({});
@@ -333,36 +335,7 @@ async function adminDownload(jobId, kind, filename) {
 }
 
 async function adminReviewRepairPatch(job) {
-  const reportRes = await fetch(`/api/jobs/${job.job_id}/repair-patch-review`, { headers: authHeaders() });
-  const report = await reportRes.json().catch(() => ({}));
-  if (!reportRes.ok) {
-    alert(formatAdminError(report));
-    return;
-  }
-  const reviews = Array.isArray(report.patch_reviews) ? report.patch_reviews : [];
-  if (!reviews.length) {
-    alert("暂无可审核补丁");
-    return;
-  }
-  const suggested = reviews.find((item) => item.publish_blocking) || reviews[0];
-  const reviewId = window.prompt("补丁 ID", suggested.review_id || "");
-  if (!reviewId) return;
-  const decision = window.prompt("决策：approve / reject / needs_revision / clear", "approve");
-  if (!decision) return;
-  const comment = window.prompt("备注（可留空）", "") || "";
-  const r = await fetch(`/api/jobs/${job.job_id}/repair-patch-review/${encodeURIComponent(reviewId.trim())}`, {
-    method: "POST",
-    headers: authHeaders(true),
-    body: JSON.stringify({ decision: decision.trim(), comment }),
-  });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    alert(formatAdminError(data));
-    return;
-  }
-  await loadJobs();
-  await loadAudit();
-  alert("已更新补丁审核");
+  repairPatchReviewJobId.value = job.job_id;
 }
 
 async function adminReviewTableMergedCell(job) {
@@ -370,6 +343,11 @@ async function adminReviewTableMergedCell(job) {
 }
 
 async function onTableReviewUpdated() {
+  await loadJobs();
+  await loadAudit();
+}
+
+async function onRepairPatchReviewUpdated() {
   await loadJobs();
   await loadAudit();
 }
@@ -734,6 +712,13 @@ onMounted(() => {
       title="表格合并候选审核"
       @updated="onTableReviewUpdated"
       @close="tableReviewJobId = ''"
+    />
+    <RepairPatchReviewModal
+      v-if="repairPatchReviewJobId"
+      :job-id="repairPatchReviewJobId"
+      title="局部修复补丁审核"
+      @updated="onRepairPatchReviewUpdated"
+      @close="repairPatchReviewJobId = ''"
     />
   </div>
 </template>

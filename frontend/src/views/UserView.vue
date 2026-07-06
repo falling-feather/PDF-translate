@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { authHeaders, clearSession, getUsername } from "../auth";
+import RepairPatchReviewModal from "../components/RepairPatchReviewModal.vue";
 import TableMergedCellReviewModal from "../components/TableMergedCellReviewModal.vue";
 
 const router = useRouter();
@@ -41,6 +42,7 @@ const taskMap = ref({});
 const pollTimer = ref(null);
 
 const showSupportModal = ref(false);
+const repairPatchReviewJobId = ref("");
 const tableReviewJobId = ref("");
 const pageNow = ref(Date.now());
 let footerTimer = null;
@@ -395,36 +397,7 @@ async function cancelJob(jid) {
 }
 
 async function reviewRepairPatch(jid) {
-  const reportRes = await fetch(`/api/jobs/${jid}/repair-patch-review`, { headers: authHeaders() });
-  const report = await reportRes.json().catch(() => ({}));
-  if (!reportRes.ok) {
-    alert(formatErrorPayload(report));
-    return;
-  }
-  const reviews = Array.isArray(report.patch_reviews) ? report.patch_reviews : [];
-  if (!reviews.length) {
-    alert("暂无可审核补丁");
-    return;
-  }
-  const suggested = reviews.find((item) => item.publish_blocking) || reviews[0];
-  const reviewId = window.prompt("补丁 ID", suggested.review_id || "");
-  if (!reviewId) return;
-  const decision = window.prompt("决策：approve / reject / needs_revision / clear", "approve");
-  if (!decision) return;
-  const comment = window.prompt("备注（可留空）", "") || "";
-  const r = await fetch(`/api/jobs/${jid}/repair-patch-review/${encodeURIComponent(reviewId.trim())}`, {
-    method: "POST",
-    headers: authHeaders(true),
-    body: JSON.stringify({ decision: decision.trim(), comment }),
-  });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    alert(formatErrorPayload(data));
-    return;
-  }
-  taskMap.value = { ...taskMap.value, [jid]: data };
-  await loadMyJobs();
-  alert("已更新补丁审核");
+  repairPatchReviewJobId.value = jid;
 }
 
 async function reviewTableMergedCell(jid) {
@@ -432,6 +405,13 @@ async function reviewTableMergedCell(jid) {
 }
 
 async function onTableReviewUpdated(job) {
+  if (job?.job_id) {
+    taskMap.value = { ...taskMap.value, [job.job_id]: job };
+  }
+  await loadMyJobs();
+}
+
+async function onRepairPatchReviewUpdated(job) {
   if (job?.job_id) {
     taskMap.value = { ...taskMap.value, [job.job_id]: job };
   }
@@ -1174,6 +1154,12 @@ onUnmounted(() => {
       :job-id="tableReviewJobId"
       @updated="onTableReviewUpdated"
       @close="tableReviewJobId = ''"
+    />
+    <RepairPatchReviewModal
+      v-if="repairPatchReviewJobId"
+      :job-id="repairPatchReviewJobId"
+      @updated="onRepairPatchReviewUpdated"
+      @close="repairPatchReviewJobId = ''"
     />
   </div>
 </template>

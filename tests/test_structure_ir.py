@@ -33,6 +33,7 @@ from pdf_translate.qa.chunk_boundary import build_chunk_boundary_qa, build_chunk
 from pdf_translate.qa.metrics import build_experiment_metrics
 from pdf_translate.qa.ocr_candidates import build_ocr_candidate_qa, write_ocr_candidate_qa
 from pdf_translate.qa.repair import (
+    apply_repair_patch_review_batch_decision,
     apply_repair_patch_review_decision,
     build_repair_plan,
     build_repair_patch_review,
@@ -44,6 +45,8 @@ from pdf_translate.qa.repair import (
     build_repair_formal_replace,
     build_repair_formal_rollback,
     build_repair_validation,
+    repair_patch_review_to_markdown,
+    write_repair_patch_review_batch_decision,
 )
 from pdf_translate.qa.structure import build_structure_qa
 from pdf_translate.qa.table_reconstruction import (
@@ -2359,6 +2362,112 @@ class StructureIRTests(unittest.TestCase):
             parent = root.parent
             if parent.is_dir() and not any(parent.iterdir()):
                 shutil.rmtree(parent)
+
+    def test_repair_patch_review_batch_decision_updates_atomically(self) -> None:
+        review = build_repair_patch_review(
+            {
+                "schema_version": "repair-merge-v1",
+                "summary": {
+                    "applied_count": 1,
+                    "manual_merge_required_count": 1,
+                    "conflict_count": 0,
+                },
+                "patches": [
+                    {
+                        "request_id": "rq0000",
+                        "repair_id": "rp0000",
+                        "chunk_id": "c0000",
+                        "pages_1based": [1],
+                        "priority": "medium",
+                        "issue_type": "table_cell_token_mismatch",
+                        "action": "replace_table",
+                        "scope": "table",
+                        "status": "applied",
+                        "strategy": "replace_markdown_table_by_evidence",
+                        "merge_target": {"table_index": 0, "cell_count": 4},
+                        "reason": "table cell changed during translation",
+                        "patched_chunk_path": "repaired_chunks/c0000.md",
+                        "result_path": "repairs/rq0000.md",
+                        "result_excerpt": "| 模型 | 准确率 |\n| --- | --- |\n| BERT | 91.2% |",
+                    },
+                    {
+                        "request_id": "rq0001",
+                        "repair_id": "rp0001",
+                        "chunk_id": "c0001",
+                        "pages_1based": [2, 3],
+                        "priority": "high",
+                        "issue_type": "caption_relation_mismatch",
+                        "action": "rewrite_caption",
+                        "scope": "paragraph",
+                        "status": "skipped_manual_merge_required",
+                        "strategy": "manual",
+                        "reason": "caption target could not be located safely",
+                        "patched_chunk_path": "",
+                        "result_path": "",
+                        "result_excerpt": "Figure 2 needs manual repair.",
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(review["summary"]["patch_count"], 2)
+        self.assertEqual(review["summary"]["publish_blocking_count"], 1)
+
+        with self.assertRaises(KeyError):
+            apply_repair_patch_review_batch_decision(
+                review,
+                ["pr0000", "missing-review-id"],
+                decision="reject",
+                reviewer="mentor",
+                reviewed_at="2026-07-06T00:10:00+00:00",
+            )
+        self.assertEqual(review["patch_reviews"][0]["human_decision"], "")
+
+        updated = apply_repair_patch_review_batch_decision(
+            review,
+            ["pr0000", "pr0001"],
+            decision="approve",
+            reviewer="mentor",
+            comment="batch patch pass",
+            reviewed_at="2026-07-06T00:11:00+00:00",
+        )
+
+        self.assertEqual(updated["summary"]["human_approved_count"], 2)
+        self.assertEqual(updated["summary"]["human_reviewed_count"], 2)
+        self.assertEqual(updated["summary"]["publish_blocking_count"], 0)
+        self.assertEqual(updated["summary"]["effective_safe_count"], 2)
+        self.assertEqual(updated["patch_reviews"][1]["human_comment"], "batch patch pass")
+        self.assertEqual(updated["patch_reviews"][1]["reviewed_by"], "mentor")
+        self.assertEqual(updated["patch_reviews"][1]["reviewed_at"], "2026-07-06T00:11:00+00:00")
+        self.assertIn("batch patch pass", repair_patch_review_to_markdown(updated))
+
+        root = Path.cwd() / "test-output" / "repair-patch-review-batch-decision"
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True)
+        try:
+            json_path = root / "repair_patch_review.json"
+            md_path = root / "repair_patch_review.md"
+            json_path.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8")
+            md_path.write_text(repair_patch_review_to_markdown(updated), encoding="utf-8")
+            persisted = write_repair_patch_review_batch_decision(
+                json_path,
+                md_path,
+                ["pr0000", "pr0001"],
+                decision="clear",
+                reviewer="mentor",
+                reviewed_at="2026-07-06T00:12:00+00:00",
+            )
+            self.assertEqual(persisted["summary"]["human_approved_count"], 0)
+            self.assertEqual(persisted["summary"]["human_reviewed_count"], 0)
+            self.assertEqual(persisted["summary"]["effective_safe_count"], 1)
+            self.assertEqual(persisted["summary"]["publish_blocking_count"], 1)
+            stored = json.loads(json_path.read_text(encoding="utf-8"))
+            self.assertEqual(stored["patch_reviews"][0]["human_decision"], "")
+            self.assertIn("pending", md_path.read_text(encoding="utf-8"))
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
 
     def test_repair_merge_targets_markdown_table_from_cell_evidence(self) -> None:
         root = Path.cwd() / "test-output" / "targeted-table-repair-merge"
