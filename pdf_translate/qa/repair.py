@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 from collections import Counter
@@ -558,6 +559,83 @@ def _replace_markdown_table_by_index(
         *current_lines[current_end:],
     ]
     return "\n".join(merged_lines).strip() + "\n", None
+
+
+def _markdown_table_at_index(text: str, table_index: int | None = None) -> str:
+    ranges = _markdown_table_ranges(text)
+    if not ranges:
+        return ""
+    target_index = 0 if table_index is None else table_index
+    if target_index < 0 or target_index >= len(ranges):
+        return ""
+    lines = text.splitlines()
+    start, end = ranges[target_index]
+    return "\n".join(lines[start:end]).strip()
+
+
+def _unified_diff_excerpt(
+    before: str,
+    after: str,
+    *,
+    fromfile: str = "current",
+    tofile: str = "repaired",
+    limit: int = 1800,
+) -> str:
+    before_text = str(before or "").strip()
+    after_text = str(after or "").strip()
+    if not before_text and not after_text:
+        return ""
+    if before_text == after_text:
+        return ""
+    diff_lines = difflib.unified_diff(
+        before_text.splitlines(),
+        after_text.splitlines(),
+        fromfile=fromfile,
+        tofile=tofile,
+        lineterm="",
+    )
+    return _clip_text("\n".join(diff_lines), limit)
+
+
+def _repair_diff_preview(
+    request: dict[str, Any],
+    current_text: str,
+    repaired_text: str,
+    merged_text: str,
+    strategy: str,
+) -> dict[str, str]:
+    merge_target = request.get("merge_target") if isinstance(request.get("merge_target"), dict) else {}
+    table_index = _safe_nonnegative_int(merge_target.get("table_index"))
+    preview_kind = "manual"
+    current_piece = str(current_text or "").strip()
+    candidate_piece = str(repaired_text or "").strip()
+    repaired_piece = str(merged_text or "").strip()
+
+    if strategy in {"replace_markdown_table_by_evidence", "replace_first_markdown_table"}:
+        preview_kind = "table"
+        target_index = table_index if strategy == "replace_markdown_table_by_evidence" else 0
+        current_piece = _markdown_table_at_index(current_text, target_index) or current_piece
+        candidate_piece = _markdown_table_at_index(repaired_text, 0) or candidate_piece
+        repaired_piece = _markdown_table_at_index(merged_text, target_index) or repaired_piece
+    elif strategy == "replace_chunk":
+        preview_kind = "chunk"
+
+    chunk_label = str(request.get("chunk_id") or "chunk")
+    after_label = "candidate" if preview_kind == "manual" else "repaired"
+    after_for_diff = candidate_piece if preview_kind == "manual" else repaired_piece or candidate_piece
+    return {
+        "preview_kind": preview_kind,
+        "source_excerpt": _clip_text(str(request.get("source_excerpt") or ""), 800),
+        "current_excerpt": _clip_text(current_piece, 1000),
+        "candidate_excerpt": _clip_text(candidate_piece, 1000),
+        "repaired_excerpt": _clip_text(repaired_piece, 1000) if preview_kind != "manual" else "",
+        "unified_diff": _unified_diff_excerpt(
+            current_piece,
+            after_for_diff,
+            fromfile=f"{chunk_label}:current",
+            tofile=f"{chunk_label}:{after_label}",
+        ),
+    }
 
 
 def _merge_candidate_into_chunk(
@@ -1298,14 +1376,31 @@ def build_repair_merge(
         has_structure_patch_context = bool(merge_target.get("structure_patch_context"))
         if has_structure_patch_context:
             structure_patch_context_candidate_count += 1
+        current_chunk_text = chunk_text[chunk_id]
         repaired_text = _repair_result_text(result)
-        merged_text, strategy, reason = _merge_candidate_into_chunk(chunk_text[chunk_id], repaired_text, request)
+        merged_text, strategy, reason = _merge_candidate_into_chunk(current_chunk_text, repaired_text, request)
+        diff_preview = _repair_diff_preview(
+            request,
+            current_chunk_text,
+            repaired_text,
+            merged_text,
+            strategy,
+        )
         strategy_counts[strategy] += 1
         if reason:
             status = "skipped_manual_merge_required"
             status_counts[status] += 1
             patches.append(
-                {**base, "status": status, "strategy": strategy, "reason": reason, "merge_target": merge_target}
+                {
+                    **base,
+                    "status": status,
+                    "strategy": strategy,
+                    "reason": reason,
+                    "merge_target": merge_target,
+                    "result_path": result.get("result_path") or "",
+                    "result_excerpt": _clip_text(repaired_text, 500),
+                    "diff_preview": diff_preview,
+                }
             )
             continue
 
@@ -1327,6 +1422,7 @@ def build_repair_merge(
                 if repaired_chunk_dir is not None
                 else "",
                 "result_excerpt": _clip_text(repaired_text, 500),
+                "diff_preview": diff_preview,
             }
         )
 
@@ -1373,6 +1469,33 @@ def build_repair_merge(
         },
         "patches": patches,
     }
+
+
+def _append_repair_diff_preview_markdown(lines: list[str], diff_preview: Any) -> bool:
+    if not isinstance(diff_preview, dict):
+        return False
+    preview_items = [
+        ("源文摘要", "text", diff_preview.get("source_excerpt")),
+        ("当前译文片段", "markdown", diff_preview.get("current_excerpt")),
+        ("修复候选片段", "markdown", diff_preview.get("candidate_excerpt")),
+        ("合并后片段", "markdown", diff_preview.get("repaired_excerpt")),
+    ]
+    has_preview = any(str(value or "").strip() for _, _, value in preview_items) or str(
+        diff_preview.get("unified_diff") or ""
+    ).strip()
+    if not has_preview:
+        return False
+
+    lines.extend(["", "#### 差异预览", ""])
+    for title, language, value in preview_items:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        lines.extend([f"{title}：", f"```{language}", _clip_text(text, 900), "```", ""])
+    unified_diff = str(diff_preview.get("unified_diff") or "").strip()
+    if unified_diff:
+        lines.extend(["统一差异：", "```diff", _clip_text(unified_diff, 1800), "```", ""])
+    return True
 
 
 def repair_merge_to_markdown(report: dict[str, Any]) -> str:
@@ -1432,6 +1555,7 @@ def repair_merge_to_markdown(report: dict[str, Any]) -> str:
             lines.append(f"- 修复 chunk：`{patch.get('patched_chunk_path')}`")
         if patch.get("result_path"):
             lines.append(f"- 候选片段：`{patch.get('result_path')}`")
+        _append_repair_diff_preview_markdown(lines, patch.get("diff_preview"))
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -1729,6 +1853,7 @@ def build_repair_patch_review(repair_merge: dict[str, Any]) -> dict[str, Any]:
                 "patched_chunk_path": patch.get("patched_chunk_path") or "",
                 "result_path": patch.get("result_path") or "",
                 "result_excerpt": patch.get("result_excerpt") or "",
+                "diff_preview": patch.get("diff_preview") if isinstance(patch.get("diff_preview"), dict) else {},
             }
         )
 
@@ -1813,8 +1938,9 @@ def repair_patch_review_to_markdown(report: dict[str, Any]) -> str:
             lines.append(f"- 修复 chunk：`{review.get('patched_chunk_path')}`")
         if review.get("result_path"):
             lines.append(f"- 候选片段：`{review.get('result_path')}`")
+        wrote_diff_preview = _append_repair_diff_preview_markdown(lines, review.get("diff_preview"))
         excerpt = str(review.get("result_excerpt") or "").strip()
-        if excerpt:
+        if excerpt and not wrote_diff_preview:
             lines.extend(["", "```markdown", _clip_text(excerpt, 600), "```"])
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"

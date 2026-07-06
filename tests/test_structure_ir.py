@@ -2160,6 +2160,14 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(merge["summary"]["table_targeted_patch_count"], 1)
             self.assertEqual(merge["patches"][0]["strategy"], "replace_markdown_table_by_evidence")
             self.assertEqual(merge["patches"][0]["merge_target"]["table_index"], 0)
+            diff_preview = merge["patches"][0]["diff_preview"]
+            self.assertEqual(diff_preview["preview_kind"], "table")
+            self.assertIn("| BERT | 91.2 | p<0.05 |", diff_preview["current_excerpt"])
+            self.assertIn("| BERT | 91.2% | p<0.05 |", diff_preview["candidate_excerpt"])
+            self.assertIn("| BERT | 91.2% | p<0.05 |", diff_preview["repaired_excerpt"])
+            self.assertIn("--- c0000:current", diff_preview["unified_diff"])
+            self.assertIn("-| BERT | 91.2 | p<0.05 |", diff_preview["unified_diff"])
+            self.assertIn("+| BERT | 91.2% | p<0.05 |", diff_preview["unified_diff"])
             patch_review = build_repair_patch_review(merge)
             self.assertEqual(patch_review["schema_version"], "repair-patch-review-v1")
             self.assertEqual(patch_review["summary"]["patch_count"], 1)
@@ -2173,6 +2181,14 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(patch_review["patch_reviews"][0]["human_decision"], "")
             self.assertEqual(patch_review["patch_reviews"][0]["default_decision"], "approve_candidate")
             self.assertEqual(patch_review["patch_reviews"][0]["merge_target"]["table_index"], 0)
+            self.assertEqual(
+                patch_review["patch_reviews"][0]["diff_preview"]["unified_diff"],
+                diff_preview["unified_diff"],
+            )
+            patch_review_markdown = repair_patch_review_to_markdown(patch_review)
+            self.assertIn("#### 差异预览", patch_review_markdown)
+            self.assertIn("当前译文片段", patch_review_markdown)
+            self.assertIn("```diff", patch_review_markdown)
             rejected_review = apply_repair_patch_review_decision(
                 json.loads(json.dumps(patch_review)),
                 "pr0000",

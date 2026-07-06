@@ -64,6 +64,35 @@ const allFilteredSelected = computed(
   () => filteredReviews.value.length > 0 && selectedFilteredCount.value === filteredReviews.value.length,
 );
 
+function diffPreview(item) {
+  return item?.diff_preview && typeof item.diff_preview === "object" ? item.diff_preview : {};
+}
+
+function previewText(item, key) {
+  return String(diffPreview(item)[key] || "").trim();
+}
+
+function hasDiffPreview(item) {
+  const preview = diffPreview(item);
+  return [
+    "source_excerpt",
+    "current_excerpt",
+    "candidate_excerpt",
+    "repaired_excerpt",
+    "unified_diff",
+  ].some((key) => String(preview[key] || "").trim());
+}
+
+function candidateSnippet(item) {
+  return (
+    previewText(item, "candidate_excerpt") ||
+    previewText(item, "unified_diff") ||
+    item?.result_excerpt ||
+    item?.reason ||
+    item?.decision_reason
+  );
+}
+
 function reviewMatchesFilters(item) {
   const human = item.human_decision || "";
   const effective = item.effective_decision || "";
@@ -80,6 +109,7 @@ function reviewMatchesFilters(item) {
     target.structure_patch_context && typeof target.structure_patch_context === "object"
       ? target.structure_patch_context
       : {};
+  const preview = diffPreview(item);
   const haystack = [
     item.review_id,
     item.request_id,
@@ -99,6 +129,12 @@ function reviewMatchesFilters(item) {
     item.result_excerpt,
     item.patched_chunk_path,
     item.result_path,
+    preview.preview_kind,
+    preview.source_excerpt,
+    preview.current_excerpt,
+    preview.candidate_excerpt,
+    preview.repaired_excerpt,
+    preview.unified_diff,
     target.table_index,
     structureContext.relevant_patch_count,
   ]
@@ -400,7 +436,29 @@ onMounted(loadReport);
                   <code>{{ selectedReview.result_path || "-" }}</code>
                 </dd>
               </dl>
-              <pre v-if="selectedReview.result_excerpt" class="excerpt">{{ selectedReview.result_excerpt }}</pre>
+              <div v-if="hasDiffPreview(selectedReview)" class="diff-stack">
+                <div v-if="previewText(selectedReview, 'source_excerpt')" class="preview-section">
+                  <span class="preview-title">源文摘要</span>
+                  <pre class="excerpt">{{ previewText(selectedReview, "source_excerpt") }}</pre>
+                </div>
+                <div v-if="previewText(selectedReview, 'current_excerpt')" class="preview-section">
+                  <span class="preview-title">当前译文</span>
+                  <pre class="excerpt">{{ previewText(selectedReview, "current_excerpt") }}</pre>
+                </div>
+                <div v-if="previewText(selectedReview, 'candidate_excerpt')" class="preview-section">
+                  <span class="preview-title">修复候选</span>
+                  <pre class="excerpt">{{ previewText(selectedReview, "candidate_excerpt") }}</pre>
+                </div>
+                <div v-if="previewText(selectedReview, 'repaired_excerpt')" class="preview-section">
+                  <span class="preview-title">合并后</span>
+                  <pre class="excerpt">{{ previewText(selectedReview, "repaired_excerpt") }}</pre>
+                </div>
+                <div v-if="previewText(selectedReview, 'unified_diff')" class="preview-section">
+                  <span class="preview-title">差异</span>
+                  <pre class="excerpt diff-excerpt">{{ previewText(selectedReview, "unified_diff") }}</pre>
+                </div>
+              </div>
+              <pre v-else-if="selectedReview.result_excerpt" class="excerpt">{{ selectedReview.result_excerpt }}</pre>
               <p v-else class="muted small">当前补丁没有候选片段。</p>
             </template>
             <p v-else class="muted small">选择一条补丁查看详情。</p>
@@ -464,7 +522,7 @@ onMounted(loadReport);
                   <td class="candidate-text">
                     <strong>{{ item.issue_type || "-" }}</strong>
                     <span class="muted block">{{ item.action || "-" }} · {{ item.scope || "-" }}</span>
-                    <span class="block">{{ shortText(item.result_excerpt || item.reason || item.decision_reason) }}</span>
+                    <span class="block">{{ shortText(candidateSnippet(item)) }}</span>
                   </td>
                   <td @click.stop>
                     <textarea
@@ -621,6 +679,21 @@ dd code {
   margin-top: 0.15rem;
   white-space: normal;
 }
+.diff-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-top: 0.7rem;
+}
+.preview-section {
+  min-width: 0;
+}
+.preview-title {
+  display: block;
+  margin-bottom: 0.2rem;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
 .excerpt {
   margin: 0.7rem 0 0;
   max-height: 260px;
@@ -633,6 +706,13 @@ dd code {
   background: #080b11;
   color: var(--text);
   font-size: 0.78rem;
+}
+.diff-stack .excerpt {
+  margin: 0;
+  max-height: 180px;
+}
+.diff-excerpt {
+  color: #d7e3ff;
 }
 .review-scroll {
   min-width: 0;
