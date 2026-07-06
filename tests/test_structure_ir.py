@@ -5860,6 +5860,137 @@ class StructureIRTests(unittest.TestCase):
             if parent.is_dir() and not any(parent.iterdir()):
                 shutil.rmtree(parent)
 
+    def test_memory_store_applies_glossary_review_decisions(self) -> None:
+        root = Path.cwd() / "test-output" / "glossary-review-decision-memory"
+        if root.exists():
+            shutil.rmtree(root)
+        try:
+            mem = MemoryStore(root / "memory")
+            mem.ensure_files()
+            mem.merge_glossary_terms_from_survey(
+                [{"en": "Accuracy", "zh": "准确率"}],
+                first_page_1based=1,
+            )
+            mem.merge_glossary_terms_from_survey(
+                [{"en": "accuracy", "zh": "精度"}],
+                first_page_1based=2,
+                source="survey",
+            )
+            conflict = next(
+                item
+                for item in mem.load_pending_review()["items"]
+                if item["type"] == "glossary_conflict" and item["candidate_zh"] == "精度"
+            )
+
+            reviewed = mem.apply_glossary_review_decision(
+                conflict["dedupe_key"],
+                "confirm_candidate",
+                reviewer="导师",
+                reviewed_at="2026-07-06T12:00:00+00:00",
+                comment="按导师术语表确认",
+                confidence=0.93,
+                section_scope="Methods",
+            )
+
+            self.assertEqual(reviewed["status"], "confirmed")
+            self.assertEqual(reviewed["confirmed_zh"], "精度")
+            self.assertEqual(reviewed["reviewed_by"], "导师")
+            self.assertEqual(reviewed["confidence"], 0.93)
+            self.assertEqual(reviewed["section_scope"], "Methods")
+            glossary = mem.load_glossary()
+            active_terms = [
+                term for term in glossary["terms"] if str(term.get("status") or "").lower() != "rejected"
+            ]
+            self.assertEqual(len(active_terms), 1)
+            self.assertEqual(active_terms[0]["en"], "Accuracy")
+            self.assertEqual(active_terms[0]["zh"], "精度")
+            self.assertEqual(active_terms[0]["status"], "confirmed")
+            self.assertEqual(active_terms[0]["confidence"], 0.93)
+            self.assertEqual(active_terms[0]["section_scope"], "Methods")
+            self.assertIn("Accuracy → 精度", mem.glossary_snippet_for_pages(1, 2))
+            self.assertNotIn("准确率", mem.glossary_snippet_for_pages(1, 2))
+
+            chunk_dir = root / "chunks"
+            chunk_dir.mkdir(parents=True)
+            chunk = TextChunk(
+                chunk_id="c0000",
+                pages_0based=[0],
+                text="Accuracy improves under domain shift.",
+                link_count=0,
+                image_count=0,
+            )
+            (chunk_dir / "c0000.md").write_text(
+                "---\n{}\n---\n\n精度在领域偏移下提升。\n",
+                encoding="utf-8",
+            )
+            report = build_translation_qa(
+                [chunk],
+                chunk_dir,
+                glossary=glossary,
+                pending_review=mem.load_pending_review(),
+            )
+            issue_types = {issue["type"] for issue in report["chunks"][0]["issues"]}
+            self.assertNotIn("glossary_translation_conflict", issue_types)
+            self.assertNotIn("missing_glossary_terms", issue_types)
+            self.assertEqual(report["summary"]["glossary_conflict_count"], 0)
+
+            missing_chunk = TextChunk(
+                chunk_id="c0001",
+                pages_0based=[0],
+                text="Accuracy improves under domain shift.",
+                link_count=0,
+                image_count=0,
+            )
+            (chunk_dir / "c0001.md").write_text(
+                "---\n{}\n---\n\n准确率在领域偏移下提升。\n",
+                encoding="utf-8",
+            )
+            missing_report = build_translation_qa(
+                [missing_chunk],
+                chunk_dir,
+                glossary=glossary,
+                pending_review=mem.load_pending_review(),
+            )
+            missing_issue = next(
+                issue
+                for issue in missing_report["chunks"][0]["issues"]
+                if issue["type"] == "missing_glossary_terms"
+            )
+            self.assertEqual(missing_issue["terms"][0]["expected_zh"], "精度")
+            self.assertEqual(missing_issue["terms"][0]["confidence"], 0.93)
+            self.assertEqual(missing_issue["terms"][0]["section_scope"], "Methods")
+
+            mem.merge_glossary_terms_from_survey(
+                [{"en": "Recall", "zh": "召回率"}],
+                first_page_1based=3,
+            )
+            mem.merge_glossary_terms_from_survey(
+                [{"en": "Recall", "zh": "查全率"}],
+                first_page_1based=3,
+                source="survey",
+            )
+            recall_conflict = next(
+                item
+                for item in mem.load_pending_review()["items"]
+                if item["type"] == "glossary_conflict" and item["en"] == "Recall"
+            )
+            rejected = mem.apply_glossary_review_decision(
+                recall_conflict["dedupe_key"],
+                "reject_candidate",
+                reviewer="导师",
+                reviewed_at="2026-07-06T12:30:00+00:00",
+                comment="保持原术语",
+            )
+            self.assertEqual(rejected["status"], "rejected")
+            self.assertIn("Recall → 召回率", mem.glossary_snippet_for_pages(3, 3))
+            self.assertNotIn("查全率", mem.glossary_snippet_for_pages(3, 3))
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+            parent = root.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                shutil.rmtree(parent)
+
     def test_translation_qa_reports_glossary_conflicts(self) -> None:
         root = Path.cwd() / "test-output" / "translation-qa-glossary-conflict"
         if root.exists():

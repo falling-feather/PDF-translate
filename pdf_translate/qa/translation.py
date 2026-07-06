@@ -680,6 +680,8 @@ def _glossary_terms(glossary: dict[str, Any] | None) -> list[dict[str, Any]]:
                 "first_page": term.get("first_page"),
                 "source": term.get("source"),
                 "status": term.get("status"),
+                "confidence": term.get("confidence"),
+                "section_scope": term.get("section_scope"),
             }
         )
     return out
@@ -776,6 +778,8 @@ def _missing_glossary_terms(
                 "expected_zh": zh,
                 "first_page": term.get("first_page"),
                 "source": term.get("source"),
+                "confidence": term.get("confidence"),
+                "section_scope": term.get("section_scope"),
             }
         )
     return missing

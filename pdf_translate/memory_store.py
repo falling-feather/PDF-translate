@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -37,6 +38,32 @@ def _pending_dedupe_key(item: dict[str, Any]) -> str:
     en = _normalize_term_key(str(item.get("en") or ""))
     zh = str(item.get("candidate_zh") or item.get("zh") or "").strip()
     return f"{kind}:{en}:{zh}"
+
+
+def _normalized_review_decision(decision: str) -> Literal["confirm_candidate", "reject_candidate"]:
+    text = decision.strip().lower()
+    if text in {"confirm", "confirmed", "confirm_candidate", "accept", "approve"}:
+        return "confirm_candidate"
+    if text in {"reject", "rejected", "reject_candidate", "deny"}:
+        return "reject_candidate"
+    raise ValueError("decision must be confirm_candidate or reject_candidate")
+
+
+def _review_timestamp(value: str | None) -> str:
+    text = str(value or "").strip()
+    return text or datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_confidence(value: float | int | str | None) -> float | None:
+    if value is None:
+        return None
+    normalized = value.strip() if isinstance(value, str) else value
+    if normalized == "":
+        return None
+    number = float(normalized)
+    if number < 0 or number > 1:
+        raise ValueError("confidence must be between 0 and 1")
+    return round(number, 4)
 
 
 class MemoryStore:
@@ -208,6 +235,134 @@ class MemoryStore:
             self.glossary_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             self._append_pending_items_locked(pending)
             return added
+
+    def apply_glossary_review_decision(
+        self,
+        pending_key: str,
+        decision: str,
+        *,
+        reviewer: str = "",
+        reviewed_at: str | None = None,
+        comment: str = "",
+        confidence: float | int | str | None = None,
+        section_scope: str = "",
+    ) -> dict[str, Any]:
+        """Apply a human decision for a pending glossary review item.
+
+        The first supported review loop is glossary conflicts: confirming the
+        candidate replaces the active translation for the same English term;
+        rejecting the candidate closes the review without injecting it.
+        """
+        normalized_decision = _normalized_review_decision(decision)
+        normalized_confidence = _normalize_confidence(confidence)
+        with _glossary_write_lock:
+            pending_data = self.load_pending_review()
+            items = list(pending_data.get("items") or [])
+            match_index: int | None = None
+            for index, item in enumerate(items):
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("dedupe_key") or _pending_dedupe_key(item))
+                if key == pending_key:
+                    item["dedupe_key"] = key
+                    match_index = index
+                    break
+            if match_index is None:
+                raise ValueError(f"pending glossary review item not found: {pending_key}")
+
+            item = dict(items[match_index])
+            if item.get("type") != "glossary_conflict":
+                raise ValueError("only glossary_conflict review items are supported")
+
+            en = str(item.get("en") or "").strip()
+            candidate_zh = str(item.get("candidate_zh") or "").strip()
+            if normalized_decision == "confirm_candidate" and (not en or not candidate_zh):
+                raise ValueError("glossary_conflict item must contain en and candidate_zh")
+
+            review_meta = {
+                "review_decision": normalized_decision,
+                "reviewed_by": str(reviewer or "").strip(),
+                "reviewed_at": _review_timestamp(reviewed_at),
+                "review_comment": str(comment or "").strip(),
+            }
+            if normalized_confidence is not None:
+                review_meta["confidence"] = normalized_confidence
+            normalized_section_scope = str(section_scope or "").strip()
+            if normalized_section_scope:
+                review_meta["section_scope"] = normalized_section_scope
+
+            if normalized_decision == "confirm_candidate":
+                self._confirm_glossary_candidate_locked(
+                    en,
+                    candidate_zh,
+                    first_page=item.get("first_page"),
+                    source=item.get("source") or "human_review",
+                    review_meta=review_meta,
+                )
+                item["status"] = "confirmed"
+                item["confirmed_zh"] = candidate_zh
+            else:
+                item["status"] = "rejected"
+
+            item.update(review_meta)
+            items[match_index] = item
+            pending_data["items"] = items
+            self.pending_path.write_text(
+                json.dumps(pending_data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return item
+
+    def _confirm_glossary_candidate_locked(
+        self,
+        en: str,
+        zh: str,
+        *,
+        first_page: Any = None,
+        source: Any = None,
+        review_meta: dict[str, Any],
+    ) -> None:
+        data = self.load_glossary()
+        terms = list(data.get("terms") or [])
+        key = _normalize_term_key(en)
+        updated = False
+        next_terms: list[dict[str, Any]] = []
+        for term in terms:
+            if not isinstance(term, dict):
+                next_terms.append(term)
+                continue
+            if _normalize_term_key(str(term.get("en") or "")) != key:
+                next_terms.append(term)
+                continue
+            if not updated:
+                confirmed = dict(term)
+                confirmed["zh"] = zh
+                confirmed["status"] = "confirmed"
+                if confirmed.get("first_page") is None and first_page is not None:
+                    confirmed["first_page"] = first_page
+                if source:
+                    confirmed["source"] = source
+                confirmed.update(review_meta)
+                next_terms.append(confirmed)
+                updated = True
+                continue
+            superseded = dict(term)
+            superseded["status"] = "rejected"
+            superseded["rejection_reason"] = "superseded_by_confirmed_glossary_review"
+            superseded.update(review_meta)
+            next_terms.append(superseded)
+        if not updated:
+            confirmed = {
+                "en": en,
+                "zh": zh,
+                "first_page": first_page,
+                "source": source or "human_review",
+                "status": "confirmed",
+            }
+            confirmed.update(review_meta)
+            next_terms.append(confirmed)
+        data["terms"] = next_terms
+        self.glossary_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def load_style_notes(self) -> dict[str, Any]:
         return yaml.safe_load(self.style_path.read_text(encoding="utf-8")) or {}
