@@ -4,6 +4,7 @@ import json
 import shutil
 import unittest
 from pathlib import Path
+from urllib.parse import quote
 from unittest.mock import patch
 
 import fitz
@@ -13,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from pdf_translate.cli import app
 from pdf_translate.config import AppConfig
+from pdf_translate.memory_store import MemoryStore
 from pdf_translate.pipeline_cancel import cancel_flag_path
 from pdf_translate.server import database
 from pdf_translate.server.auth_deps import Principal, bearer_principal
@@ -871,6 +873,137 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertIn("repair_publish_open_issues", merged[0]["artifact_warnings"])
         self.assertIn("repair_patch_review_blocking_items", merged[0]["artifact_warnings"])
         self.assertIn("table_merged_cell_review_required_items", merged[0]["artifact_warnings"])
+
+    def test_artifact_summary_reports_glossary_review_status(self) -> None:
+        root = self._case_root("glossary-review-artifacts")
+        registry = JobRegistry(root)
+        rec = registry.create_job(original_filename="paper.pdf")
+        (rec.work_dir / "input.pdf").write_bytes(b"%PDF-1.4 test")
+        out = rec.work_dir / "output"
+        out.mkdir()
+        (out / "translated_full.md").write_text("translated", encoding="utf-8")
+        (out / "translated_full.pdf").write_bytes(b"%PDF-1.4 translated")
+        store = MemoryStore(rec.work_dir / "memory")
+        store.ensure_files()
+        store.merge_glossary_terms_from_survey(
+            [{"en": "Accuracy", "zh": "准确率"}],
+            first_page_1based=1,
+        )
+        store.merge_glossary_terms_from_survey(
+            [{"en": "Accuracy", "zh": "精度"}],
+            first_page_1based=2,
+        )
+        registry.update(rec.job_id, status="done", phase="done")
+
+        merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
+
+        self.assertTrue(merged[0]["glossary_review_ready"])
+        self.assertGreater(merged[0]["glossary_review_bytes"], 0)
+        self.assertEqual(merged[0]["glossary_review_term_count"], 1)
+        self.assertEqual(merged[0]["glossary_review_active_term_count"], 1)
+        self.assertEqual(merged[0]["glossary_review_pending_count"], 1)
+        self.assertEqual(merged[0]["glossary_review_reviewable_count"], 1)
+        self.assertEqual(merged[0]["glossary_review_conflict_count"], 1)
+        self.assertEqual(merged[0]["glossary_review_pending_conflict_count"], 1)
+        self.assertEqual(merged[0]["glossary_review_confirmed_count"], 0)
+        self.assertEqual(merged[0]["glossary_review_rejected_count"], 0)
+        self.assertIn("glossary_review_pending_items", merged[0]["artifact_warnings"])
+
+    def test_glossary_review_api_applies_single_and_batch_decisions(self) -> None:
+        root = self._case_root("glossary-review-api")
+        database.configure(root / "app.db")
+        registry = JobRegistry(root / "jobs")
+        rec = registry.create_job(
+            owner_user_id=7,
+            owner_username="alice",
+            original_filename="paper.pdf",
+        )
+        store = MemoryStore(rec.work_dir / "memory")
+        store.ensure_files()
+        store.merge_glossary_terms_from_survey(
+            [{"en": "Accuracy", "zh": "准确率"}],
+            first_page_1based=1,
+        )
+        store.merge_glossary_terms_from_survey(
+            [{"en": "Accuracy", "zh": "精度"}],
+            first_page_1based=2,
+        )
+        store.merge_glossary_terms_from_survey(
+            [{"en": "Recall", "zh": "召回率"}],
+            first_page_1based=1,
+        )
+        store.merge_glossary_terms_from_survey(
+            [{"en": "Recall", "zh": "查全率"}],
+            first_page_1based=2,
+        )
+
+        api = FastAPI()
+        api.include_router(register_web_routes(registry))
+        api.dependency_overrides[bearer_principal] = lambda: Principal(
+            user_id=7,
+            username="alice",
+            role="user",
+        )
+        self.addCleanup(api.dependency_overrides.clear)
+        client = TestClient(api)
+
+        response = client.get(f"/api/jobs/{rec.job_id}/glossary-review")
+        self.assertEqual(response.status_code, 200)
+        report = response.json()
+        self.assertEqual(report["schema_version"], "glossary-review-v1")
+        self.assertEqual(report["summary"]["pending_count"], 2)
+        review_ids = [item["review_id"] for item in report["pending_reviews"]]
+
+        single = client.post(
+            f"/api/jobs/{rec.job_id}/glossary-review/{quote(review_ids[0], safe='')}",
+            json={
+                "decision": "confirm_candidate",
+                "comment": "按项目术语表确认",
+                "confidence": 0.93,
+                "section_scope": "Methods",
+            },
+        )
+        self.assertEqual(single.status_code, 200)
+        self.assertEqual(single.json()["glossary_review_summary"]["confirmed_count"], 1)
+
+        repeat = client.post(
+            f"/api/jobs/{rec.job_id}/glossary-review/{quote(review_ids[0], safe='')}",
+            json={
+                "decision": "reject_candidate",
+                "comment": "重复处理应被拒绝",
+            },
+        )
+        self.assertEqual(repeat.status_code, 400)
+        self.assertIn("已处理", repeat.json()["detail"])
+
+        batch = client.post(
+            f"/api/jobs/{rec.job_id}/glossary-review/batch",
+            json={
+                "review_ids": [review_ids[1]],
+                "decision": "reject_candidate",
+                "comment": "保持原译名",
+            },
+        )
+        self.assertEqual(batch.status_code, 200)
+        payload = batch.json()
+        self.assertEqual(payload["glossary_review_summary"]["pending_count"], 0)
+        self.assertEqual(payload["glossary_review_summary"]["confirmed_count"], 1)
+        self.assertEqual(payload["glossary_review_summary"]["rejected_count"], 1)
+        self.assertEqual(payload["glossary_review_pending_count"], 0)
+        self.assertEqual(payload["glossary_review_confirmed_count"], 1)
+        self.assertEqual(payload["glossary_review_rejected_count"], 1)
+
+        terms = MemoryStore(rec.work_dir / "memory").load_glossary()["terms"]
+        accuracy = next(term for term in terms if term["en"] == "Accuracy")
+        self.assertEqual(accuracy["zh"], "精度")
+        self.assertEqual(accuracy["status"], "confirmed")
+        self.assertEqual(accuracy["reviewed_by"], "alice")
+        self.assertEqual(accuracy["confidence"], 0.93)
+        self.assertEqual(accuracy["section_scope"], "Methods")
+
+        events = database.list_audit(limit=10)
+        self.assertEqual(events[0]["action"], "job_glossary_review_batch_update")
+        self.assertEqual(events[1]["action"], "job_glossary_review_update")
 
     def test_confirm_repair_publish_for_completed_job_writes_publish_copy(self) -> None:
         root = self._case_root("repair-publish-confirm")

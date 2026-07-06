@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { authHeaders, clearSession, getUsername } from "../auth";
+import GlossaryReviewModal from "../components/GlossaryReviewModal.vue";
 import RepairPatchReviewModal from "../components/RepairPatchReviewModal.vue";
 import TableMergedCellReviewModal from "../components/TableMergedCellReviewModal.vue";
 
@@ -42,6 +43,7 @@ const taskMap = ref({});
 const pollTimer = ref(null);
 
 const showSupportModal = ref(false);
+const glossaryReviewJobId = ref("");
 const repairPatchReviewJobId = ref("");
 const tableReviewJobId = ref("");
 const pageNow = ref(Date.now());
@@ -169,6 +171,7 @@ function artifactSummary(j) {
   if (j.partial_output_ready) ready.push("译文 MD");
   if (j.translated_pdf_ready) ready.push("译文 PDF");
   if (j.bilingual_html_ready) ready.push("双语 HTML");
+  if (j.glossary_review_ready) ready.push("术语确认");
   if (j.table_merged_cell_review_ready) ready.push("表格确认");
   if (j.table_structure_publish_ready) ready.push("表格发布");
   if (j.repair_patch_review_ready) ready.push("补丁审核");
@@ -401,8 +404,19 @@ async function reviewRepairPatch(jid) {
   repairPatchReviewJobId.value = jid;
 }
 
+async function reviewGlossary(jid) {
+  glossaryReviewJobId.value = jid;
+}
+
 async function reviewTableMergedCell(jid) {
   tableReviewJobId.value = jid;
+}
+
+async function onGlossaryReviewUpdated(job) {
+  if (job?.job_id) {
+    taskMap.value = { ...taskMap.value, [job.job_id]: job };
+  }
+  await loadMyJobs();
 }
 
 async function onTableReviewUpdated(job) {
@@ -862,6 +876,15 @@ onUnmounted(() => {
                   译文 PDF
                 </button>
                 <button
+                  v-if="taskMap[tid].glossary_review_ready"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="Number(taskMap[tid].glossary_review_reviewable_count || taskMap[tid].glossary_review_pending_count || 0) <= 0"
+                  @click="reviewGlossary(tid)"
+                >
+                  确认术语
+                </button>
+                <button
                   v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
                   type="button"
                   class="btn linkish"
@@ -1164,6 +1187,12 @@ onUnmounted(() => {
       :job-id="tableReviewJobId"
       @updated="onTableReviewUpdated"
       @close="tableReviewJobId = ''"
+    />
+    <GlossaryReviewModal
+      v-if="glossaryReviewJobId"
+      :job-id="glossaryReviewJobId"
+      @updated="onGlossaryReviewUpdated"
+      @close="glossaryReviewJobId = ''"
     />
     <RepairPatchReviewModal
       v-if="repairPatchReviewJobId"

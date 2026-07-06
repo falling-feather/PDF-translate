@@ -12,6 +12,7 @@ from typing import Any, Callable, Literal
 
 from pdf_translate.config import AppConfig
 from pdf_translate.error_codes import error_info_from_exception, make_error_info
+from pdf_translate.memory_store import MemoryStore
 from pdf_translate.pipeline import export_links, init_workdir, run_split, run_translate
 from pdf_translate.pipeline_cancel import JobCancelled, is_cancel_requested
 
@@ -571,6 +572,19 @@ class JobRegistry:
         return summary, None
 
     @staticmethod
+    def _glossary_review_summary(memory_dir: Path) -> tuple[dict[str, Any], str | None]:
+        if not memory_dir.is_dir():
+            return {}, None
+        try:
+            report = MemoryStore(memory_dir).build_glossary_review_report()
+        except (json.JSONDecodeError, OSError, ValueError):
+            return {}, "glossary_review_invalid"
+        summary = report.get("summary")
+        if not isinstance(summary, dict):
+            return {}, "glossary_review_summary_missing"
+        return summary, None
+
+    @staticmethod
     def _as_int(value: Any) -> int:
         if isinstance(value, bool):
             return int(value)
@@ -594,7 +608,10 @@ class JobRegistry:
 
     def artifact_fields_for_record(self, rec: JobRecord) -> dict[str, Any]:
         input_pdf = rec.work_dir / "input.pdf"
+        memory_dir = rec.work_dir / "memory"
         output_dir = rec.work_dir / "output"
+        glossary_json = memory_dir / "glossary.json"
+        pending_review_json = memory_dir / "pending_review.json"
         translated_md = output_dir / "translated_full.md"
         translated_pdf = output_dir / "translated_full.pdf"
         bilingual_html = output_dir / "bilingual.html"
@@ -622,6 +639,8 @@ class JobRegistry:
         table_structure_publish_md = output_dir / "table_structure_publish.md"
         table_reconstruction_confirmed_json = output_dir / "table_reconstruction_confirmed.json"
         input_bytes = self._file_size(input_pdf)
+        glossary_bytes = self._file_size(glossary_json)
+        pending_review_bytes = self._file_size(pending_review_json)
         translated_bytes = self._file_size(translated_md)
         pdf_bytes = self._file_size(translated_pdf)
         html_bytes = self._file_size(bilingual_html)
@@ -667,6 +686,7 @@ class JobRegistry:
         table_publish_summary, table_publish_warning = self._table_structure_publish_summary(
             table_structure_publish_json
         )
+        glossary_review_summary, glossary_review_warning = self._glossary_review_summary(memory_dir)
 
         warnings: list[str] = []
         if not rec.work_dir.is_dir():
@@ -697,6 +717,8 @@ class JobRegistry:
             warnings.append(table_review_warning)
         if table_publish_warning:
             warnings.append(table_publish_warning)
+        if glossary_review_warning:
+            warnings.append(glossary_review_warning)
         if (
             rec.status == "done"
             and table_reconstruction_json.is_file()
@@ -792,6 +814,31 @@ class JobRegistry:
             table_publish_summary.get("structure_patch_covered_cell_count")
         )
         table_structure_publish_rollback_available = bool(table_publish_summary.get("rollback_available"))
+        glossary_review_term_count = self._as_int(glossary_review_summary.get("term_count"))
+        glossary_review_active_term_count = self._as_int(
+            glossary_review_summary.get("active_term_count")
+        )
+        glossary_review_pending_count = self._as_int(glossary_review_summary.get("pending_count"))
+        glossary_review_reviewable_count = self._as_int(
+            glossary_review_summary.get("reviewable_count")
+        )
+        glossary_review_conflict_count = self._as_int(
+            glossary_review_summary.get("glossary_conflict_count")
+        )
+        glossary_review_pending_conflict_count = self._as_int(
+            glossary_review_summary.get("pending_glossary_conflict_count")
+        )
+        glossary_review_shared_translation_count = self._as_int(
+            glossary_review_summary.get("shared_translation_review_count")
+        )
+        glossary_review_confirmed_count = self._as_int(glossary_review_summary.get("confirmed_count"))
+        glossary_review_rejected_count = self._as_int(glossary_review_summary.get("rejected_count"))
+        glossary_review_ready = (
+            glossary_review_term_count > 0
+            or glossary_review_pending_count > 0
+            or glossary_review_confirmed_count > 0
+            or glossary_review_rejected_count > 0
+        )
         if repair_publish_open_issue_count > 0:
             warnings.append("repair_publish_open_issues")
         if repair_patch_review_blocking_count > 0:
@@ -800,6 +847,8 @@ class JobRegistry:
             warnings.append("table_merged_cell_review_required_items")
         if table_structure_publish_blocking_count > 0:
             warnings.append("table_structure_publish_blocking_items")
+        if glossary_review_pending_count > 0:
+            warnings.append("glossary_review_pending_items")
         if table_structure_publish_confirmed and not table_structure_publish_published:
             warnings.append("table_structure_publish_requested_not_published")
         if table_structure_publish_published and table_reconstruction_confirmed_bytes <= 0:
@@ -854,6 +903,17 @@ class JobRegistry:
             "translated_pdf_bytes": pdf_bytes,
             "bilingual_html_ready": html_bytes > 0,
             "bilingual_html_bytes": html_bytes,
+            "glossary_review_ready": glossary_review_ready,
+            "glossary_review_bytes": max(glossary_bytes, pending_review_bytes),
+            "glossary_review_term_count": glossary_review_term_count,
+            "glossary_review_active_term_count": glossary_review_active_term_count,
+            "glossary_review_pending_count": glossary_review_pending_count,
+            "glossary_review_reviewable_count": glossary_review_reviewable_count,
+            "glossary_review_conflict_count": glossary_review_conflict_count,
+            "glossary_review_pending_conflict_count": glossary_review_pending_conflict_count,
+            "glossary_review_shared_translation_count": glossary_review_shared_translation_count,
+            "glossary_review_confirmed_count": glossary_review_confirmed_count,
+            "glossary_review_rejected_count": glossary_review_rejected_count,
             "repair_publish_report_ready": repair_publish_json_bytes > 0 or repair_publish_md_bytes > 0,
             "repair_publish_report_bytes": max(repair_publish_json_bytes, repair_publish_md_bytes),
             "repair_rollback_report_ready": repair_rollback_json_bytes > 0 or repair_rollback_md_bytes > 0,
@@ -1318,6 +1378,17 @@ class JobRegistry:
                 "translated_pdf_bytes": 0,
                 "bilingual_html_ready": False,
                 "bilingual_html_bytes": 0,
+                "glossary_review_ready": False,
+                "glossary_review_bytes": 0,
+                "glossary_review_term_count": 0,
+                "glossary_review_active_term_count": 0,
+                "glossary_review_pending_count": 0,
+                "glossary_review_reviewable_count": 0,
+                "glossary_review_conflict_count": 0,
+                "glossary_review_pending_conflict_count": 0,
+                "glossary_review_shared_translation_count": 0,
+                "glossary_review_confirmed_count": 0,
+                "glossary_review_rejected_count": 0,
                 "repair_publish_report_ready": False,
                 "repair_publish_report_bytes": 0,
                 "repair_rollback_report_ready": False,

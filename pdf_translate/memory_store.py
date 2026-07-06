@@ -31,6 +31,13 @@ def _load_json_or_default(path: Path, default: dict[str, Any]) -> dict[str, Any]
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _write_json_atomic(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(path)
+
+
 def _pending_dedupe_key(item: dict[str, Any]) -> str:
     if item.get("dedupe_key"):
         return str(item["dedupe_key"])
@@ -126,7 +133,7 @@ class MemoryStore:
             )
 
     def load_glossary(self) -> dict[str, Any]:
-        return json.loads(self.glossary_path.read_text(encoding="utf-8"))
+        return _load_json_or_default(self.glossary_path, DEFAULT_GLOSSARY)
 
     def load_pending_review(self) -> dict[str, Any]:
         return _load_json_or_default(self.pending_path, DEFAULT_PENDING)
@@ -149,7 +156,7 @@ class MemoryStore:
             added += 1
         if added:
             data["items"] = existing
-            self.pending_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            _write_json_atomic(self.pending_path, data)
         return added
 
     def merge_glossary_terms_from_survey(
@@ -232,9 +239,70 @@ class MemoryStore:
                 )
                 added += 1
             data["terms"] = existing
-            self.glossary_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            _write_json_atomic(self.glossary_path, data)
             self._append_pending_items_locked(pending)
             return added
+
+    def build_glossary_review_report(self) -> dict[str, Any]:
+        """Build a web-facing glossary review report from memory files."""
+        glossary_data = self.load_glossary()
+        pending_data = self.load_pending_review()
+        raw_terms = glossary_data.get("terms") or []
+        raw_items = pending_data.get("items") or []
+
+        terms: list[dict[str, Any]] = []
+        for term in raw_terms:
+            if not isinstance(term, dict):
+                continue
+            normalized = dict(term)
+            normalized["en"] = str(term.get("en") or "").strip()
+            normalized["zh"] = str(term.get("zh") or "").strip()
+            normalized["status"] = str(term.get("status") or "candidate").strip() or "candidate"
+            terms.append(normalized)
+
+        pending_reviews: list[dict[str, Any]] = []
+        type_counts: dict[str, int] = {}
+        status_counts: dict[str, int] = {}
+        reviewable_count = 0
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            normalized = dict(item)
+            review_id = _pending_dedupe_key(normalized)
+            item_type = str(normalized.get("type") or "pending").strip() or "pending"
+            status = str(normalized.get("status") or "pending").strip() or "pending"
+            normalized["review_id"] = review_id
+            normalized["dedupe_key"] = review_id
+            normalized["type"] = item_type
+            normalized["status"] = status
+            normalized["action_supported"] = item_type == "glossary_conflict" and status == "pending"
+            if normalized["action_supported"]:
+                reviewable_count += 1
+            type_counts[item_type] = type_counts.get(item_type, 0) + 1
+            status_counts[status] = status_counts.get(status, 0) + 1
+            pending_reviews.append(normalized)
+
+        summary = {
+            "term_count": len(terms),
+            "active_term_count": sum(1 for term in terms if term.get("status") != "rejected"),
+            "pending_count": status_counts.get("pending", 0),
+            "reviewable_count": reviewable_count,
+            "glossary_conflict_count": type_counts.get("glossary_conflict", 0),
+            "pending_glossary_conflict_count": sum(
+                1
+                for item in pending_reviews
+                if item.get("type") == "glossary_conflict" and item.get("status") == "pending"
+            ),
+            "shared_translation_review_count": type_counts.get("shared_translation_review", 0),
+            "confirmed_count": status_counts.get("confirmed", 0),
+            "rejected_count": status_counts.get("rejected", 0),
+        }
+        return {
+            "schema_version": "glossary-review-v1",
+            "summary": summary,
+            "terms": terms,
+            "pending_reviews": pending_reviews,
+        }
 
     def apply_glossary_review_decision(
         self,
@@ -307,10 +375,7 @@ class MemoryStore:
             item.update(review_meta)
             items[match_index] = item
             pending_data["items"] = items
-            self.pending_path.write_text(
-                json.dumps(pending_data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            _write_json_atomic(self.pending_path, pending_data)
             return item
 
     def _confirm_glossary_candidate_locked(
@@ -362,7 +427,7 @@ class MemoryStore:
             confirmed.update(review_meta)
             next_terms.append(confirmed)
         data["terms"] = next_terms
-        self.glossary_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_atomic(self.glossary_path, data)
 
     def load_style_notes(self) -> dict[str, Any]:
         return yaml.safe_load(self.style_path.read_text(encoding="utf-8")) or {}

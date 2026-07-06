@@ -16,6 +16,7 @@ from pdf_translate.chunking import TextChunk
 from pdf_translate.error_codes import PdfTranslateError, error_info_from_exception, make_error_info
 from pdf_translate.exporters.translated_pdf import write_translated_pdf
 from pdf_translate.export_filename import suggest_md_download_name, suggest_zip_bundle_name
+from pdf_translate.memory_store import MemoryStore
 from pdf_translate.pipeline_cancel import cancel_flag_path
 from pdf_translate.qa.repair import (
     write_repair_formal_replace,
@@ -203,6 +204,85 @@ def _read_or_create_table_structure_publish(
         confirm=False,
         published_reconstruction_path=out_dir / "table_reconstruction_confirmed.json",
     )
+
+
+def _glossary_memory_store_for_record(rec: JobRecord) -> MemoryStore:
+    return MemoryStore(rec.work_dir / "memory")
+
+
+def _glossary_review_report_for_record(rec: JobRecord) -> dict[str, Any]:
+    try:
+        return _glossary_memory_store_for_record(rec).build_glossary_review_report()
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(409, "术语审核文件无法解析") from exc
+
+
+def _glossary_review_summary(report: dict[str, Any]) -> dict[str, Any]:
+    summary = report.get("summary")
+    return summary if isinstance(summary, dict) else {}
+
+
+def _glossary_review_lookup(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    lookup: dict[str, dict[str, Any]] = {}
+    for item in report.get("pending_reviews") or []:
+        if not isinstance(item, dict):
+            continue
+        review_id = str(item.get("review_id") or item.get("dedupe_key") or "").strip()
+        if review_id:
+            lookup[review_id] = item
+    return lookup
+
+
+def _normalize_glossary_review_ids(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        raise HTTPException(400, "review_ids 必须是非空数组")
+    review_ids: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        review_id = str(item or "").strip()
+        if not review_id or review_id in seen:
+            continue
+        seen.add(review_id)
+        review_ids.append(review_id)
+    if not review_ids:
+        raise HTTPException(400, "review_ids 必须是非空数组")
+    return review_ids
+
+
+def _validate_glossary_review_ids(report: dict[str, Any], review_ids: list[str]) -> None:
+    lookup = _glossary_review_lookup(report)
+    for review_id in review_ids:
+        item = lookup.get(review_id)
+        if item is None:
+            raise HTTPException(404, f"术语审核项不存在：{review_id}")
+        if item.get("type") != "glossary_conflict":
+            raise HTTPException(400, f"暂不支持处理该术语审核类型：{item.get('type') or 'unknown'}")
+        if item.get("status", "pending") != "pending":
+            raise HTTPException(400, f"术语审核项已处理：{review_id}")
+
+
+def _apply_glossary_review_decision(
+    rec: JobRecord,
+    review_id: str,
+    payload: dict[str, Any],
+    reviewer: str,
+) -> dict[str, Any]:
+    try:
+        return _glossary_memory_store_for_record(rec).apply_glossary_review_decision(
+            review_id,
+            str(payload.get("decision") or ""),
+            reviewer=reviewer,
+            comment=str(payload.get("comment") or ""),
+            confidence=payload.get("confidence"),
+            section_scope=str(payload.get("section_scope") or ""),
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if "not found" in message:
+            raise HTTPException(404, message) from exc
+        raise HTTPException(400, message) from exc
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(409, "术语审核文件无法写入") from exc
 
 
 def _confirm_repair_publish_for_record(rec: JobRecord) -> dict[str, Any]:
@@ -1107,6 +1187,93 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             media_type="application/json; charset=utf-8",
             headers={"Content-Disposition": cd},
         )
+
+    @api.get("/jobs/{job_id}/glossary-review")
+    def get_glossary_review(job_id: str, p: Principal = Depends(bearer_principal)) -> dict[str, Any]:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        return _glossary_review_report_for_record(rec)
+
+    @api.post("/jobs/{job_id}/glossary-review/batch")
+    def update_glossary_review_batch(
+        job_id: str,
+        request: Request,
+        payload: dict[str, Any] = Body(...),
+        p: Principal = Depends(bearer_principal),
+    ) -> dict[str, Any]:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        review_ids = _normalize_glossary_review_ids(
+            payload.get("review_ids") if "review_ids" in payload else payload.get("pending_keys")
+        )
+        before_report = _glossary_review_report_for_record(rec)
+        _validate_glossary_review_ids(before_report, review_ids)
+        updated_items = [
+            _apply_glossary_review_decision(rec, review_id, payload, p.username)
+            for review_id in review_ids
+        ]
+        report = _glossary_review_report_for_record(rec)
+        summary = _glossary_review_summary(report)
+        app_registry.update(job_id, message=f"已批量更新 {len(updated_items)} 个术语审核项")
+        database.log_audit(
+            action="job_glossary_review_batch_update",
+            ip=client_ip(request),
+            user_id=p.user_id,
+            username=p.username,
+            job_id=job_id,
+            detail={
+                "review_ids": review_ids,
+                "updated_count": len(updated_items),
+                "decision": payload.get("decision"),
+                "pending_count": summary.get("pending_count"),
+                "confirmed_count": summary.get("confirmed_count"),
+                "rejected_count": summary.get("rejected_count"),
+            },
+        )
+        updated = app_registry.get(job_id) or rec
+        d = _job_dict(updated)
+        d["glossary_review_summary"] = summary
+        d["glossary_review"] = report
+        return d
+
+    @api.post("/jobs/{job_id}/glossary-review/{review_id:path}")
+    def update_glossary_review(
+        job_id: str,
+        review_id: str,
+        request: Request,
+        payload: dict[str, Any] = Body(...),
+        p: Principal = Depends(bearer_principal),
+    ) -> dict[str, Any]:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        before_report = _glossary_review_report_for_record(rec)
+        _validate_glossary_review_ids(before_report, [review_id])
+        _apply_glossary_review_decision(rec, review_id, payload, p.username)
+        report = _glossary_review_report_for_record(rec)
+        summary = _glossary_review_summary(report)
+        app_registry.update(job_id, message="已更新术语审核项")
+        database.log_audit(
+            action="job_glossary_review_update",
+            ip=client_ip(request),
+            user_id=p.user_id,
+            username=p.username,
+            job_id=job_id,
+            detail={
+                "review_id": review_id,
+                "decision": payload.get("decision"),
+                "pending_count": summary.get("pending_count"),
+                "confirmed_count": summary.get("confirmed_count"),
+                "rejected_count": summary.get("rejected_count"),
+            },
+        )
+        updated = app_registry.get(job_id) or rec
+        d = _job_dict(updated)
+        d["glossary_review_summary"] = summary
+        d["glossary_review"] = report
+        return d
 
     @api.get("/jobs/{job_id}/table-merged-cell-review")
     def get_table_merged_cell_review(job_id: str, p: Principal = Depends(bearer_principal)) -> dict:

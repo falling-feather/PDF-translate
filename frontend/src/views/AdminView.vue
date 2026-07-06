@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { authHeaders, clearSession, getUsername } from "../auth";
+import GlossaryReviewModal from "../components/GlossaryReviewModal.vue";
 import RepairPatchReviewModal from "../components/RepairPatchReviewModal.vue";
 import TableMergedCellReviewModal from "../components/TableMergedCellReviewModal.vue";
 
@@ -15,6 +16,7 @@ const users = ref([]);
 const jobs = ref([]);
 const reconcile = ref(null);
 const reconciling = ref(false);
+const glossaryReviewJobId = ref("");
 const repairPatchReviewJobId = ref("");
 const tableReviewJobId = ref("");
 
@@ -171,6 +173,7 @@ function artifactReadySummary(job) {
   if (job.partial_output_ready) ready.push("MD");
   if (job.translated_pdf_ready) ready.push("译文PDF");
   if (job.bilingual_html_ready) ready.push("HTML");
+  if (job.glossary_review_ready) ready.push("术语确认");
   if (job.table_merged_cell_review_ready) ready.push("表格确认");
   if (job.table_structure_publish_ready) ready.push("表格发布");
   if (job.repair_patch_review_ready) ready.push("补丁审核");
@@ -339,8 +342,17 @@ async function adminReviewRepairPatch(job) {
   repairPatchReviewJobId.value = job.job_id;
 }
 
+async function adminReviewGlossary(job) {
+  glossaryReviewJobId.value = job.job_id;
+}
+
 async function adminReviewTableMergedCell(job) {
   tableReviewJobId.value = job.job_id;
+}
+
+async function onGlossaryReviewUpdated() {
+  await loadJobs();
+  await loadAudit();
 }
 
 async function onTableReviewUpdated() {
@@ -678,6 +690,7 @@ onMounted(() => {
                 <span v-if="artifactWarnings(j)" class="muted small artifact-note">{{ artifactWarnings(j) }}</span>
               </td>
               <td class="nowrap">
+                <button type="button" class="linkish" :disabled="!j.glossary_review_ready || Number(j.glossary_review_reviewable_count || j.glossary_review_pending_count || 0) <= 0" @click="adminReviewGlossary(j)">确认术语</button>
                 <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.repair_patch_review_ready" @click="adminReviewRepairPatch(j)">审核补丁</button>
                 <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.table_merged_cell_review_ready" @click="adminReviewTableMergedCell(j)">审核表格</button>
                 <button type="button" class="linkish" :disabled="j.status !== 'done' || !j.table_merged_cell_review_ready || j.table_reconstruction_confirmed_ready || Number(j.table_merged_cell_review_required_count || 0) > 0" @click="adminConfirmTableStructurePublish(j)">确认表格</button>
@@ -714,6 +727,13 @@ onMounted(() => {
       title="表格合并候选审核"
       @updated="onTableReviewUpdated"
       @close="tableReviewJobId = ''"
+    />
+    <GlossaryReviewModal
+      v-if="glossaryReviewJobId"
+      :job-id="glossaryReviewJobId"
+      title="术语确认"
+      @updated="onGlossaryReviewUpdated"
+      @close="glossaryReviewJobId = ''"
     />
     <RepairPatchReviewModal
       v-if="repairPatchReviewJobId"
