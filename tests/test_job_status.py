@@ -862,6 +862,22 @@ class JobStatusSnapshotTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        (out / "vlm_retranslation_plan.md").write_text("# VLM Retranslation Plan", encoding="utf-8")
+        (out / "vlm_retranslation_plan.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "vlm-retranslation-plan-v1",
+                    "summary": {
+                        "status": "needs_retranslation",
+                        "affected_chunk_count": 1,
+                        "retranslate_chunk_count": 1,
+                        "unmapped_task_count": 0,
+                    },
+                    "chunks": [{"chunk_id": "c0000"}],
+                }
+            ),
+            encoding="utf-8",
+        )
         registry.update(rec.job_id, status="done", phase="done")
 
         merged = registry.merge_status_into_rows([{"job_id": rec.job_id}])
@@ -941,6 +957,12 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(merged[0]["vlm_fallback_apply_writeback_accepted_count"], 1)
         self.assertEqual(merged[0]["vlm_fallback_apply_promoted_candidate_count"], 1)
         self.assertEqual(merged[0]["vlm_fallback_apply_canonical_structure_promotion_count"], 1)
+        self.assertTrue(merged[0]["vlm_retranslation_plan_ready"])
+        self.assertGreater(merged[0]["vlm_retranslation_plan_bytes"], 0)
+        self.assertEqual(merged[0]["vlm_retranslation_plan_status"], "needs_retranslation")
+        self.assertEqual(merged[0]["vlm_retranslation_plan_affected_chunk_count"], 1)
+        self.assertEqual(merged[0]["vlm_retranslation_plan_retranslate_chunk_count"], 1)
+        self.assertEqual(merged[0]["vlm_retranslation_plan_unmapped_task_count"], 0)
         self.assertTrue(merged[0]["repair_publish_confirmed"])
         self.assertTrue(merged[0]["repair_publish_published"])
         self.assertEqual(merged[0]["repair_publish_status"], "published_with_warnings")
@@ -1259,6 +1281,23 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.addCleanup(api.dependency_overrides.clear)
         client = TestClient(api)
 
+        (out / "chunks").mkdir(exist_ok=True)
+        (out / "chunks" / "c0000.md").write_text("old translation", encoding="utf-8")
+        (out / "chunks_manifest.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "chunk_id": "c0000",
+                        "pages_1based": [1, 1],
+                        "strategy": "structure",
+                        "source_text_path": "output/source_chunks/c0000.txt",
+                        "block_ids": ["p1-b0000"],
+                        "block_types": {"table": 1},
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
         review_response = client.get(f"/api/jobs/{rec.job_id}/vlm-fallback-review")
         self.assertEqual(review_response.status_code, 200)
         review_payload = review_response.json()
@@ -1332,8 +1371,13 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(applied["vlm_fallback_apply_status"], "applied")
         self.assertEqual(applied["vlm_fallback_apply_writeback_accepted_count"], 1)
         self.assertEqual(applied["vlm_fallback_apply_promoted_candidate_count"], 1)
+        self.assertTrue(applied["vlm_retranslation_plan_ready"])
+        self.assertEqual(applied["vlm_retranslation_plan_status"], "needs_retranslation")
+        self.assertEqual(applied["vlm_retranslation_plan_retranslate_chunk_count"], 1)
         self.assertTrue((out / "vlm_apply.json").is_file())
         self.assertTrue((out / "vlm_apply.md").is_file())
+        self.assertTrue((out / "vlm_retranslation_plan.json").is_file())
+        self.assertTrue((out / "vlm_retranslation_plan.md").is_file())
         merged_results = json.loads((out / "ocr_results.json").read_text(encoding="utf-8"))
         self.assertEqual(merged_results["source"], "ocr_results_with_vlm_fallback_review")
         promoted = json.loads((out / "document_ir_promoted.json").read_text(encoding="utf-8"))
@@ -1341,11 +1385,19 @@ class JobStatusSnapshotTests(unittest.TestCase):
         apply_download = client.get(f"/api/jobs/{rec.job_id}/download/vlm-apply.md")
         self.assertEqual(apply_download.status_code, 200)
         self.assertIn("vlm_apply.md", apply_download.headers["content-disposition"])
+        retranslation_download = client.get(f"/api/jobs/{rec.job_id}/download/vlm-retranslation-plan.md")
+        self.assertEqual(retranslation_download.status_code, 200)
+        self.assertIn("vlm_retranslation_plan.md", retranslation_download.headers["content-disposition"])
         admin_apply_download = client.get(
             f"/api/admin/jobs/{rec.job_id}/artifact?kind=vlm_fallback_apply"
         )
         self.assertEqual(admin_apply_download.status_code, 200)
         self.assertIn("VLM Results Apply", admin_apply_download.text)
+        admin_retranslation_download = client.get(
+            f"/api/admin/jobs/{rec.job_id}/artifact?kind=vlm_retranslation_plan"
+        )
+        self.assertEqual(admin_retranslation_download.status_code, 200)
+        self.assertIn("VLM Retranslation Plan", admin_retranslation_download.text)
 
         actions = [event["action"] for event in database.list_audit(limit=10)]
         self.assertIn("job_vlm_fallback_review_update", actions)

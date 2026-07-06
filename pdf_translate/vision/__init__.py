@@ -13,6 +13,10 @@ from pdf_translate.vision.vlm_apply import (
     build_vlm_merged_ocr_results,
     write_vlm_results_apply,
 )
+from pdf_translate.vision.vlm_retranslation import (
+    build_vlm_retranslation_plan,
+    write_vlm_retranslation_plan,
+)
 from pdf_translate.vision.ocr_executor import execute_ocr_tasks, write_ocr_execution_results
 from pdf_translate.vision.ocr_writeback import (
     build_ocr_results_payload,
@@ -37,6 +41,8 @@ __all__ = [
     "write_vlm_review_ocr_results",
     "build_vlm_merged_ocr_results",
     "write_vlm_results_apply",
+    "build_vlm_retranslation_plan",
+    "write_vlm_retranslation_plan",
     "execute_ocr_tasks",
     "write_ocr_execution_results",
     "build_ocr_results_payload",

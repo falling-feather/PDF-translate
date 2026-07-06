@@ -95,6 +95,7 @@ from pdf_translate.vision.vlm_review import (
     write_vlm_review_ocr_results,
 )
 from pdf_translate.vision.vlm_apply import build_vlm_merged_ocr_results, write_vlm_results_apply
+from pdf_translate.vision.vlm_retranslation import build_vlm_retranslation_plan
 from pdf_translate.vision.ocr_executor import execute_ocr_tasks
 from pdf_translate.vision.ocr_promotion import build_ocr_candidate_promotion, write_ocr_candidate_promotion
 from pdf_translate.vision.ocr_writeback import (
@@ -5022,6 +5023,23 @@ class StructureIRTests(unittest.TestCase):
             (out / "ocr_tasks.json").write_text(json.dumps(manifest), encoding="utf-8")
             (out / "ocr_results.json").write_text(json.dumps(base_results), encoding="utf-8")
             (out / "vlm_results.json").write_text(json.dumps(vlm_results), encoding="utf-8")
+            (out / "chunks").mkdir()
+            (out / "chunks" / "c0000.md").write_text("old translation", encoding="utf-8")
+            (out / "chunks_manifest.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "chunk_id": "c0000",
+                            "pages_1based": [1, 1],
+                            "strategy": "structure",
+                            "source_text_path": "output/source_chunks/c0000.txt",
+                            "block_ids": ["p1-b0000"],
+                            "block_types": {"table": 1},
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
 
             merged = build_vlm_merged_ocr_results(manifest, base_results, vlm_results)
             self.assertEqual(merged["source"], "ocr_results_with_vlm_fallback_review")
@@ -5036,19 +5054,83 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(report["summary"]["writeback_accepted_result_count"], 1)
             self.assertEqual(report["summary"]["promoted_candidate_count"], 1)
             self.assertEqual(report["summary"]["canonical_structure_promotion_count"], 1)
+            self.assertEqual(report["summary"]["retranslation_plan_status"], "needs_retranslation")
+            self.assertEqual(report["summary"]["retranslation_plan_retranslate_chunk_count"], 1)
             self.assertTrue((out / "vlm_apply.md").is_file())
+            self.assertTrue((out / "vlm_retranslation_plan.json").is_file())
+            self.assertTrue((out / "vlm_retranslation_plan.md").is_file())
+            retranslation_plan = json.loads((out / "vlm_retranslation_plan.json").read_text(encoding="utf-8"))
+            self.assertEqual(retranslation_plan["summary"]["affected_chunk_count"], 1)
+            self.assertEqual(retranslation_plan["summary"]["mapping_method_counts"]["block_id"], 1)
+            self.assertEqual(retranslation_plan["chunks"][0]["chunk_id"], "c0000")
+            self.assertEqual(retranslation_plan["chunks"][0]["affected_task_ids"], ["ocr-p1-table"])
             stored_results = json.loads((out / "ocr_results.json").read_text(encoding="utf-8"))
             self.assertEqual(stored_results["source"], "ocr_results_with_vlm_fallback_review")
             promoted = json.loads((out / "document_ir_promoted.json").read_text(encoding="utf-8"))
             promoted_table = promoted["pages"][0]["blocks"][0]["meta"]["table"]
             self.assertEqual(promoted_table["rows"][1][1], "91.2")
             self.assertIn("VLM Results Apply", (out / "vlm_apply.md").read_text(encoding="utf-8"))
+            self.assertIn("VLM Retranslation Plan", (out / "vlm_retranslation_plan.md").read_text(encoding="utf-8"))
         finally:
             if root.exists():
                 shutil.rmtree(root)
             parent = root.parent
             if parent.is_dir() and not any(parent.iterdir()):
                 shutil.rmtree(parent)
+
+    def test_vlm_retranslation_plan_uses_page_range_for_synthetic_blocks(self) -> None:
+        plan = build_vlm_retranslation_plan(
+            [
+                {
+                    "chunk_id": "c0001",
+                    "pages_1based": [2, 2],
+                    "strategy": "structure",
+                    "source_text_path": "output/source_chunks/c0001.txt",
+                    "block_ids": ["p2-b0000"],
+                    "block_types": {"image": 1},
+                }
+            ],
+            {
+                "schema_version": "ocr-results-v1",
+                "results": [
+                    {
+                        "task_id": "ocr-p2-image",
+                        "page_no": 2,
+                        "text": "Recovered figure caption",
+                        "confidence": 0.9,
+                    }
+                ],
+            },
+            {
+                "schema_version": "ocr-task-manifest-v1",
+                "tasks": [
+                    {
+                        "task_id": "ocr-p2-image",
+                        "page_no": 2,
+                        "block_id": "p2-image-missing",
+                        "target_structure_type": "image",
+                    }
+                ],
+            },
+            {
+                "schema_version": "ocr-candidate-promotion-v1",
+                "promotions": [
+                    {
+                        "task_id": "ocr-p2-image",
+                        "page_no": 2,
+                        "block_id": "p2-ocr0000",
+                        "promotion_target": "document_ir.page.blocks.synthetic",
+                        "canonical_structure_targets": ["p2-ocr0000"],
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(plan["summary"]["status"], "needs_retranslation")
+        self.assertEqual(plan["summary"]["mapping_method_counts"]["page_range"], 1)
+        self.assertEqual(plan["chunks"][0]["chunk_id"], "c0001")
+        self.assertEqual(plan["affected_tasks"][0]["mapping_method"], "page_range")
+        self.assertIn("synthetic_block_created", plan["chunks"][0]["reasons"])
 
     def test_local_ocr_executor_runs_ready_tasks_into_results_payload(self) -> None:
         root = Path.cwd() / "test-output" / "ocr-executor"
@@ -8996,6 +9078,8 @@ class StructureIRTests(unittest.TestCase):
                 "vlm_results.json",
                 "vlm_apply.json",
                 "vlm_apply.md",
+                "vlm_retranslation_plan.json",
+                "vlm_retranslation_plan.md",
                 "document_ir_ocr.json",
                 "ocr_candidate_promotion.json",
                 "ocr_candidate_promotion.md",
@@ -9086,6 +9170,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertIn("output/vlm_results.json", rels)
             self.assertIn("output/vlm_apply.json", rels)
             self.assertIn("output/vlm_apply.md", rels)
+            self.assertIn("output/vlm_retranslation_plan.json", rels)
+            self.assertIn("output/vlm_retranslation_plan.md", rels)
             self.assertIn("output/document_ir_ocr.json", rels)
             self.assertIn("output/ocr_candidate_promotion.json", rels)
             self.assertIn("output/ocr_candidate_promotion.md", rels)
@@ -9215,6 +9301,8 @@ class StructureIRTests(unittest.TestCase):
             self.assertEqual(map_bundle_arcname("output/vlm_results.json"), "质量/VLM复核回写结果.json")
             self.assertEqual(map_bundle_arcname("output/vlm_apply.json"), "质量/VLM回写应用报告.json")
             self.assertEqual(map_bundle_arcname("output/vlm_apply.md"), "质量/VLM回写应用报告.md")
+            self.assertEqual(map_bundle_arcname("output/vlm_retranslation_plan.json"), "质量/VLM重译计划.json")
+            self.assertEqual(map_bundle_arcname("output/vlm_retranslation_plan.md"), "质量/VLM重译计划.md")
             self.assertEqual(map_bundle_arcname("output/document_ir_ocr.json"), "设置/OCR增强文档结构IR.json")
             self.assertEqual(map_bundle_arcname("output/ocr_candidate_promotion.json"), "质量/OCR候选文本晋级.json")
             self.assertEqual(map_bundle_arcname("output/ocr_candidate_promotion.md"), "质量/OCR候选文本晋级.md")
@@ -9251,6 +9339,7 @@ class StructureIRTests(unittest.TestCase):
     def test_vlm_fallback_tasks_bundle_arcname_is_named_for_review(self) -> None:
         self.assertEqual(map_bundle_arcname("output/vlm_tasks.json"), "质量/VLM视觉复核任务.json")
         self.assertEqual(map_bundle_arcname("output/vlm_apply.md"), "质量/VLM回写应用报告.md")
+        self.assertEqual(map_bundle_arcname("output/vlm_retranslation_plan.md"), "质量/VLM重译计划.md")
 
 
 if __name__ == "__main__":

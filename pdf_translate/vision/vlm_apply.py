@@ -13,6 +13,7 @@ from pdf_translate.vision.ocr_writeback import (
     build_ocr_results_payload,
     write_ocr_writeback,
 )
+from pdf_translate.vision.vlm_retranslation import write_vlm_retranslation_plan
 
 SCHEMA_VERSION = "vlm-results-apply-v1"
 MERGED_OCR_RESULTS_SOURCE = "ocr_results_with_vlm_fallback_review"
@@ -131,6 +132,9 @@ def vlm_results_apply_to_markdown(report: dict[str, Any]) -> str:
         f"| Promotable candidates | {summary.get('qa_promotable_candidate_count', 0)} |",
         f"| Promoted candidates | {summary.get('promoted_candidate_count', 0)} |",
         f"| Canonical structure promotions | {summary.get('canonical_structure_promotion_count', 0)} |",
+        f"| Retranslation plan status | {summary.get('retranslation_plan_status', '')} |",
+        f"| Retranslation chunks | {summary.get('retranslation_plan_retranslate_chunk_count', 0)} |",
+        f"| Unmapped VLM tasks | {summary.get('retranslation_plan_unmapped_task_count', 0)} |",
         "",
         "## Artifacts",
         "",
@@ -159,6 +163,8 @@ def write_vlm_results_apply(
     ocr_candidate_promotion_path = out_dir / "ocr_candidate_promotion.json"
     ocr_candidate_promotion_md_path = out_dir / "ocr_candidate_promotion.md"
     promoted_ir_path = out_dir / "document_ir_promoted.json"
+    vlm_retranslation_plan_path = out_dir / "vlm_retranslation_plan.json"
+    vlm_retranslation_plan_md_path = out_dir / "vlm_retranslation_plan.md"
     report_path = report_path or out_dir / "vlm_apply.json"
     markdown_path = markdown_path or out_dir / "vlm_apply.md"
 
@@ -200,6 +206,29 @@ def write_vlm_results_apply(
         if isinstance(ocr_candidate_promotion.get("summary"), dict)
         else {}
     )
+    vlm_retranslation_plan = write_vlm_retranslation_plan(
+        out_dir,
+        json_path=vlm_retranslation_plan_path,
+        markdown_path=vlm_retranslation_plan_md_path,
+        vlm_apply_report={
+            "summary": {
+                "canonical_structure_promotion_count": int(
+                    promotion_summary.get("canonical_structure_promotion_count") or 0
+                ),
+                "structured_table_promotion_count": int(
+                    promotion_summary.get("structured_table_promotion_count") or 0
+                ),
+                "structured_formula_promotion_count": int(
+                    promotion_summary.get("structured_formula_promotion_count") or 0
+                ),
+            }
+        },
+    )
+    retranslation_summary = (
+        vlm_retranslation_plan.get("summary")
+        if isinstance(vlm_retranslation_plan.get("summary"), dict)
+        else {}
+    )
     vlm_result_count = int(merge_summary.get("vlm_result_count") or 0)
     summary = {
         "status": "applied" if vlm_result_count > 0 else "no_vlm_results",
@@ -224,6 +253,16 @@ def write_vlm_results_apply(
         "structured_formula_promotion_count": int(
             promotion_summary.get("structured_formula_promotion_count") or 0
         ),
+        "retranslation_plan_status": str(retranslation_summary.get("status") or ""),
+        "retranslation_plan_affected_chunk_count": int(
+            retranslation_summary.get("affected_chunk_count") or 0
+        ),
+        "retranslation_plan_retranslate_chunk_count": int(
+            retranslation_summary.get("retranslate_chunk_count") or 0
+        ),
+        "retranslation_plan_unmapped_task_count": int(
+            retranslation_summary.get("unmapped_task_count") or 0
+        ),
     }
     report = {
         "schema_version": SCHEMA_VERSION,
@@ -240,6 +279,8 @@ def write_vlm_results_apply(
             "ocr_candidate_promotion": "output/ocr_candidate_promotion.json",
             "ocr_candidate_promotion_md": "output/ocr_candidate_promotion.md",
             "document_ir_promoted": "output/document_ir_promoted.json",
+            "vlm_retranslation_plan": "output/vlm_retranslation_plan.json",
+            "vlm_retranslation_plan_md": "output/vlm_retranslation_plan.md",
         },
     }
     report_path.parent.mkdir(parents=True, exist_ok=True)

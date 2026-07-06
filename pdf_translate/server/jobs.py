@@ -624,6 +624,19 @@ class JobRegistry:
         return summary, None
 
     @staticmethod
+    def _vlm_retranslation_plan_summary(path: Path) -> tuple[dict[str, Any], str | None]:
+        if not path.is_file():
+            return {}, None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}, "vlm_retranslation_plan_invalid"
+        summary = raw.get("summary")
+        if not isinstance(summary, dict):
+            return {}, "vlm_retranslation_plan_summary_missing"
+        return summary, None
+
+    @staticmethod
     def _glossary_review_summary(memory_dir: Path) -> tuple[dict[str, Any], str | None]:
         if not memory_dir.is_dir():
             return {}, None
@@ -759,6 +772,8 @@ class JobRegistry:
         vlm_results_json = output_dir / "vlm_results.json"
         vlm_apply_json = output_dir / "vlm_apply.json"
         vlm_apply_md = output_dir / "vlm_apply.md"
+        vlm_retranslation_plan_json = output_dir / "vlm_retranslation_plan.json"
+        vlm_retranslation_plan_md = output_dir / "vlm_retranslation_plan.md"
         input_bytes = self._file_size(input_pdf)
         glossary_bytes = self._file_size(glossary_json)
         pending_review_bytes = self._file_size(pending_review_json)
@@ -810,6 +825,8 @@ class JobRegistry:
         vlm_results_json_bytes = self._file_size(vlm_results_json)
         vlm_apply_json_bytes = self._file_size(vlm_apply_json)
         vlm_apply_md_bytes = self._file_size(vlm_apply_md)
+        vlm_retranslation_plan_json_bytes = self._file_size(vlm_retranslation_plan_json)
+        vlm_retranslation_plan_md_bytes = self._file_size(vlm_retranslation_plan_md)
         repair_summary, repair_warning = self._repair_publish_summary(repair_publish_json)
         repair_rollback_summary, repair_rollback_warning = self._repair_rollback_summary(repair_rollback_json)
         repair_formal_replace_summary, repair_formal_replace_warning = self._repair_formal_replace_summary(
@@ -832,6 +849,9 @@ class JobRegistry:
         vlm_review_summary, vlm_review_warning = self._vlm_fallback_review_summary(vlm_review_json)
         vlm_results_summary, vlm_results_warning = self._vlm_fallback_results_summary(vlm_results_json)
         vlm_apply_summary, vlm_apply_warning = self._vlm_fallback_apply_summary(vlm_apply_json)
+        vlm_retranslation_plan_summary, vlm_retranslation_plan_warning = (
+            self._vlm_retranslation_plan_summary(vlm_retranslation_plan_json)
+        )
         glossary_review_summary, glossary_review_warning = self._glossary_review_summary(memory_dir)
         glossary_retranslation_plan_summary, glossary_retranslation_plan_warning = (
             self._glossary_retranslation_plan_summary(glossary_retranslation_plan_json)
@@ -883,6 +903,8 @@ class JobRegistry:
             warnings.append(vlm_results_warning)
         if vlm_apply_warning:
             warnings.append(vlm_apply_warning)
+        if vlm_retranslation_plan_warning:
+            warnings.append(vlm_retranslation_plan_warning)
         if glossary_review_warning:
             warnings.append(glossary_review_warning)
         if glossary_retranslation_plan_warning:
@@ -1047,6 +1069,16 @@ class JobRegistry:
         )
         vlm_fallback_apply_canonical_structure_promotion_count = self._as_int(
             vlm_apply_summary.get("canonical_structure_promotion_count")
+        )
+        vlm_retranslation_plan_status = str(vlm_retranslation_plan_summary.get("status") or "")
+        vlm_retranslation_plan_affected_chunk_count = self._as_int(
+            vlm_retranslation_plan_summary.get("affected_chunk_count")
+        )
+        vlm_retranslation_plan_retranslate_chunk_count = self._as_int(
+            vlm_retranslation_plan_summary.get("retranslate_chunk_count")
+        )
+        vlm_retranslation_plan_unmapped_task_count = self._as_int(
+            vlm_retranslation_plan_summary.get("unmapped_task_count")
         )
         glossary_review_term_count = self._as_int(glossary_review_summary.get("term_count"))
         glossary_review_active_term_count = self._as_int(
@@ -1436,6 +1468,23 @@ class JobRegistry:
             ),
             "vlm_fallback_apply_canonical_structure_promotion_count": (
                 vlm_fallback_apply_canonical_structure_promotion_count
+            ),
+            "vlm_retranslation_plan_ready": (
+                vlm_retranslation_plan_json_bytes > 0 or vlm_retranslation_plan_md_bytes > 0
+            ),
+            "vlm_retranslation_plan_bytes": max(
+                vlm_retranslation_plan_json_bytes,
+                vlm_retranslation_plan_md_bytes,
+            ),
+            "vlm_retranslation_plan_status": vlm_retranslation_plan_status,
+            "vlm_retranslation_plan_affected_chunk_count": (
+                vlm_retranslation_plan_affected_chunk_count
+            ),
+            "vlm_retranslation_plan_retranslate_chunk_count": (
+                vlm_retranslation_plan_retranslate_chunk_count
+            ),
+            "vlm_retranslation_plan_unmapped_task_count": (
+                vlm_retranslation_plan_unmapped_task_count
             ),
             "repair_publish_confirmed": repair_publish_confirmed,
             "repair_publish_published": repair_publish_published,

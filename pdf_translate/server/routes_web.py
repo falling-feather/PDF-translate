@@ -1494,6 +1494,26 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             headers={"Content-Disposition": cd},
         )
 
+    @api.get("/jobs/{job_id}/download/vlm-retranslation-plan.md")
+    def download_vlm_retranslation_plan(
+        job_id: str,
+        p: Principal = Depends(bearer_principal),
+    ) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "vlm_retranslation_plan.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "VLM 重译计划尚未生成")
+        ascii_fallback = "vlm_retranslation_plan.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_vlm_retranslation_plan.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
     @api.get("/jobs/{job_id}/download/glossary-retranslation-plan.md")
     def download_glossary_retranslation_plan_md(
         job_id: str,
@@ -2306,6 +2326,10 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
                 "writeback_accepted_result_count": summary.get("writeback_accepted_result_count"),
                 "promoted_candidate_count": summary.get("promoted_candidate_count"),
                 "canonical_structure_promotion_count": summary.get("canonical_structure_promotion_count"),
+                "retranslation_plan_status": summary.get("retranslation_plan_status"),
+                "retranslation_plan_retranslate_chunk_count": summary.get(
+                    "retranslation_plan_retranslate_chunk_count"
+                ),
             },
         )
         updated = app_registry.get(job_id) or rec
@@ -2894,6 +2918,15 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
                 filename="vlm_apply.md",
                 media_type="text/markdown; charset=utf-8",
             )
+        if kind == "vlm_retranslation_plan":
+            p = root / "output" / "vlm_retranslation_plan.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "VLM 重译计划尚未生成")
+            return FileResponse(
+                p,
+                filename="vlm_retranslation_plan.md",
+                media_type="text/markdown; charset=utf-8",
+            )
         if kind == "glossary_retranslation_plan_md":
             p = root / "output" / "glossary_retranslation_plan.md"
             if not p.is_file() or p.stat().st_size == 0:
@@ -3024,7 +3057,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             return Response(content=data, media_type="application/zip", headers={"Content-Disposition": cd})
         raise HTTPException(
             400,
-            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_effectiveness / repair_rollback / repair_formal_replace / repair_formal_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / vlm_fallback_tasks / vlm_fallback_review / vlm_fallback_results / vlm_fallback_apply / glossary_retranslation_plan_md / glossary_retranslation_plan_json / glossary_retranslation_result_md / glossary_retranslation_result_json / glossary_retranslated_full / glossary_retranslation_publish / glossary_retranslation_published_full / glossary_retranslation_rollback / glossary_retranslation_rollback_full / repair_published_full / repair_rollback_full / repair_formal_full / repair_formal_backup_full / repair_formal_active_before_rollback_full / bundle_zip",
+            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_effectiveness / repair_rollback / repair_formal_replace / repair_formal_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / vlm_fallback_tasks / vlm_fallback_review / vlm_fallback_results / vlm_fallback_apply / vlm_retranslation_plan / glossary_retranslation_plan_md / glossary_retranslation_plan_json / glossary_retranslation_result_md / glossary_retranslation_result_json / glossary_retranslated_full / glossary_retranslation_publish / glossary_retranslation_published_full / glossary_retranslation_rollback / glossary_retranslation_rollback_full / repair_published_full / repair_rollback_full / repair_formal_full / repair_formal_backup_full / repair_formal_active_before_rollback_full / bundle_zip",
         )
 
     api.include_router(admin)

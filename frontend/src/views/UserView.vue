@@ -187,6 +187,7 @@ function artifactSummary(j) {
   if (j.vlm_fallback_review_ready) ready.push("VLM审核");
   if (j.vlm_fallback_results_ready) ready.push("VLM回写结果");
   if (j.vlm_fallback_apply_ready) ready.push("VLM应用报告");
+  if (j.vlm_retranslation_plan_ready) ready.push("VLM重译计划");
   if (j.repair_patch_review_ready) ready.push("补丁审核");
   if (j.repair_effectiveness_report_ready) ready.push("修复效果");
   if (j.repair_publish_report_ready) ready.push("修复报告");
@@ -1233,6 +1234,15 @@ onUnmounted(() => {
                   @click="downloadFrom(`/api/jobs/${tid}/download/vlm-apply.md`, `${tid}_vlm_apply.md`)"
                 >
                   VLM应用报告
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].vlm_retranslation_plan_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/vlm-retranslation-plan.md`, `${tid}_vlm_retranslation_plan.md`)"
+                >
+                  VLM重译计划
                 </button>
                 <button
                   v-if="taskMap[tid].status === 'done'"
