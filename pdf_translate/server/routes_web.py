@@ -925,6 +925,23 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             headers={"Content-Disposition": cd},
         )
 
+    @api.get("/jobs/{job_id}/download/repair-effectiveness.md")
+    def download_repair_effectiveness(job_id: str, p: Principal = Depends(bearer_principal)) -> FileResponse:
+        rec = app_registry.get(job_id)
+        if not rec or not _can_access_job(p, rec):
+            raise HTTPException(404, "任务不存在或无权访问")
+        path = rec.work_dir / "output" / "repair_effectiveness.md"
+        if not path.is_file() or path.stat().st_size == 0:
+            raise HTTPException(404, "局部修复效果对比报告尚未生成")
+        ascii_fallback = "repair_effectiveness.md"
+        disp_name = f"{Path(rec.original_filename or 'translated').stem}_repair_effectiveness.md"
+        cd = f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(disp_name)}'
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": cd},
+        )
+
     @api.get("/jobs/{job_id}/download/repair-rollback.md")
     def download_repair_rollback(job_id: str, p: Principal = Depends(bearer_principal)) -> FileResponse:
         rec = app_registry.get(job_id)
@@ -1753,6 +1770,11 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             if not p.is_file() or p.stat().st_size == 0:
                 raise HTTPException(404, "局部修复发布确认报告尚未生成")
             return FileResponse(p, filename="repair_publish.md", media_type="text/markdown; charset=utf-8")
+        if kind == "repair_effectiveness":
+            p = root / "output" / "repair_effectiveness.md"
+            if not p.is_file() or p.stat().st_size == 0:
+                raise HTTPException(404, "局部修复效果对比报告尚未生成")
+            return FileResponse(p, filename="repair_effectiveness.md", media_type="text/markdown; charset=utf-8")
         if kind == "repair_rollback":
             p = root / "output" / "repair_rollback.md"
             if not p.is_file() or p.stat().st_size == 0:
@@ -1849,7 +1871,7 @@ def register_web_routes(app_registry: JobRegistry) -> APIRouter:
             return Response(content=data, media_type="application/zip", headers={"Content-Disposition": cd})
         raise HTTPException(
             400,
-            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_rollback / repair_formal_replace / repair_formal_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / repair_published_full / repair_rollback_full / repair_formal_full / repair_formal_backup_full / repair_formal_active_before_rollback_full / bundle_zip",
+            "kind 必须是 input / output_md / output_pdf / repair_publish / repair_effectiveness / repair_rollback / repair_formal_replace / repair_formal_rollback / repair_patch_review / table_merged_cell_review / table_structure_publish / table_reconstruction_confirmed / repair_published_full / repair_rollback_full / repair_formal_full / repair_formal_backup_full / repair_formal_active_before_rollback_full / bundle_zip",
         )
 
     api.include_router(admin)

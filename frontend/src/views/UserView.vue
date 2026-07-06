@@ -172,6 +172,7 @@ function artifactSummary(j) {
   if (j.table_merged_cell_review_ready) ready.push("表格确认");
   if (j.table_structure_publish_ready) ready.push("表格发布");
   if (j.repair_patch_review_ready) ready.push("补丁审核");
+  if (j.repair_effectiveness_report_ready) ready.push("修复效果");
   if (j.repair_publish_report_ready) ready.push("修复报告");
   if (j.repair_published_full_ready) ready.push("修复发布稿");
   if (j.repair_rollback_report_ready) ready.push("回滚报告");
@@ -868,6 +869,15 @@ onUnmounted(() => {
                   @click="downloadFrom(`/api/jobs/${tid}/download/repair-publish.md`, `${tid}_repair_publish.md`)"
                 >
                   修复报告
+                </button>
+                <button
+                  v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"
+                  type="button"
+                  class="btn linkish"
+                  :disabled="!taskMap[tid].repair_effectiveness_report_ready"
+                  @click="downloadFrom(`/api/jobs/${tid}/download/repair-effectiveness.md`, `${tid}_repair_effectiveness.md`)"
+                >
+                  修复效果
                 </button>
                 <button
                   v-if="taskMap[tid].status === 'done' || taskMap[tid].status === 'cancelled'"

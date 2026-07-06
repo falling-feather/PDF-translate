@@ -174,6 +174,7 @@ function artifactReadySummary(job) {
   if (job.table_merged_cell_review_ready) ready.push("表格确认");
   if (job.table_structure_publish_ready) ready.push("表格发布");
   if (job.repair_patch_review_ready) ready.push("补丁审核");
+  if (job.repair_effectiveness_report_ready) ready.push("修复效果");
   if (job.repair_publish_report_ready) ready.push("修复报告");
   if (job.repair_published_full_ready) ready.push("修复稿");
   if (job.repair_rollback_report_ready) ready.push("回滚报告");
@@ -684,6 +685,7 @@ onMounted(() => {
                 <button type="button" class="linkish" :disabled="!j.partial_output_ready" @click="adminDownload(j.job_id, 'output_md', 'translated.md')">MD</button>
                 <button type="button" class="linkish" :disabled="!j.translated_pdf_ready" @click="adminDownload(j.job_id, 'output_pdf', 'translated.pdf')">译PDF</button>
                 <button type="button" class="linkish" :disabled="!j.repair_publish_report_ready" @click="adminDownload(j.job_id, 'repair_publish', 'repair_publish.md')">修复报告</button>
+                <button type="button" class="linkish" :disabled="!j.repair_effectiveness_report_ready" @click="adminDownload(j.job_id, 'repair_effectiveness', 'repair_effectiveness.md')">修复效果</button>
                 <button type="button" class="linkish" :disabled="!j.repair_rollback_report_ready" @click="adminDownload(j.job_id, 'repair_rollback', 'repair_rollback.md')">回滚报告</button>
                 <button type="button" class="linkish" :disabled="!j.repair_patch_review_ready" @click="adminDownload(j.job_id, 'repair_patch_review', 'repair_patch_review.md')">补丁审核</button>
                 <button type="button" class="linkish" :disabled="!j.table_merged_cell_review_ready" @click="adminDownload(j.job_id, 'table_merged_cell_review', 'table_merged_cell_review.md')">表格确认</button>

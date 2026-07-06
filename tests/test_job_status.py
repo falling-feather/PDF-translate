@@ -211,6 +211,27 @@ class JobStatusSnapshotTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        (out / "repair_effectiveness.md").write_text("# 修复效果", encoding="utf-8")
+        (out / "repair_effectiveness.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "repair-effectiveness-v1",
+                    "summary": {
+                        "status": "improved_with_regressions",
+                        "before_issue_count": 6,
+                        "after_issue_count": 3,
+                        "issue_delta": 3,
+                        "issue_reduction_rate": 0.5,
+                        "resolved_issue_count": 4,
+                        "persisted_issue_count": 2,
+                        "new_issue_count": 1,
+                        "improved_chunk_count": 2,
+                        "regressed_chunk_count": 1,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         (out / "table_merged_cell_review.md").write_text("# 表格确认", encoding="utf-8")
         (out / "table_merged_cell_review.json").write_text(
             json.dumps(
@@ -334,6 +355,18 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(merged[0]["repair_patch_review_count"], 3)
         self.assertEqual(merged[0]["repair_patch_review_required_count"], 1)
         self.assertEqual(merged[0]["repair_patch_review_blocking_count"], 1)
+        self.assertTrue(merged[0]["repair_effectiveness_report_ready"])
+        self.assertGreater(merged[0]["repair_effectiveness_report_bytes"], 0)
+        self.assertEqual(merged[0]["repair_effectiveness_status"], "improved_with_regressions")
+        self.assertEqual(merged[0]["repair_effectiveness_before_issue_count"], 6)
+        self.assertEqual(merged[0]["repair_effectiveness_after_issue_count"], 3)
+        self.assertEqual(merged[0]["repair_effectiveness_issue_delta"], 3)
+        self.assertEqual(merged[0]["repair_effectiveness_issue_reduction_rate"], 0.5)
+        self.assertEqual(merged[0]["repair_effectiveness_resolved_issue_count"], 4)
+        self.assertEqual(merged[0]["repair_effectiveness_persisted_issue_count"], 2)
+        self.assertEqual(merged[0]["repair_effectiveness_new_issue_count"], 1)
+        self.assertEqual(merged[0]["repair_effectiveness_improved_chunk_count"], 2)
+        self.assertEqual(merged[0]["repair_effectiveness_regressed_chunk_count"], 1)
         self.assertTrue(merged[0]["table_merged_cell_review_ready"])
         self.assertGreater(merged[0]["table_merged_cell_review_bytes"], 0)
         self.assertEqual(merged[0]["table_merged_cell_review_count"], 4)
@@ -908,6 +941,8 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(merged[0]["translated_pdf_bytes"], 0)
         self.assertFalse(merged[0]["repair_publish_report_ready"])
         self.assertFalse(merged[0]["repair_patch_review_ready"])
+        self.assertFalse(merged[0]["repair_effectiveness_report_ready"])
+        self.assertEqual(merged[0]["repair_effectiveness_report_bytes"], 0)
         self.assertFalse(merged[0]["table_merged_cell_review_ready"])
         self.assertFalse(merged[0]["table_structure_publish_ready"])
         self.assertFalse(merged[0]["table_reconstruction_confirmed_ready"])
@@ -956,6 +991,13 @@ class JobStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(merged[0]["translated_pdf_bytes"], 0)
         self.assertFalse(merged[0]["repair_publish_report_ready"])
         self.assertEqual(merged[0]["repair_publish_open_issue_count"], 0)
+        self.assertFalse(merged[0]["repair_effectiveness_report_ready"])
+        self.assertEqual(merged[0]["repair_effectiveness_report_bytes"], 0)
+        self.assertEqual(merged[0]["repair_effectiveness_status"], "")
+        self.assertEqual(merged[0]["repair_effectiveness_before_issue_count"], 0)
+        self.assertEqual(merged[0]["repair_effectiveness_after_issue_count"], 0)
+        self.assertEqual(merged[0]["repair_effectiveness_issue_delta"], 0)
+        self.assertEqual(merged[0]["repair_effectiveness_issue_reduction_rate"], 0.0)
         self.assertFalse(merged[0]["table_merged_cell_review_ready"])
         self.assertFalse(merged[0]["table_structure_publish_ready"])
         self.assertFalse(merged[0]["table_reconstruction_confirmed_ready"])

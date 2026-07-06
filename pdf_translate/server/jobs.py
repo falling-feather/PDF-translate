@@ -421,6 +421,19 @@ class JobRegistry:
         return summary, None
 
     @staticmethod
+    def _repair_effectiveness_summary(path: Path) -> tuple[dict[str, Any], str | None]:
+        if not path.is_file():
+            return {}, None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}, "repair_effectiveness_report_invalid"
+        summary = raw.get("summary")
+        if not isinstance(summary, dict):
+            return {}, "repair_effectiveness_summary_missing"
+        return summary, None
+
+    @staticmethod
     def _table_merged_cell_review_summary(path: Path) -> tuple[dict[str, Any], str | None]:
         if not path.is_file():
             return {}, None
@@ -457,6 +470,17 @@ class JobRegistry:
         except ValueError:
             return 0
 
+    @staticmethod
+    def _as_float(value: Any) -> float:
+        if isinstance(value, bool):
+            return float(value)
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(str(value or "0").strip() or "0")
+        except ValueError:
+            return 0.0
+
     def artifact_fields_for_record(self, rec: JobRecord) -> dict[str, Any]:
         input_pdf = rec.work_dir / "input.pdf"
         output_dir = rec.work_dir / "output"
@@ -469,6 +493,8 @@ class JobRegistry:
         repair_rollback_md = output_dir / "repair_rollback.md"
         repair_patch_review_json = output_dir / "repair_patch_review.json"
         repair_patch_review_md = output_dir / "repair_patch_review.md"
+        repair_effectiveness_json = output_dir / "repair_effectiveness.json"
+        repair_effectiveness_md = output_dir / "repair_effectiveness.md"
         repair_published_full = output_dir / "published_full.md"
         repair_rollback_full = output_dir / "rollback_full.md"
         repair_formal_replace_json = output_dir / "repair_formal_replace.json"
@@ -494,6 +520,8 @@ class JobRegistry:
         repair_rollback_md_bytes = self._file_size(repair_rollback_md)
         repair_patch_review_json_bytes = self._file_size(repair_patch_review_json)
         repair_patch_review_md_bytes = self._file_size(repair_patch_review_md)
+        repair_effectiveness_json_bytes = self._file_size(repair_effectiveness_json)
+        repair_effectiveness_md_bytes = self._file_size(repair_effectiveness_md)
         repair_published_full_bytes = self._file_size(repair_published_full)
         repair_rollback_full_bytes = self._file_size(repair_rollback_full)
         repair_formal_replace_json_bytes = self._file_size(repair_formal_replace_json)
@@ -519,6 +547,9 @@ class JobRegistry:
             repair_formal_rollback_json
         )
         patch_review_summary, patch_review_warning = self._repair_patch_review_summary(repair_patch_review_json)
+        repair_effectiveness_summary, repair_effectiveness_warning = self._repair_effectiveness_summary(
+            repair_effectiveness_json
+        )
         table_review_summary, table_review_warning = self._table_merged_cell_review_summary(
             table_merged_cell_review_json
         )
@@ -549,6 +580,8 @@ class JobRegistry:
             warnings.append(repair_formal_rollback_warning)
         if patch_review_warning:
             warnings.append(patch_review_warning)
+        if repair_effectiveness_warning:
+            warnings.append(repair_effectiveness_warning)
         if table_review_warning:
             warnings.append(table_review_warning)
         if table_publish_warning:
@@ -593,6 +626,32 @@ class JobRegistry:
         repair_patch_review_blocking_count = self._as_int(patch_review_summary.get("publish_blocking_count"))
         repair_patch_review_human_reviewed_count = self._as_int(patch_review_summary.get("human_reviewed_count"))
         repair_patch_review_effective_safe_count = self._as_int(patch_review_summary.get("effective_safe_count"))
+        repair_effectiveness_status = str(repair_effectiveness_summary.get("status") or "")
+        repair_effectiveness_before_issue_count = self._as_int(
+            repair_effectiveness_summary.get("before_issue_count")
+        )
+        repair_effectiveness_after_issue_count = self._as_int(
+            repair_effectiveness_summary.get("after_issue_count")
+        )
+        repair_effectiveness_issue_delta = self._as_int(repair_effectiveness_summary.get("issue_delta"))
+        repair_effectiveness_issue_reduction_rate = self._as_float(
+            repair_effectiveness_summary.get("issue_reduction_rate")
+        )
+        repair_effectiveness_resolved_issue_count = self._as_int(
+            repair_effectiveness_summary.get("resolved_issue_count")
+        )
+        repair_effectiveness_persisted_issue_count = self._as_int(
+            repair_effectiveness_summary.get("persisted_issue_count")
+        )
+        repair_effectiveness_new_issue_count = self._as_int(
+            repair_effectiveness_summary.get("new_issue_count")
+        )
+        repair_effectiveness_improved_chunk_count = self._as_int(
+            repair_effectiveness_summary.get("improved_chunk_count")
+        )
+        repair_effectiveness_regressed_chunk_count = self._as_int(
+            repair_effectiveness_summary.get("regressed_chunk_count")
+        )
         table_merged_cell_review_count = self._as_int(table_review_summary.get("candidate_review_count"))
         table_merged_cell_review_required_count = self._as_int(table_review_summary.get("review_required_count"))
         table_merged_cell_review_pending_count = self._as_int(table_review_summary.get("pending_review_count"))
@@ -695,6 +754,23 @@ class JobRegistry:
             "repair_patch_review_blocking_count": repair_patch_review_blocking_count,
             "repair_patch_review_human_reviewed_count": repair_patch_review_human_reviewed_count,
             "repair_patch_review_effective_safe_count": repair_patch_review_effective_safe_count,
+            "repair_effectiveness_report_ready": (
+                repair_effectiveness_json_bytes > 0 or repair_effectiveness_md_bytes > 0
+            ),
+            "repair_effectiveness_report_bytes": max(
+                repair_effectiveness_json_bytes,
+                repair_effectiveness_md_bytes,
+            ),
+            "repair_effectiveness_status": repair_effectiveness_status,
+            "repair_effectiveness_before_issue_count": repair_effectiveness_before_issue_count,
+            "repair_effectiveness_after_issue_count": repair_effectiveness_after_issue_count,
+            "repair_effectiveness_issue_delta": repair_effectiveness_issue_delta,
+            "repair_effectiveness_issue_reduction_rate": repair_effectiveness_issue_reduction_rate,
+            "repair_effectiveness_resolved_issue_count": repair_effectiveness_resolved_issue_count,
+            "repair_effectiveness_persisted_issue_count": repair_effectiveness_persisted_issue_count,
+            "repair_effectiveness_new_issue_count": repair_effectiveness_new_issue_count,
+            "repair_effectiveness_improved_chunk_count": repair_effectiveness_improved_chunk_count,
+            "repair_effectiveness_regressed_chunk_count": repair_effectiveness_regressed_chunk_count,
             "table_merged_cell_review_ready": (
                 table_merged_cell_review_json_bytes > 0 or table_merged_cell_review_md_bytes > 0
             ),
@@ -929,6 +1005,18 @@ class JobRegistry:
                 "repair_patch_review_blocking_count": 0,
                 "repair_patch_review_human_reviewed_count": 0,
                 "repair_patch_review_effective_safe_count": 0,
+                "repair_effectiveness_report_ready": False,
+                "repair_effectiveness_report_bytes": 0,
+                "repair_effectiveness_status": "",
+                "repair_effectiveness_before_issue_count": 0,
+                "repair_effectiveness_after_issue_count": 0,
+                "repair_effectiveness_issue_delta": 0,
+                "repair_effectiveness_issue_reduction_rate": 0.0,
+                "repair_effectiveness_resolved_issue_count": 0,
+                "repair_effectiveness_persisted_issue_count": 0,
+                "repair_effectiveness_new_issue_count": 0,
+                "repair_effectiveness_improved_chunk_count": 0,
+                "repair_effectiveness_regressed_chunk_count": 0,
                 "table_merged_cell_review_ready": False,
                 "table_merged_cell_review_bytes": 0,
                 "table_merged_cell_review_count": 0,

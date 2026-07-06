@@ -377,6 +377,9 @@ def log_job_finished(
         "repair_patch_review": str((root / "output" / "repair_patch_review.json").resolve())
         if (root / "output" / "repair_patch_review.json").is_file()
         else None,
+        "repair_effectiveness": str((root / "output" / "repair_effectiveness.json").resolve())
+        if (root / "output" / "repair_effectiveness.json").is_file()
+        else None,
         "table_merged_cell_review": str((root / "output" / "table_merged_cell_review.json").resolve())
         if (root / "output" / "table_merged_cell_review.json").is_file()
         else None,
