@@ -32,6 +32,7 @@ DEFAULT_EVIDENCE_FILES = {
     "repair_merge": "output/repair_merge.json",
     "repair_patch_review": "output/repair_patch_review.json",
     "repair_merge_qa": "output/repair_merge_qa.json",
+    "repair_effectiveness": "output/repair_effectiveness.json",
     "repair_publish": "output/repair_publish.json",
     "repair_published_full": "output/published_full.md",
     "repair_rollback": "output/repair_rollback.json",
@@ -127,6 +128,7 @@ def build_experiment_metrics(
     repair_merge: dict[str, Any] | None = None,
     repair_patch_review: dict[str, Any] | None = None,
     repair_merge_qa: dict[str, Any] | None = None,
+    repair_effectiveness: dict[str, Any] | None = None,
     repair_publish: dict[str, Any] | None = None,
     repair_rollback: dict[str, Any] | None = None,
     repair_formal_replace: dict[str, Any] | None = None,
@@ -160,6 +162,7 @@ def build_experiment_metrics(
     repair_merge_summary = _summary(repair_merge)
     repair_patch_review_summary = _summary(repair_patch_review)
     repair_merge_qa_summary = _summary(repair_merge_qa)
+    repair_effectiveness_summary = _summary(repair_effectiveness)
     repair_publish_summary = _summary(repair_publish)
     repair_rollback_summary = _summary(repair_rollback)
     repair_formal_replace_summary = _summary(repair_formal_replace)
@@ -737,6 +740,32 @@ def build_experiment_metrics(
     post_repair_missing_table_locked_token_count = _as_int(
         repair_merge_qa_summary.get("missing_table_locked_token_count")
     )
+    repair_effectiveness_before_issue_count = _as_int(
+        repair_effectiveness_summary.get("before_issue_count")
+    )
+    repair_effectiveness_after_issue_count = _as_int(
+        repair_effectiveness_summary.get("after_issue_count")
+    )
+    repair_effectiveness_issue_delta = _as_int(repair_effectiveness_summary.get("issue_delta"))
+    repair_effectiveness_resolved_issue_count = _as_int(
+        repair_effectiveness_summary.get("resolved_issue_count")
+    )
+    repair_effectiveness_persisted_issue_count = _as_int(
+        repair_effectiveness_summary.get("persisted_issue_count")
+    )
+    repair_effectiveness_new_issue_count = _as_int(
+        repair_effectiveness_summary.get("new_issue_count")
+    )
+    repair_effectiveness_improved_chunk_count = _as_int(
+        repair_effectiveness_summary.get("improved_chunk_count")
+    )
+    repair_effectiveness_regressed_chunk_count = _as_int(
+        repair_effectiveness_summary.get("regressed_chunk_count")
+    )
+    repair_effectiveness_status = str(repair_effectiveness_summary.get("status") or "")
+    repair_effectiveness_issue_reduction_rate = _as_float(
+        repair_effectiveness_summary.get("issue_reduction_rate")
+    )
     translation_structure_relation_check_count = _as_int(
         translation_summary.get("structure_relation_check_count")
     )
@@ -1121,6 +1150,14 @@ def build_experiment_metrics(
             "post_repair_table_shape_error_count": post_repair_table_shape_error_count,
             "post_repair_table_cell_token_error_count": post_repair_table_cell_token_error_count,
             "post_repair_missing_table_locked_token_count": post_repair_missing_table_locked_token_count,
+            "repair_effectiveness_before_issue_count": repair_effectiveness_before_issue_count,
+            "repair_effectiveness_after_issue_count": repair_effectiveness_after_issue_count,
+            "repair_effectiveness_issue_delta": repair_effectiveness_issue_delta,
+            "repair_effectiveness_resolved_issue_count": repair_effectiveness_resolved_issue_count,
+            "repair_effectiveness_persisted_issue_count": repair_effectiveness_persisted_issue_count,
+            "repair_effectiveness_new_issue_count": repair_effectiveness_new_issue_count,
+            "repair_effectiveness_improved_chunk_count": repair_effectiveness_improved_chunk_count,
+            "repair_effectiveness_regressed_chunk_count": repair_effectiveness_regressed_chunk_count,
             "translation_structure_relation_check_count": translation_structure_relation_check_count,
             "translation_structure_relation_mismatch_count": translation_structure_relation_mismatch_count,
             "translation_structure_relation_missing_anchor_count": (
@@ -1384,6 +1421,7 @@ def build_experiment_metrics(
                 translation_issue_count - post_repair_issue_count,
                 translation_issue_count,
             ),
+            "repair_effectiveness_issue_reduction_rate": repair_effectiveness_issue_reduction_rate,
             "ocr_candidate_page_rate": _rate(ocr_candidate_page_count, page_count),
             "routed_page_rate": _rate(routed_page_count, page_count),
             "vision_preview_page_rate": _rate(vision_preview_page_count, page_count),
@@ -1554,6 +1592,9 @@ def build_experiment_metrics(
             "repair_patch_review_effective_decision_counts": repair_patch_review_effective_decision_counts,
             "repair_patch_review_human_decision_counts": repair_patch_review_human_decision_counts,
             "repair_patch_review_risk_counts": repair_patch_review_risk_counts,
+            "repair_effectiveness_status_counts": (
+                {repair_effectiveness_status: 1} if repair_effectiveness_status else {}
+            ),
             "repair_publish_status_counts": {repair_publish_status: 1} if repair_publish_status else {},
             "repair_rollback_status_counts": {repair_rollback_status: 1} if repair_rollback_status else {},
             "repair_formal_replace_status_counts": (
@@ -1642,6 +1683,7 @@ def write_experiment_metrics(
     repair_merge: dict[str, Any] | None = None,
     repair_patch_review: dict[str, Any] | None = None,
     repair_merge_qa: dict[str, Any] | None = None,
+    repair_effectiveness: dict[str, Any] | None = None,
     repair_publish: dict[str, Any] | None = None,
     repair_rollback: dict[str, Any] | None = None,
     repair_formal_replace: dict[str, Any] | None = None,
@@ -1675,6 +1717,7 @@ def write_experiment_metrics(
         repair_merge=repair_merge,
         repair_patch_review=repair_patch_review,
         repair_merge_qa=repair_merge_qa,
+        repair_effectiveness=repair_effectiveness,
         repair_publish=repair_publish,
         repair_rollback=repair_rollback,
         repair_formal_replace=repair_formal_replace,

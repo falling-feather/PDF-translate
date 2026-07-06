@@ -24,6 +24,7 @@ from pdf_translate.pipeline_merge import merge_chunks_markdown
 from pdf_translate.qa.chunk_boundary import write_chunk_boundary_qa, write_chunk_strategy_comparison
 from pdf_translate.qa.metrics import write_experiment_metrics
 from pdf_translate.qa.ocr_candidates import write_ocr_candidate_qa
+from pdf_translate.qa.repair_effectiveness import write_repair_effectiveness
 from pdf_translate.qa.repair import (
     write_repair_plan,
     write_repair_patch_review,
@@ -549,6 +550,14 @@ def run_translate(
                 document_ir=doc_ir,
                 table_reconstruction=downstream_table_reconstruction,
             )
+        with run_metrics.stage("repair_effectiveness"):
+            repair_effectiveness = write_repair_effectiveness(
+                qa_report,
+                repair_merge_qa,
+                out_dir / "repair_effectiveness.json",
+                out_dir / "repair_effectiveness.md",
+                repair_merge=repair_merge,
+            )
         with run_metrics.stage("repair_publish", confirmed=publish_repairs):
             repair_publish = write_repair_publish(
                 repair_merge,
@@ -657,6 +666,7 @@ def run_translate(
             repair_merge=repair_merge,
             repair_patch_review=repair_patch_review,
             repair_merge_qa=repair_merge_qa,
+            repair_effectiveness=repair_effectiveness,
             repair_publish=repair_publish,
             repair_rollback=repair_rollback,
             repair_formal_replace=repair_formal_replace,
